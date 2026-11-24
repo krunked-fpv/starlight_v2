@@ -1,65 +1,33 @@
-# STARLIGHT V2 — ARCHITECTURE CONTRACT
+# STARLIGHT V2 — ARCHITECTURE CONTRACT (SHIPPED REALITY)
 
 > **Core Constitution**: Git, code, and markdown contracts are persistent truth; agent sessions and scratchpads are disposable compute.
 
-## 1. System Topology & Strict Decoupling
+## 1. Shipped System Topology
 
-Starlight v2 separates **Core Game State & Continuity** from the **Cozy HD-2D & Celestial Diorama Presentation Layer** so that 100% of Starlight Island gameplay mechanics, dual trainer profiles, legacy v1 saves, 1,025 species data, 28 Elemental Badges, Composure battle math, procedural Web Audio synthesis, and offline PWA playability remain intact regardless of graphics backend.
+Starlight v2 separates **Core Game State & Continuity** (`src/core/**`) from the **Cozy HD-2D & Celestial Diorama Presentation Layer** (`src/graphics/**`, `src/ui/**`, `src/styles/**`), unified by `StarlightApp` (`src/app/StarlightApp.ts`) and bootstrapped by `src/main.ts`.
 
-```text
-+-------------------------------------------------------------------------+
-|                        CORE GAME DOMAIN (src/core/**)                   |
-|  SaveHydrator (v1 localStorage/IDB -> v2 non-destructive bridge)        |
-|  GameStore (Dual Profiles, 1,025 Species, 28 Badges, 19 Biomes, Style)  |
-|  BattleEngine (18x18 Type Chart, Composure Shield, Star Ball Capture)   |
-|  TacticalBriefingEngine | SkyHopEngine | ProceduralAudioSynth (Cry PCM) |
-+------------------------------------+------------------------------------+
-                                     | Typed Immutable Contracts (src/contracts/**)
-                                     v
-+-------------------------------------------------------------------------+
-|               STARLIGHT V2 PRESENTATION LAYER (src/graphics, src/ui)    |
-|  RenderEngine (IRenderBackend negotiation & context-loss hot-swap)      |
-|   ├── WebGL2Backend (FBO lighting, water reflections, bloom, LUT, CRT)  |
-|   └── Canvas2DBackend (Deterministic SwiftShader/low-power parity)      |
-|  Domain Renderers:                                                      |
-|   ├── OverworldRenderer (47-tile autotiles, grass sway, point lights)   |
-|   ├── BattleTheaterRenderer (5-plane parallax, 18-type VFX, rigs)       |
-|   └── SkyHopRenderer (Multi-layer cloud seas, aurora, vortices, dash)   |
-|  CelestialUIController (Zero-emoji SVG HUD, Living Title, Holo Dex)     |
-+-------------------------------------------------------------------------+
-```
+- **Core Game Domain (`src/core/**`)**:
+  - `src/core/catalog/speciesCatalog.ts`: Full 1..1,025 National Dex catalog with curated Gen 1–9 anchors, dual types, stats, 10 body archetypes, evolution metadata, and species-seeded cry parameters.
+  - `src/core/data/biomes.ts`: Starlight Village + 18 canonical elemental biomes (19 total), 47-tile blob autotile bitmask computation, landmarks, micro-props, and per-biome color-grade LUT descriptors.
+  - `src/core/data/badges.ts`: 28 metallic/crystalline Elemental & Mastery Badges.
+  - `src/core/data/typePalettes.ts`, `styleCatalog.ts`, `tacticalBriefing.ts`: 18x18 effectiveness matrix, Style Studio outfits/capes/headgear/auras, and zero-emoji Tactical Readiness Briefing engine.
+  - `src/core/save/saveHydrator.ts`: Non-destructive v1 -> v2 save hydrator supporting legacy `localStorage` (`starlight_island_save`, `starlight_save_v1`, `pokemon_starlight_v1`, `starlight_profiles`) and `IndexedDB` (`starlight_island_db`, `starlight_v2_db`) across dual trainer profiles (`slot0`, `slot1`) plus URL query flags (`?renderer=`, `?crt=`, `?reducedMotion=`, `?offlineRig=`).
+  - `src/core/battle/battleEngine.ts`, `src/core/audio/audioSynth.ts`, `src/core/skyhop/skyHopEngine.ts`: Composure shield combat math, Star Ball captures, Evolution, procedural Web Audio + live PCM cry waveform tap, and Sky-Hop arcade physics.
 
-## 2. Hybrid WebGL2 / Canvas2D Render Graph
+## 2. Shipped Hybrid WebGL2 / Canvas2D Render Graph
 
-### Primary GPU Path (`WebGL2Backend`)
-1. **Pass 1 — Terrain, Autotiles & Multi-Depth Water**: Draws 47-tile autotiled ground, cobblestone, cliffs, and translucent shoreline/deep water with procedural sky & starlight reflection waves and animated surf foam.
-2. **Pass 2 — Depth-Sorted Diorama Entities**: Draws cliff drop-shadows, footstep-parting tall grass blades, biome micro-props, landmarks (cottages, shrines, chests, fountains, signposts), and animated directional Trainer/NPC/Rival/Follower rigs with Style Studio cosmetics & auras.
-3. **Pass 3 — 2D Deferred Normal/Point Lighting & Canopy Gobos**: Accumulates warm cottage window spill, colored Shrine/Fountain/Starfall point lights, and Style Studio Starlight/Sky-Thunder trainer aura lights over a normal-aware lightmap, modulated by drifting forest canopy sunbeams and cloud shadows.
-4. **Pass 4 — Additive VFX, Dual-Kawase Bloom & Biome Color-Grade LUT**: Composites 18-type battle beams/particles/shockwaves, subtle bloom glow, per-biome color-grade LUT uniforms, vignette, and optional CRT scanlines.
+- **`src/graphics/engine/RenderEngine.ts`**: Negotiates `WebGL2Backend` vs. `Canvas2DBackend`, detects software rasterizers (SwiftShader/llvmpipe) under `auto` mode, replaces `<canvas>` in-place on context swap (preventing WebGL2/2D context lockouts), repaints one synchronous frame immediately on swap for zero blank gaps, handles `webglcontextlost`/`webglcontextrestored` hot-swapping, preloads relative `./atlases/manifest.json`, and clamps `dt <= 50ms` for locked 60 FPS pacing.
+- **`src/graphics/engine/WebGL2Backend.ts` & `src/graphics/shaders/programs.ts`**: 5 GLSL ES 3.00 shaders (`SPRITE_SHADER`, `WATER_SHADER`, `LIGHTING_CANOPY_SHADER` with up to 24 RGB point lights + filmic tone-compression + canopy sunbeams/cloud shadows, `BLOOM_COMPOSITE_SHADER` with 12-tap Dual-Kawase bloom + biome LUT + vignette + CRT scanlines, and `PARTICLE_SHADER`), hybrid offscreen 2D layer uploads, `preserveDrawingBuffer: true`, `dpr <= 2` on hardware GPUs, and `0.55x` internal resolution scaling when forced on software SwiftShader.
+- **`src/graphics/engine/Canvas2DBackend.ts`**: Deterministic WebGL-free parity renderer using `{ alpha: false, willReadFrequently: true }` for zero ANGLE readback stalls, multi-depth water reflections & surf foam, 24 additive radial lights, canopy sunbeams, biome tint/vignette, and optional CRT scanline pattern.
 
-### Parity Fallback Path (`Canvas2DBackend`)
-Automatically activates when:
-- `?renderer=canvas2d` query parameter or user setting is active;
-- WebGL2 context creation fails or is unavailable;
-- A software rasterizer (e.g., SwiftShader/llvmpipe in headless CI) is detected under `auto` mode; or
-- A live `webglcontextlost` event fires (immediately hot-swapping without losing frame pacing or gameplay state, and smoothly restoring on `webglcontextrestored`).
+## 3. Visual Domain Renderers & Celestial Glass UI
 
-Both backends share locked 60 FPS frame-pacing (`dt` clamped to `<= 50ms`), capped high-DPI thermal scaling (`dpr <= 2`), and `prefers-reduced-motion: reduce` motion/flash attenuation.
+- **Overworld (`src/graphics/overworld/**`)**: `OverworldRenderer`, `AutotileRenderer`, `LandmarkRenderer`, `CharacterRigRenderer` — 47-tile autotiled terrain, surf foam coastlines, translucent starlight water, spring-physics parting tall grass, 12 micro-prop kinds, real-time cottage/fountain/shrine/starfall/aura point lights, and live Style Studio outfits/capes/headgear/auras.
+- **Battle Theater (`src/graphics/battle/**`)**: `BattleTheaterRenderer`, `BattleArenas`, `BattleVfxDirector`, `OfflineSpriteRigSynthesizer` — 19 unique 5-plane parallax arenas, 10-archetype multi-shaded offline elemental art rigs, 18-type VFX, status & hexagonal Composure shields, 7 spring camera cues, and 4-tier encounter shutters (`0.22s` attenuated under reduced motion).
+- **Celestial UI & Sky-Hop (`src/ui/**`, `src/graphics/skyhop/**`, `src/styles/starlight.css`)**: Zero-emoji vector HUD (`CelestialUIController`, `iconHelper`), animated twilight `LivingTitleRenderer`, searchable 1,025 `PokedexView` with 3D holographic foil cards & live cry waveform, `BadgesShowcase` (28 badges), live `StyleStudioStage`, and `SkyHopRenderer`.
 
-## 3. Static GitHub Pages & Offline PWA Envelope
+## 4. Static Asset Pipeline, Offline PWA & Verification
 
-- **Base Path**: `vite.config.ts` sets `base: './'`. Every runtime fetch (`./atlases/manifest.json`, `./icons/starlight-icons.svg`, `./sw.js`, `./manifest.webmanifest`) resolves relative to `document.baseURI` / `import.meta.url`, operating identically at `/` and `/starlight_v2/` (`https://krunked-fpv.github.io/starlight_v2/`).
-- **Deterministic Procedural Asset Baker**: `scripts/bake-assets.mjs` uses a seeded Mulberry32 PRNG and pure Node `node:zlib` PNG encoding (zero network calls, zero external paid APIs, zero native image bindings) to generate byte-identical albedo/normal/emissive atlases (`public/atlases/**`) and multi-stop SVG sprite packs (`public/icons/**`) well under the 25 MB `dist/` footprint ceiling.
-- **Offline Service Worker (`public/sw.js`)**: Uses versioned Cache Storage (`starlight-v2-cache-...`) precaching core static assets, baked atlases, and SVG packs without ever touching `localStorage` or `IndexedDB` save storage. When offline or when external Pokémon sprites fail to load, the `OfflineSpriteRigSynthesizer` renders stylized, multi-shaded elemental art rigs parameterized by `speciesId`, primary/secondary types, and body archetype.
-
-## 4. Disjoint Worker File Ownership Map
-
-| Specialist | Capability Tier | Exclusive File Ownership |
-| --- | --- | --- |
-| `@mara-vance` | `inherit` | `ARCHITECTURE.md`, `SPEC.md`, `HANDOFF.md`, `.agents/agents/**`, `src/contracts/**`, `src/core/**`, `src/app/**`, `src/main.ts`, root configs |
-| `@devon-park` | `flash` | `scripts/bake-assets.mjs`, `.github/workflows/**`, `public/atlases/**`, `public/icons/**`, `public/sw.js`, `public/manifest.webmanifest` |
-| `@kenji-sato` | `inherit` | `src/graphics/engine/**`, `src/graphics/shaders/**` |
-| `@linnea-berg` | `pro` | `src/graphics/overworld/**` |
-| `@dante-moreau` | `pro` | `src/graphics/battle/**` |
-| `@sora-takahashi` | `pro` | `src/ui/**`, `src/graphics/skyhop/**`, `src/styles/**` |
-| `@nadia-khoury` | `inherit` | `tests/redteam/**`, `tests/e2e/**`, `playwright.config.ts` |
+- **`scripts/bake-assets.mjs`**: Seeded Mulberry32 PRNG (`20261124`) + pure Node `node:zlib` PNG baker generating byte-identical `public/atlases/{terrain-atlas,terrain-normal,terrain-emissive,props-atlas,characters-atlas}.png`, `public/atlases/manifest.json`, and 72 bespoke multi-stop SVG symbols in `public/icons/starlight-icons.svg` (hidden via zero-size box, never `display:none`, preserving Chromium gradient paint servers).
+- **`public/sw.js` & `vite.config.ts` (`base: './'`)**: Relative-path static output (~1.50 MB total `dist/`, well under 25 MB). `sw.js` precaches core assets and dynamically extracts hashed `./assets/*` Vite JS/CSS chunks from `index.html` during `install`, enabling full offline reloads at `/` and `/starlight_v2/` without touching user save storage.
+- **CI & Verification**: `.github/workflows/deploy.yml` (`ubuntu-latest` -> deterministic double-bake hash check -> `dist/` size gate -> Playwright E2E/Red-Team -> GitHub Pages deploy), `vitest.config.ts` (35 unit tests in `src/**/*.test.ts`), and `playwright.config.ts` + `tests/{redteam,e2e}/**` (19 Playwright specs + `subpath-server.mjs`).

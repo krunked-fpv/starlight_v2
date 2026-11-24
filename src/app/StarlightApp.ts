@@ -60,6 +60,7 @@ export interface StarlightDebugHandle {
     save: StarlightSaveState;
     battleActive: boolean;
     battlePhase: BattleSceneState['phase'];
+    battleShutterDuration: number;
     skyhopScore: number;
     manifestLoaded: boolean;
   };
@@ -988,22 +989,16 @@ export class StarlightApp {
       this.toastMessage = null;
     }
 
+    // Begin render frame for the active backend (WebGL2 or Canvas2D)
+    backend.beginFrame(elapsedSeconds, dtSeconds);
+
     // Update & render active presentation domain
     if (this.screen === 'title') {
       this.titleRenderer.update(dtSeconds, this.save.settings.reducedMotion);
       this.titleRenderer.render(backend, this.save, this.save.settings.reducedMotion);
     } else if (this.screen === 'battle') {
-      this.battleState.elapsedSeconds += dtSeconds;
       this.battleState.reducedMotion = this.save.settings.reducedMotion;
       this.battleState.forceOfflineRig = this.forceOfflineRig;
-      if (this.battleState.phase === 'shutter') {
-        this.battleState.shutter.progress += dtSeconds / Math.max(0.1, this.battleState.shutter.duration);
-        if (this.battleState.shutter.progress >= 1) {
-          this.battleState.shutter.active = false;
-          this.battleState.shutter.progress = 1;
-          this.battleState.phase = 'command';
-        }
-      }
       if (this.battleState.phase === 'capturing' && this.battleState.enemy.captureProgress !== undefined) {
         this.battleState.enemy.captureProgress = Math.min(1, this.battleState.enemy.captureProgress + dtSeconds * 1.15);
       }
@@ -1026,6 +1021,9 @@ export class StarlightApp {
       this.overworldRenderer.update(this.overworldState, dtSeconds);
       this.overworldRenderer.render(backend, this.overworldState);
     }
+
+    // Flush & composite all render passes (lighting, water, bloom, LUT, CRT) and collect live frame stats
+    const frameStats = backend.endFrame();
 
     // Periodic autosave every 12 seconds
     this.autosaveAccum += dtSeconds;
@@ -1050,7 +1048,7 @@ export class StarlightApp {
       briefing,
       badges: BADGE_DEFINITIONS,
       capabilities: backend.capabilities,
-      frameStats: this.engine.getStats(),
+      frameStats,
       toastMessage: this.toastMessage,
       selectedPokedexId: this.selectedPokedexId,
       cryWaveform,
@@ -1079,6 +1077,7 @@ export class StarlightApp {
         save: this.save,
         battleActive: this.battleState.active,
         battlePhase: this.battleState.phase,
+        battleShutterDuration: this.battleState.shutter.duration,
         skyhopScore: this.skyHopState.score,
         manifestLoaded: this.manifest !== null,
       }),

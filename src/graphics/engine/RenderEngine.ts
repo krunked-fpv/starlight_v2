@@ -418,6 +418,7 @@ export class RenderEngine implements IRenderEngine {
       this.canvasHasWebGLContext = true;
       this.attachCanvasListeners(this.canvas);
       this.reRegisterLoadedAtlases();
+      this.renderImmediateFrame();
       return 'webgl2';
     }
 
@@ -649,12 +650,24 @@ export class RenderEngine implements IRenderEngine {
     }
 
     this.activateCanvas2DSync(freshCanvas, false, snapshot);
+    this.renderImmediateFrame();
     this.emitContextEvent({
       type: eventType,
       previousBackend: previousKind,
       activeBackend: 'canvas2d',
       reason,
     });
+  }
+
+  private renderImmediateFrame(): void {
+    if (!this.loopActive || !this.activeTickCallback) {
+      return;
+    }
+    try {
+      this.activeTickCallback(1 / 60, this.elapsedSeconds, this._activeBackend);
+    } catch {
+      // Safe guard during synchronous hot-swap frame repaint
+    }
   }
 
   private handleContextLost(event: Event): void {

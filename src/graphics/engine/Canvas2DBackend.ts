@@ -230,7 +230,7 @@ export class Canvas2DBackend implements IRenderBackend {
 
     let ctx: CanvasRenderingContext2D | null = null;
     try {
-      ctx = canvas.getContext('2d', { alpha: false });
+      ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
     } catch {
       ctx = null;
     }
@@ -850,15 +850,10 @@ export class Canvas2DBackend implements IRenderBackend {
     // Subtle twilight/biome ambient tint wash when ambientStrength < 0.92
     const ambStrength = clamp(this.colorGrade.ambientStrength, 0, 1);
     if (ambStrength < 0.92) {
-      const darkness = clamp((0.92 - ambStrength) * 0.48, 0, 0.34);
+      const darkness = clamp((0.92 - ambStrength) * 0.34, 0, 0.24);
       const [ar, ag, ab] = this.colorGrade.ambientRgb;
-      ctx.globalCompositeOperation = 'multiply';
-      ctx.fillStyle = rgbaStr(
-        1 - (1 - ar * 0.65) * darkness,
-        1 - (1 - ag * 0.65) * darkness,
-        1 - (1 - ab * 0.65) * darkness,
-        1,
-      );
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = rgbaStr(ar * 0.28, ag * 0.32, ab * 0.45, darkness);
       ctx.fillRect(0, 0, w, h);
       drawCalls += 1;
     }
@@ -893,8 +888,8 @@ export class Canvas2DBackend implements IRenderBackend {
       const [r, g, b] = light.color;
 
       const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius);
-      grad.addColorStop(0, rgbaStr(r, g, b, clamp(0.38 * strength, 0, 0.72)));
-      grad.addColorStop(0.42, rgbaStr(r, g, b, clamp(0.18 * strength, 0, 0.42)));
+      grad.addColorStop(0, rgbaStr(r, g, b, clamp(0.2 * strength, 0, 0.34)));
+      grad.addColorStop(0.45, rgbaStr(r, g, b, clamp(0.09 * strength, 0, 0.16)));
       grad.addColorStop(1, rgbaStr(r, g, b, 0));
 
       ctx.fillStyle = grad;
@@ -1013,15 +1008,14 @@ export class Canvas2DBackend implements IRenderBackend {
     const [tr, tg, tb] = this.colorGrade.tintRgb;
     const tintDelta = Math.abs(tr - 1) + Math.abs(tg - 1) + Math.abs(tb - 1);
     if (tintDelta > 0.03) {
-      ctx.globalCompositeOperation = 'soft-light';
+      ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = rgbaStr(
-        clamp(0.5 + (tr - 1) * 1.6, 0, 1),
-        clamp(0.5 + (tg - 1) * 1.6, 0, 1),
-        clamp(0.5 + (tb - 1) * 1.6, 0, 1),
-        0.14,
+        clamp(0.5 + (tr - 1) * 1.4, 0, 1),
+        clamp(0.5 + (tg - 1) * 1.4, 0, 1),
+        clamp(0.5 + (tb - 1) * 1.4, 0, 1),
+        0.06,
       );
       ctx.fillRect(0, 0, w, h);
-      ctx.globalCompositeOperation = 'source-over';
       calls += 1;
     }
 

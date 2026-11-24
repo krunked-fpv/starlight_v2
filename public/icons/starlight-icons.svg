@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden">
 <defs>
   <linearGradient id="g-ball-red" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ff8a80"/><stop offset="50%" stop-color="#e53935"/><stop offset="100%" stop-color="#8e0000"/></linearGradient>
   <linearGradient id="g-ball-bot" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#cfd8dc"/></linearGradient>

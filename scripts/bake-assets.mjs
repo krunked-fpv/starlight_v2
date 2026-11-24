@@ -1259,7 +1259,7 @@ function bakeIconsSvg() {
     ...BADGE_DEFINITIONS.map((b) => `icon-badge-${b.index}`),
   ];
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" style="display:none">\n${defs}\n${symbols.join('\n')}\n</svg>\n`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden">\n${defs}\n${symbols.join('\n')}\n</svg>\n`;
   return { svg, iconIds };
 }
 

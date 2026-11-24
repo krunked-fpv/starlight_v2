@@ -556,7 +556,7 @@ body {
 .sl-top-bar {
   pointer-events: auto;
   display: grid;
-  grid-template-columns: minmax(190px, 1.1fr) auto auto;
+  grid-template-columns: minmax(215px, 1.25fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
@@ -624,7 +624,10 @@ body {
 }
 
 .sl-biome-select {
-  max-width: 190px;
+  max-width: 215px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Settings Popover */
@@ -1120,9 +1123,12 @@ body {
 }
 
 .sl-chip {
+  flex-shrink: 0;
+  white-space: nowrap;
   min-width: 44px;
   min-height: 44px;
-  padding: 6px 10px;
+  padding: 6px 12px;
+  gap: 6px;
   font-size: 12px;
 }
 

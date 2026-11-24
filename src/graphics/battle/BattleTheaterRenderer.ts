@@ -170,7 +170,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   }
 
   triggerShutter(tier: EncounterTier, reducedMotion: boolean): void {
-    const duration = reducedMotion ? 0.42 : tier === 'shrine' ? 1.05 : tier === 'rare' ? 0.92 : 0.78;
+    const duration = reducedMotion ? 0.22 : tier === 'shrine' ? 1.05 : tier === 'rare' ? 0.92 : 0.78;
     this.pendingShutter = {
       active: true,
       tier,

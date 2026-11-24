@@ -241,7 +241,7 @@ export class WebGL2Backend implements IRenderBackend {
         depth: false,
         stencil: false,
         premultipliedAlpha: true,
-        preserveDrawingBuffer: false,
+        preserveDrawingBuffer: true,
         powerPreference: 'high-performance',
       });
     } catch {
@@ -379,7 +379,9 @@ export class WebGL2Backend implements IRenderBackend {
     const safeH = Math.max(1, Math.round(cssHeight));
     const rawDpr =
       dpr ?? (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1);
-    const effectiveDpr = clamp(rawDpr, 1, this.dprCap);
+    const effectiveDpr = this._capabilities.isSoftwareRasterizer
+      ? 0.55
+      : clamp(rawDpr, 1, this.dprCap);
 
     this.cssWidth = safeW;
     this.cssHeight = safeH;

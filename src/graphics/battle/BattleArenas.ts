@@ -92,19 +92,19 @@ export function computeBattleStageLayout(width: number, height: number): BattleS
     centerY: h * 0.59,
     playerPad: {
       x: w * 0.27,
-      y: h * 0.725,
+      y: h * 0.65,
       rx: w * 0.145,
-      ry: h * 0.056,
-      spriteCy: h * 0.64,
-      size: minDim * 0.30,
+      ry: h * 0.052,
+      spriteCy: h * 0.565,
+      size: minDim * 0.285,
     },
     enemyPad: {
       x: w * 0.725,
-      y: h * 0.485,
+      y: h * 0.465,
       rx: w * 0.125,
-      ry: h * 0.046,
-      spriteCy: h * 0.415,
-      size: minDim * 0.255,
+      ry: h * 0.044,
+      spriteCy: h * 0.395,
+      size: minDim * 0.245,
     },
   };
 }

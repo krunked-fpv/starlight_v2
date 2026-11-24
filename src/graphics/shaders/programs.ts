@@ -439,12 +439,16 @@ void main() {
       }
 
       float energy = max(colInt.a, 0.0) * flicker * att * ndotl;
-      pointAccum += colInt.rgb * energy * 1.15;
-      haloAccum += colInt.rgb * (max(colInt.a, 0.0) * flicker * att * att * 0.2);
+      pointAccum += colInt.rgb * energy * 0.56;
+      haloAccum += colInt.rgb * (max(colInt.a, 0.0) * flicker * att * att * 0.09);
     }
   }
 
+  // Filmic light compression prevents overlapping lanterns/fountains/auras from clipping to white
+  pointAccum = pointAccum / (1.0 + pointAccum * 0.85);
+  haloAccum = min(haloAccum, vec3(0.28));
   vec3 lit = scene.rgb * (ambientLight + pointAccum) + haloAccum;
+  lit = lit / (1.0 + max(lit - vec3(0.84), vec3(0.0)) * 0.55);
 
   // Optional emissive FBO contribution
   if (uHasEmissive > 0.5) {
@@ -529,7 +533,8 @@ out vec4 fragColor;
 vec3 extractBloom(vec2 uv, float threshold) {
   vec3 c = texture(uLitTex, clamp(uv, vec2(0.001), vec2(0.999))).rgb;
   float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float softKnee = smoothstep(threshold - 0.14, threshold + 0.18, luma);
+  float effectiveThresh = max(threshold, 0.80);
+  float softKnee = smoothstep(effectiveThresh - 0.08, effectiveThresh + 0.16, luma);
   return c * softKnee;
 }
 
@@ -562,7 +567,7 @@ void main() {
     bloom += extractBloom(vUv + vec2(-t3.x,  t3.y), uBloomThreshold) * 0.05;
     bloom += extractBloom(vUv + vec2( t3.x,  t3.y), uBloomThreshold) * 0.05;
 
-    color += bloom * uBloomIntensity;
+    color += bloom * (uBloomIntensity * 0.48);
   }
 
   // Per-biome color-grade LUT transform

@@ -552,15 +552,16 @@ export function getOverworldMap(biomeId: BiomeId): OverworldMapData {
 
   // Lush tall-grass patches for footstep-parting & wild encounters
   const grassZones: Array<[number, number, number, number]> = [
-    [3, 4, 9, 8],
-    [18, 4, 24, 8],
-    [4, 12, 9, 14],
-    [18, 12, 23, 14],
+    [3, 4, 10, 8],
+    [17, 4, 24, 8],
+    [4, 12, 10, 14],
+    [17, 12, 23, 14],
   ];
   for (const [x0, y0, x1, y1] of grassZones) {
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
-        if (tiles[y * width + x] === 'ground' && rng() > 0.14) {
+        const nearPlazaBorder = x === 9 || x === 10 || x === 17 || x === 18;
+        if (tiles[y * width + x] === 'ground' && (nearPlazaBorder || rng() > 0.14)) {
           setTile(x, y, 'tall-grass');
         }
       }

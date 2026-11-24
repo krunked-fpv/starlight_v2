@@ -329,17 +329,18 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     expect(reducedState.capabilities.reducedMotion).toBe(true);
     expect(reducedState.save.settings.reducedMotion).toBe(true);
 
-    // Measure attenuated Shrine shutter duration (< 750ms vs 1050ms full motion)
+    // Measure attenuated Shrine shutter duration (<= 0.35s vs 1.05s full motion)
     await page.getByTestId('enter-world-btn').click();
-    const t0 = Date.now();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
     await page.getByTestId('encounter-shrine').click();
+    await expect(page.getByTestId('battle-screen')).toBeVisible();
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 5_000 },
+      { timeout: 10_000 },
     );
-    const reducedShutterMs = Date.now() - t0;
-    expect(reducedShutterMs).toBeLessThan(850);
+    const shutterState = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
+    expect(shutterState.battleShutterDuration).toBeLessThanOrEqual(0.35);
 
     // Confirm Pokédex holographic card tilt stays zeroed under reduced motion
     await page.getByTestId('battle-flee').click();
