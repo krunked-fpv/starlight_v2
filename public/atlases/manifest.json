@@ -1,0 +1,2302 @@
+{
+  "version": "2.0.0",
+  "seed": 20261124,
+  "generatedBy": "scripts/bake-assets.mjs",
+  "sheets": {
+    "terrain": {
+      "id": "terrain",
+      "albedoPath": "./atlases/terrain-atlas.png",
+      "normalPath": "./atlases/terrain-normal.png",
+      "emissivePath": "./atlases/terrain-emissive.png",
+      "width": 384,
+      "height": 608,
+      "tileSize": 32,
+      "regions": {
+        "starlight-village:ground": {
+          "id": "starlight-village:ground",
+          "x": 0,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:tall-grass": {
+          "id": "starlight-village:tall-grass",
+          "x": 32,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:sand": {
+          "id": "starlight-village:sand",
+          "x": 64,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:cobble": {
+          "id": "starlight-village:cobble",
+          "x": 96,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:cliff": {
+          "id": "starlight-village:cliff",
+          "x": 128,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:shallow-water": {
+          "id": "starlight-village:shallow-water",
+          "x": 160,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:deep-water": {
+          "id": "starlight-village:deep-water",
+          "x": 192,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:bridge": {
+          "id": "starlight-village:bridge",
+          "x": 224,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:plaza": {
+          "id": "starlight-village:plaza",
+          "x": 256,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:flowerbed": {
+          "id": "starlight-village:flowerbed",
+          "x": 288,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:shore-edge": {
+          "id": "starlight-village:shore-edge",
+          "x": 320,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "starlight-village:cliff-top": {
+          "id": "starlight-village:cliff-top",
+          "x": 352,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:ground": {
+          "id": "meadow:ground",
+          "x": 0,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:tall-grass": {
+          "id": "meadow:tall-grass",
+          "x": 32,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:sand": {
+          "id": "meadow:sand",
+          "x": 64,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:cobble": {
+          "id": "meadow:cobble",
+          "x": 96,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:cliff": {
+          "id": "meadow:cliff",
+          "x": 128,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:shallow-water": {
+          "id": "meadow:shallow-water",
+          "x": 160,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:deep-water": {
+          "id": "meadow:deep-water",
+          "x": 192,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:bridge": {
+          "id": "meadow:bridge",
+          "x": 224,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:plaza": {
+          "id": "meadow:plaza",
+          "x": 256,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:flowerbed": {
+          "id": "meadow:flowerbed",
+          "x": 288,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:shore-edge": {
+          "id": "meadow:shore-edge",
+          "x": 320,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "meadow:cliff-top": {
+          "id": "meadow:cliff-top",
+          "x": 352,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:ground": {
+          "id": "verdant-canopy:ground",
+          "x": 0,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:tall-grass": {
+          "id": "verdant-canopy:tall-grass",
+          "x": 32,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:sand": {
+          "id": "verdant-canopy:sand",
+          "x": 64,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:cobble": {
+          "id": "verdant-canopy:cobble",
+          "x": 96,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:cliff": {
+          "id": "verdant-canopy:cliff",
+          "x": 128,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:shallow-water": {
+          "id": "verdant-canopy:shallow-water",
+          "x": 160,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:deep-water": {
+          "id": "verdant-canopy:deep-water",
+          "x": 192,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:bridge": {
+          "id": "verdant-canopy:bridge",
+          "x": 224,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:plaza": {
+          "id": "verdant-canopy:plaza",
+          "x": 256,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:flowerbed": {
+          "id": "verdant-canopy:flowerbed",
+          "x": 288,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:shore-edge": {
+          "id": "verdant-canopy:shore-edge",
+          "x": 320,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "verdant-canopy:cliff-top": {
+          "id": "verdant-canopy:cliff-top",
+          "x": 352,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:ground": {
+          "id": "ember-caldera:ground",
+          "x": 0,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:tall-grass": {
+          "id": "ember-caldera:tall-grass",
+          "x": 32,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:sand": {
+          "id": "ember-caldera:sand",
+          "x": 64,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:cobble": {
+          "id": "ember-caldera:cobble",
+          "x": 96,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:cliff": {
+          "id": "ember-caldera:cliff",
+          "x": 128,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:shallow-water": {
+          "id": "ember-caldera:shallow-water",
+          "x": 160,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:deep-water": {
+          "id": "ember-caldera:deep-water",
+          "x": 192,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:bridge": {
+          "id": "ember-caldera:bridge",
+          "x": 224,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:plaza": {
+          "id": "ember-caldera:plaza",
+          "x": 256,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:flowerbed": {
+          "id": "ember-caldera:flowerbed",
+          "x": 288,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:shore-edge": {
+          "id": "ember-caldera:shore-edge",
+          "x": 320,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "ember-caldera:cliff-top": {
+          "id": "ember-caldera:cliff-top",
+          "x": 352,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:ground": {
+          "id": "sapphire-lagoon:ground",
+          "x": 0,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:tall-grass": {
+          "id": "sapphire-lagoon:tall-grass",
+          "x": 32,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:sand": {
+          "id": "sapphire-lagoon:sand",
+          "x": 64,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:cobble": {
+          "id": "sapphire-lagoon:cobble",
+          "x": 96,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:cliff": {
+          "id": "sapphire-lagoon:cliff",
+          "x": 128,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:shallow-water": {
+          "id": "sapphire-lagoon:shallow-water",
+          "x": 160,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:deep-water": {
+          "id": "sapphire-lagoon:deep-water",
+          "x": 192,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:bridge": {
+          "id": "sapphire-lagoon:bridge",
+          "x": 224,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:plaza": {
+          "id": "sapphire-lagoon:plaza",
+          "x": 256,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:flowerbed": {
+          "id": "sapphire-lagoon:flowerbed",
+          "x": 288,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:shore-edge": {
+          "id": "sapphire-lagoon:shore-edge",
+          "x": 320,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "sapphire-lagoon:cliff-top": {
+          "id": "sapphire-lagoon:cliff-top",
+          "x": 352,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:ground": {
+          "id": "volt-highlands:ground",
+          "x": 0,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:tall-grass": {
+          "id": "volt-highlands:tall-grass",
+          "x": 32,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:sand": {
+          "id": "volt-highlands:sand",
+          "x": 64,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:cobble": {
+          "id": "volt-highlands:cobble",
+          "x": 96,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:cliff": {
+          "id": "volt-highlands:cliff",
+          "x": 128,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:shallow-water": {
+          "id": "volt-highlands:shallow-water",
+          "x": 160,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:deep-water": {
+          "id": "volt-highlands:deep-water",
+          "x": 192,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:bridge": {
+          "id": "volt-highlands:bridge",
+          "x": 224,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:plaza": {
+          "id": "volt-highlands:plaza",
+          "x": 256,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:flowerbed": {
+          "id": "volt-highlands:flowerbed",
+          "x": 288,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:shore-edge": {
+          "id": "volt-highlands:shore-edge",
+          "x": 320,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "volt-highlands:cliff-top": {
+          "id": "volt-highlands:cliff-top",
+          "x": 352,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:ground": {
+          "id": "frost-glacier:ground",
+          "x": 0,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:tall-grass": {
+          "id": "frost-glacier:tall-grass",
+          "x": 32,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:sand": {
+          "id": "frost-glacier:sand",
+          "x": 64,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:cobble": {
+          "id": "frost-glacier:cobble",
+          "x": 96,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:cliff": {
+          "id": "frost-glacier:cliff",
+          "x": 128,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:shallow-water": {
+          "id": "frost-glacier:shallow-water",
+          "x": 160,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:deep-water": {
+          "id": "frost-glacier:deep-water",
+          "x": 192,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:bridge": {
+          "id": "frost-glacier:bridge",
+          "x": 224,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:plaza": {
+          "id": "frost-glacier:plaza",
+          "x": 256,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:flowerbed": {
+          "id": "frost-glacier:flowerbed",
+          "x": 288,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:shore-edge": {
+          "id": "frost-glacier:shore-edge",
+          "x": 320,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "frost-glacier:cliff-top": {
+          "id": "frost-glacier:cliff-top",
+          "x": 352,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:ground": {
+          "id": "valor-dojo:ground",
+          "x": 0,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:tall-grass": {
+          "id": "valor-dojo:tall-grass",
+          "x": 32,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:sand": {
+          "id": "valor-dojo:sand",
+          "x": 64,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:cobble": {
+          "id": "valor-dojo:cobble",
+          "x": 96,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:cliff": {
+          "id": "valor-dojo:cliff",
+          "x": 128,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:shallow-water": {
+          "id": "valor-dojo:shallow-water",
+          "x": 160,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:deep-water": {
+          "id": "valor-dojo:deep-water",
+          "x": 192,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:bridge": {
+          "id": "valor-dojo:bridge",
+          "x": 224,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:plaza": {
+          "id": "valor-dojo:plaza",
+          "x": 256,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:flowerbed": {
+          "id": "valor-dojo:flowerbed",
+          "x": 288,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:shore-edge": {
+          "id": "valor-dojo:shore-edge",
+          "x": 320,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "valor-dojo:cliff-top": {
+          "id": "valor-dojo:cliff-top",
+          "x": 352,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:ground": {
+          "id": "mire-bayou:ground",
+          "x": 0,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:tall-grass": {
+          "id": "mire-bayou:tall-grass",
+          "x": 32,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:sand": {
+          "id": "mire-bayou:sand",
+          "x": 64,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:cobble": {
+          "id": "mire-bayou:cobble",
+          "x": 96,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:cliff": {
+          "id": "mire-bayou:cliff",
+          "x": 128,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:shallow-water": {
+          "id": "mire-bayou:shallow-water",
+          "x": 160,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:deep-water": {
+          "id": "mire-bayou:deep-water",
+          "x": 192,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:bridge": {
+          "id": "mire-bayou:bridge",
+          "x": 224,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:plaza": {
+          "id": "mire-bayou:plaza",
+          "x": 256,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:flowerbed": {
+          "id": "mire-bayou:flowerbed",
+          "x": 288,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:shore-edge": {
+          "id": "mire-bayou:shore-edge",
+          "x": 320,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "mire-bayou:cliff-top": {
+          "id": "mire-bayou:cliff-top",
+          "x": 352,
+          "y": 256,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:ground": {
+          "id": "ochre-canyon:ground",
+          "x": 0,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:tall-grass": {
+          "id": "ochre-canyon:tall-grass",
+          "x": 32,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:sand": {
+          "id": "ochre-canyon:sand",
+          "x": 64,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:cobble": {
+          "id": "ochre-canyon:cobble",
+          "x": 96,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:cliff": {
+          "id": "ochre-canyon:cliff",
+          "x": 128,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:shallow-water": {
+          "id": "ochre-canyon:shallow-water",
+          "x": 160,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:deep-water": {
+          "id": "ochre-canyon:deep-water",
+          "x": 192,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:bridge": {
+          "id": "ochre-canyon:bridge",
+          "x": 224,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:plaza": {
+          "id": "ochre-canyon:plaza",
+          "x": 256,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:flowerbed": {
+          "id": "ochre-canyon:flowerbed",
+          "x": 288,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:shore-edge": {
+          "id": "ochre-canyon:shore-edge",
+          "x": 320,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "ochre-canyon:cliff-top": {
+          "id": "ochre-canyon:cliff-top",
+          "x": 352,
+          "y": 288,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:ground": {
+          "id": "zephyr-peaks:ground",
+          "x": 0,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:tall-grass": {
+          "id": "zephyr-peaks:tall-grass",
+          "x": 32,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:sand": {
+          "id": "zephyr-peaks:sand",
+          "x": 64,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:cobble": {
+          "id": "zephyr-peaks:cobble",
+          "x": 96,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:cliff": {
+          "id": "zephyr-peaks:cliff",
+          "x": 128,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:shallow-water": {
+          "id": "zephyr-peaks:shallow-water",
+          "x": 160,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:deep-water": {
+          "id": "zephyr-peaks:deep-water",
+          "x": 192,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:bridge": {
+          "id": "zephyr-peaks:bridge",
+          "x": 224,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:plaza": {
+          "id": "zephyr-peaks:plaza",
+          "x": 256,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:flowerbed": {
+          "id": "zephyr-peaks:flowerbed",
+          "x": 288,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:shore-edge": {
+          "id": "zephyr-peaks:shore-edge",
+          "x": 320,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "zephyr-peaks:cliff-top": {
+          "id": "zephyr-peaks:cliff-top",
+          "x": 352,
+          "y": 320,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:ground": {
+          "id": "astral-ruins:ground",
+          "x": 0,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:tall-grass": {
+          "id": "astral-ruins:tall-grass",
+          "x": 32,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:sand": {
+          "id": "astral-ruins:sand",
+          "x": 64,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:cobble": {
+          "id": "astral-ruins:cobble",
+          "x": 96,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:cliff": {
+          "id": "astral-ruins:cliff",
+          "x": 128,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:shallow-water": {
+          "id": "astral-ruins:shallow-water",
+          "x": 160,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:deep-water": {
+          "id": "astral-ruins:deep-water",
+          "x": 192,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:bridge": {
+          "id": "astral-ruins:bridge",
+          "x": 224,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:plaza": {
+          "id": "astral-ruins:plaza",
+          "x": 256,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:flowerbed": {
+          "id": "astral-ruins:flowerbed",
+          "x": 288,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:shore-edge": {
+          "id": "astral-ruins:shore-edge",
+          "x": 320,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "astral-ruins:cliff-top": {
+          "id": "astral-ruins:cliff-top",
+          "x": 352,
+          "y": 352,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:ground": {
+          "id": "amber-thicket:ground",
+          "x": 0,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:tall-grass": {
+          "id": "amber-thicket:tall-grass",
+          "x": 32,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:sand": {
+          "id": "amber-thicket:sand",
+          "x": 64,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:cobble": {
+          "id": "amber-thicket:cobble",
+          "x": 96,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:cliff": {
+          "id": "amber-thicket:cliff",
+          "x": 128,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:shallow-water": {
+          "id": "amber-thicket:shallow-water",
+          "x": 160,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:deep-water": {
+          "id": "amber-thicket:deep-water",
+          "x": 192,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:bridge": {
+          "id": "amber-thicket:bridge",
+          "x": 224,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:plaza": {
+          "id": "amber-thicket:plaza",
+          "x": 256,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:flowerbed": {
+          "id": "amber-thicket:flowerbed",
+          "x": 288,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:shore-edge": {
+          "id": "amber-thicket:shore-edge",
+          "x": 320,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "amber-thicket:cliff-top": {
+          "id": "amber-thicket:cliff-top",
+          "x": 352,
+          "y": 384,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:ground": {
+          "id": "basalt-quarry:ground",
+          "x": 0,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:tall-grass": {
+          "id": "basalt-quarry:tall-grass",
+          "x": 32,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:sand": {
+          "id": "basalt-quarry:sand",
+          "x": 64,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:cobble": {
+          "id": "basalt-quarry:cobble",
+          "x": 96,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:cliff": {
+          "id": "basalt-quarry:cliff",
+          "x": 128,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:shallow-water": {
+          "id": "basalt-quarry:shallow-water",
+          "x": 160,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:deep-water": {
+          "id": "basalt-quarry:deep-water",
+          "x": 192,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:bridge": {
+          "id": "basalt-quarry:bridge",
+          "x": 224,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:plaza": {
+          "id": "basalt-quarry:plaza",
+          "x": 256,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:flowerbed": {
+          "id": "basalt-quarry:flowerbed",
+          "x": 288,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:shore-edge": {
+          "id": "basalt-quarry:shore-edge",
+          "x": 320,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "basalt-quarry:cliff-top": {
+          "id": "basalt-quarry:cliff-top",
+          "x": 352,
+          "y": 416,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:ground": {
+          "id": "mist-hollow:ground",
+          "x": 0,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:tall-grass": {
+          "id": "mist-hollow:tall-grass",
+          "x": 32,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:sand": {
+          "id": "mist-hollow:sand",
+          "x": 64,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:cobble": {
+          "id": "mist-hollow:cobble",
+          "x": 96,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:cliff": {
+          "id": "mist-hollow:cliff",
+          "x": 128,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:shallow-water": {
+          "id": "mist-hollow:shallow-water",
+          "x": 160,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:deep-water": {
+          "id": "mist-hollow:deep-water",
+          "x": 192,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:bridge": {
+          "id": "mist-hollow:bridge",
+          "x": 224,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:plaza": {
+          "id": "mist-hollow:plaza",
+          "x": 256,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:flowerbed": {
+          "id": "mist-hollow:flowerbed",
+          "x": 288,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:shore-edge": {
+          "id": "mist-hollow:shore-edge",
+          "x": 320,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "mist-hollow:cliff-top": {
+          "id": "mist-hollow:cliff-top",
+          "x": 352,
+          "y": 448,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:ground": {
+          "id": "drake-summit:ground",
+          "x": 0,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:tall-grass": {
+          "id": "drake-summit:tall-grass",
+          "x": 32,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:sand": {
+          "id": "drake-summit:sand",
+          "x": 64,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:cobble": {
+          "id": "drake-summit:cobble",
+          "x": 96,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:cliff": {
+          "id": "drake-summit:cliff",
+          "x": 128,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:shallow-water": {
+          "id": "drake-summit:shallow-water",
+          "x": 160,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:deep-water": {
+          "id": "drake-summit:deep-water",
+          "x": 192,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:bridge": {
+          "id": "drake-summit:bridge",
+          "x": 224,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:plaza": {
+          "id": "drake-summit:plaza",
+          "x": 256,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:flowerbed": {
+          "id": "drake-summit:flowerbed",
+          "x": 288,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:shore-edge": {
+          "id": "drake-summit:shore-edge",
+          "x": 320,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "drake-summit:cliff-top": {
+          "id": "drake-summit:cliff-top",
+          "x": 352,
+          "y": 480,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:ground": {
+          "id": "eclipse-crag:ground",
+          "x": 0,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:tall-grass": {
+          "id": "eclipse-crag:tall-grass",
+          "x": 32,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:sand": {
+          "id": "eclipse-crag:sand",
+          "x": 64,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:cobble": {
+          "id": "eclipse-crag:cobble",
+          "x": 96,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:cliff": {
+          "id": "eclipse-crag:cliff",
+          "x": 128,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:shallow-water": {
+          "id": "eclipse-crag:shallow-water",
+          "x": 160,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:deep-water": {
+          "id": "eclipse-crag:deep-water",
+          "x": 192,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:bridge": {
+          "id": "eclipse-crag:bridge",
+          "x": 224,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:plaza": {
+          "id": "eclipse-crag:plaza",
+          "x": 256,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:flowerbed": {
+          "id": "eclipse-crag:flowerbed",
+          "x": 288,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:shore-edge": {
+          "id": "eclipse-crag:shore-edge",
+          "x": 320,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "eclipse-crag:cliff-top": {
+          "id": "eclipse-crag:cliff-top",
+          "x": 352,
+          "y": 512,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:ground": {
+          "id": "aegis-foundry:ground",
+          "x": 0,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:tall-grass": {
+          "id": "aegis-foundry:tall-grass",
+          "x": 32,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:sand": {
+          "id": "aegis-foundry:sand",
+          "x": 64,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:cobble": {
+          "id": "aegis-foundry:cobble",
+          "x": 96,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:cliff": {
+          "id": "aegis-foundry:cliff",
+          "x": 128,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:shallow-water": {
+          "id": "aegis-foundry:shallow-water",
+          "x": 160,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:deep-water": {
+          "id": "aegis-foundry:deep-water",
+          "x": 192,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:bridge": {
+          "id": "aegis-foundry:bridge",
+          "x": 224,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:plaza": {
+          "id": "aegis-foundry:plaza",
+          "x": 256,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:flowerbed": {
+          "id": "aegis-foundry:flowerbed",
+          "x": 288,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:shore-edge": {
+          "id": "aegis-foundry:shore-edge",
+          "x": 320,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "aegis-foundry:cliff-top": {
+          "id": "aegis-foundry:cliff-top",
+          "x": 352,
+          "y": 544,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:ground": {
+          "id": "starbloom-glade:ground",
+          "x": 0,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:tall-grass": {
+          "id": "starbloom-glade:tall-grass",
+          "x": 32,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:sand": {
+          "id": "starbloom-glade:sand",
+          "x": 64,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:cobble": {
+          "id": "starbloom-glade:cobble",
+          "x": 96,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:cliff": {
+          "id": "starbloom-glade:cliff",
+          "x": 128,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:shallow-water": {
+          "id": "starbloom-glade:shallow-water",
+          "x": 160,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:deep-water": {
+          "id": "starbloom-glade:deep-water",
+          "x": 192,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:bridge": {
+          "id": "starbloom-glade:bridge",
+          "x": 224,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:plaza": {
+          "id": "starbloom-glade:plaza",
+          "x": 256,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:flowerbed": {
+          "id": "starbloom-glade:flowerbed",
+          "x": 288,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:shore-edge": {
+          "id": "starbloom-glade:shore-edge",
+          "x": 320,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        },
+        "starbloom-glade:cliff-top": {
+          "id": "starbloom-glade:cliff-top",
+          "x": 352,
+          "y": 576,
+          "w": 32,
+          "h": 32
+        }
+      }
+    },
+    "props": {
+      "id": "props",
+      "albedoPath": "./atlases/props-atlas.png",
+      "width": 384,
+      "height": 192,
+      "tileSize": 64,
+      "regions": {
+        "cottage": {
+          "id": "cottage",
+          "x": 0,
+          "y": 0,
+          "w": 64,
+          "h": 64
+        },
+        "shrine": {
+          "id": "shrine",
+          "x": 64,
+          "y": 0,
+          "w": 64,
+          "h": 64
+        },
+        "chest": {
+          "id": "chest",
+          "x": 128,
+          "y": 0,
+          "w": 64,
+          "h": 64
+        },
+        "fountain": {
+          "id": "fountain",
+          "x": 192,
+          "y": 0,
+          "w": 64,
+          "h": 64
+        },
+        "signpost": {
+          "id": "signpost",
+          "x": 256,
+          "y": 0,
+          "w": 64,
+          "h": 64
+        },
+        "starfall": {
+          "id": "starfall",
+          "x": 320,
+          "y": 0,
+          "w": 64,
+          "h": 64
+        },
+        "studio": {
+          "id": "studio",
+          "x": 0,
+          "y": 64,
+          "w": 64,
+          "h": 64
+        },
+        "observatory": {
+          "id": "observatory",
+          "x": 64,
+          "y": 64,
+          "w": 64,
+          "h": 64
+        },
+        "crystal": {
+          "id": "crystal",
+          "x": 128,
+          "y": 64,
+          "w": 64,
+          "h": 64
+        },
+        "ember-vent": {
+          "id": "ember-vent",
+          "x": 192,
+          "y": 64,
+          "w": 64,
+          "h": 64
+        },
+        "spore-lantern": {
+          "id": "spore-lantern",
+          "x": 256,
+          "y": 64,
+          "w": 64,
+          "h": 64
+        },
+        "coral": {
+          "id": "coral",
+          "x": 320,
+          "y": 64,
+          "w": 64,
+          "h": 64
+        },
+        "ruin-pillar": {
+          "id": "ruin-pillar",
+          "x": 0,
+          "y": 128,
+          "w": 64,
+          "h": 64
+        },
+        "bamboo": {
+          "id": "bamboo",
+          "x": 64,
+          "y": 128,
+          "w": 64,
+          "h": 64
+        },
+        "pine": {
+          "id": "pine",
+          "x": 128,
+          "y": 128,
+          "w": 64,
+          "h": 64
+        },
+        "blossom-tree": {
+          "id": "blossom-tree",
+          "x": 192,
+          "y": 128,
+          "w": 64,
+          "h": 64
+        },
+        "lantern-post": {
+          "id": "lantern-post",
+          "x": 256,
+          "y": 128,
+          "w": 64,
+          "h": 64
+        },
+        "gear-spire": {
+          "id": "gear-spire",
+          "x": 320,
+          "y": 128,
+          "w": 64,
+          "h": 64
+        }
+      }
+    },
+    "characters": {
+      "id": "characters",
+      "albedoPath": "./atlases/characters-atlas.png",
+      "width": 256,
+      "height": 256,
+      "tileSize": 32,
+      "regions": {
+        "trainer-down-0": {
+          "id": "trainer-down-0",
+          "x": 0,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-down-1": {
+          "id": "trainer-down-1",
+          "x": 32,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-up-0": {
+          "id": "trainer-up-0",
+          "x": 64,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-up-1": {
+          "id": "trainer-up-1",
+          "x": 96,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-left-0": {
+          "id": "trainer-left-0",
+          "x": 128,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-left-1": {
+          "id": "trainer-left-1",
+          "x": 160,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-right-0": {
+          "id": "trainer-right-0",
+          "x": 192,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-right-1": {
+          "id": "trainer-right-1",
+          "x": 224,
+          "y": 0,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-down-idle": {
+          "id": "trainer-down-idle",
+          "x": 0,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-down-2": {
+          "id": "trainer-down-2",
+          "x": 32,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-up-idle": {
+          "id": "trainer-up-idle",
+          "x": 64,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-up-2": {
+          "id": "trainer-up-2",
+          "x": 96,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-left-idle": {
+          "id": "trainer-left-idle",
+          "x": 128,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-left-2": {
+          "id": "trainer-left-2",
+          "x": 160,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-right-idle": {
+          "id": "trainer-right-idle",
+          "x": 192,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "trainer-right-2": {
+          "id": "trainer-right-2",
+          "x": 224,
+          "y": 32,
+          "w": 32,
+          "h": 32
+        },
+        "follower-down-0": {
+          "id": "follower-down-0",
+          "x": 0,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-down-1": {
+          "id": "follower-down-1",
+          "x": 32,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-up-0": {
+          "id": "follower-up-0",
+          "x": 64,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-up-1": {
+          "id": "follower-up-1",
+          "x": 96,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-left-0": {
+          "id": "follower-left-0",
+          "x": 128,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-left-1": {
+          "id": "follower-left-1",
+          "x": 160,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-right-0": {
+          "id": "follower-right-0",
+          "x": 192,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-right-1": {
+          "id": "follower-right-1",
+          "x": 224,
+          "y": 64,
+          "w": 32,
+          "h": 32
+        },
+        "follower-down-idle": {
+          "id": "follower-down-idle",
+          "x": 0,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-down-2": {
+          "id": "follower-down-2",
+          "x": 32,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-up-idle": {
+          "id": "follower-up-idle",
+          "x": 64,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-up-2": {
+          "id": "follower-up-2",
+          "x": 96,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-left-idle": {
+          "id": "follower-left-idle",
+          "x": 128,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-left-2": {
+          "id": "follower-left-2",
+          "x": 160,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-right-idle": {
+          "id": "follower-right-idle",
+          "x": 192,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "follower-right-2": {
+          "id": "follower-right-2",
+          "x": 224,
+          "y": 96,
+          "w": 32,
+          "h": 32
+        },
+        "npc-down-0": {
+          "id": "npc-down-0",
+          "x": 0,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-down-1": {
+          "id": "npc-down-1",
+          "x": 32,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-up-0": {
+          "id": "npc-up-0",
+          "x": 64,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-up-1": {
+          "id": "npc-up-1",
+          "x": 96,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-left-0": {
+          "id": "npc-left-0",
+          "x": 128,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-left-1": {
+          "id": "npc-left-1",
+          "x": 160,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-right-0": {
+          "id": "npc-right-0",
+          "x": 192,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-right-1": {
+          "id": "npc-right-1",
+          "x": 224,
+          "y": 128,
+          "w": 32,
+          "h": 32
+        },
+        "npc-down-idle": {
+          "id": "npc-down-idle",
+          "x": 0,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-down-2": {
+          "id": "npc-down-2",
+          "x": 32,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-up-idle": {
+          "id": "npc-up-idle",
+          "x": 64,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-up-2": {
+          "id": "npc-up-2",
+          "x": 96,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-left-idle": {
+          "id": "npc-left-idle",
+          "x": 128,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-left-2": {
+          "id": "npc-left-2",
+          "x": 160,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-right-idle": {
+          "id": "npc-right-idle",
+          "x": 192,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "npc-right-2": {
+          "id": "npc-right-2",
+          "x": 224,
+          "y": 160,
+          "w": 32,
+          "h": 32
+        },
+        "rival-down-0": {
+          "id": "rival-down-0",
+          "x": 0,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-down-1": {
+          "id": "rival-down-1",
+          "x": 32,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-up-0": {
+          "id": "rival-up-0",
+          "x": 64,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-up-1": {
+          "id": "rival-up-1",
+          "x": 96,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-left-0": {
+          "id": "rival-left-0",
+          "x": 128,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-left-1": {
+          "id": "rival-left-1",
+          "x": 160,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-right-0": {
+          "id": "rival-right-0",
+          "x": 192,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-right-1": {
+          "id": "rival-right-1",
+          "x": 224,
+          "y": 192,
+          "w": 32,
+          "h": 32
+        },
+        "rival-down-idle": {
+          "id": "rival-down-idle",
+          "x": 0,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-down-2": {
+          "id": "rival-down-2",
+          "x": 32,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-up-idle": {
+          "id": "rival-up-idle",
+          "x": 64,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-up-2": {
+          "id": "rival-up-2",
+          "x": 96,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-left-idle": {
+          "id": "rival-left-idle",
+          "x": 128,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-left-2": {
+          "id": "rival-left-2",
+          "x": 160,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-right-idle": {
+          "id": "rival-right-idle",
+          "x": 192,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        },
+        "rival-right-2": {
+          "id": "rival-right-2",
+          "x": 224,
+          "y": 224,
+          "w": 32,
+          "h": 32
+        }
+      }
+    }
+  },
+  "biomeTileRowMap": {
+    "starlight-village": 0,
+    "meadow": 1,
+    "verdant-canopy": 2,
+    "ember-caldera": 3,
+    "sapphire-lagoon": 4,
+    "volt-highlands": 5,
+    "frost-glacier": 6,
+    "valor-dojo": 7,
+    "mire-bayou": 8,
+    "ochre-canyon": 9,
+    "zephyr-peaks": 10,
+    "astral-ruins": 11,
+    "amber-thicket": 12,
+    "basalt-quarry": 13,
+    "mist-hollow": 14,
+    "drake-summit": 15,
+    "eclipse-crag": 16,
+    "aegis-foundry": 17,
+    "starbloom-glade": 18
+  },
+  "iconIds": [
+    "icon-pokeball",
+    "icon-starball",
+    "icon-potion",
+    "icon-super-potion",
+    "icon-star-shard",
+    "icon-composure",
+    "icon-briefing",
+    "icon-waypoint",
+    "icon-shrine",
+    "icon-chest",
+    "icon-fountain",
+    "icon-signpost",
+    "icon-starfall",
+    "icon-pokedex",
+    "icon-badges",
+    "icon-style",
+    "icon-skyhop",
+    "icon-settings",
+    "icon-audio-on",
+    "icon-audio-off",
+    "icon-crt",
+    "icon-motion",
+    "icon-save",
+    "icon-bond",
+    "icon-star-rank",
+    "icon-crown",
+    "icon-type-normal",
+    "icon-type-grass",
+    "icon-type-fire",
+    "icon-type-water",
+    "icon-type-electric",
+    "icon-type-ice",
+    "icon-type-fighting",
+    "icon-type-poison",
+    "icon-type-ground",
+    "icon-type-flying",
+    "icon-type-psychic",
+    "icon-type-bug",
+    "icon-type-rock",
+    "icon-type-ghost",
+    "icon-type-dragon",
+    "icon-type-dark",
+    "icon-type-steel",
+    "icon-type-fairy",
+    "icon-badge-1",
+    "icon-badge-2",
+    "icon-badge-3",
+    "icon-badge-4",
+    "icon-badge-5",
+    "icon-badge-6",
+    "icon-badge-7",
+    "icon-badge-8",
+    "icon-badge-9",
+    "icon-badge-10",
+    "icon-badge-11",
+    "icon-badge-12",
+    "icon-badge-13",
+    "icon-badge-14",
+    "icon-badge-15",
+    "icon-badge-16",
+    "icon-badge-17",
+    "icon-badge-18",
+    "icon-badge-19",
+    "icon-badge-20",
+    "icon-badge-21",
+    "icon-badge-22",
+    "icon-badge-23",
+    "icon-badge-24",
+    "icon-badge-25",
+    "icon-badge-26",
+    "icon-badge-27",
+    "icon-badge-28"
+  ],
+  "totalBytes": 1086136
+}

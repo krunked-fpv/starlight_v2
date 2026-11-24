@@ -1,0 +1,19 @@
+{
+  "name": "Pokémon: Starlight Island — Starlight v2",
+  "short_name": "Starlight v2",
+  "description": "Cozy HD-2D & Celestial Diorama Edition of Pokémon: Starlight Island",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0b1026",
+  "background_color": "#080c1d",
+  "icons": [
+    {
+      "src": "./icons/starlight-emblem.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
