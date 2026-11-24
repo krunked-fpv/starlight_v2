@@ -1,0 +1,331 @@
+import type { ElementalType, MoveRecord, TypeVisualPalette } from '../../contracts';
+
+export const TYPE_PALETTES: Record<ElementalType, TypeVisualPalette> = {
+  normal: { primary: '#d9d2be', secondary: '#a79f8b', glow: '#fff8e1', dark: '#544e42', rgb: [0.85, 0.82, 0.75] },
+  grass: { primary: '#4bd478', secondary: '#1f8a4c', glow: '#a9ffbf', dark: '#103b24', rgb: [0.29, 0.83, 0.47] },
+  fire: { primary: '#ff6b35', secondary: '#c72c1c', glow: '#ffd166', dark: '#4f120b', rgb: [1.0, 0.42, 0.21] },
+  water: { primary: '#38b6ff', secondary: '#1462b8', glow: '#9be8ff', dark: '#0a254d', rgb: [0.22, 0.71, 1.0] },
+  electric: { primary: '#ffd93d', secondary: '#e09f00', glow: '#fff6a6', dark: '#4d3600', rgb: [1.0, 0.85, 0.24] },
+  ice: { primary: '#7be8ff', secondary: '#349ec9', glow: '#dffaff', dark: '#113a4d', rgb: [0.48, 0.91, 1.0] },
+  fighting: { primary: '#e05246', secondary: '#96221b', glow: '#ff9b8f', dark: '#420d0a', rgb: [0.88, 0.32, 0.27] },
+  poison: { primary: '#b55cff', secondary: '#6b21a8', glow: '#e4b8ff', dark: '#2c0b4a', rgb: [0.71, 0.36, 1.0] },
+  ground: { primary: '#d9a05b', secondary: '#8f5a23', glow: '#ffe0a8', dark: '#3d240c', rgb: [0.85, 0.63, 0.36] },
+  flying: { primary: '#7fb5ff', secondary: '#4575cc', glow: '#d4e8ff', dark: '#1a2f5c', rgb: [0.5, 0.71, 1.0] },
+  psychic: { primary: '#ff5ca8', secondary: '#b01c6e', glow: '#ffb8df', dark: '#4a092e', rgb: [1.0, 0.36, 0.66] },
+  bug: { primary: '#9be038', secondary: '#558b16', glow: '#d9ff8f', dark: '#243d07', rgb: [0.61, 0.88, 0.22] },
+  rock: { primary: '#c7b07b', secondary: '#7d6941', glow: '#f2e2b8', dark: '#382e1b', rgb: [0.78, 0.69, 0.48] },
+  ghost: { primary: '#816bff', secondary: '#432ea3', glow: '#c8bdff', dark: '#1b1147', rgb: [0.51, 0.42, 1.0] },
+  dragon: { primary: '#5e7bff', secondary: '#2c3ab8', glow: '#a8baff', dark: '#111857', rgb: [0.37, 0.48, 1.0] },
+  dark: { primary: '#6e6580', secondary: '#342c42', glow: '#b6a8d4', dark: '#15101f', rgb: [0.43, 0.4, 0.5] },
+  steel: { primary: '#9cb5c9', secondary: '#5a7287', glow: '#e0f0fc', dark: '#23303d', rgb: [0.61, 0.71, 0.79] },
+  fairy: { primary: '#ff96d5', secondary: '#c74c9b', glow: '#ffe0f4', dark: '#4d1439', rgb: [1.0, 0.59, 0.84] },
+};
+
+const SUPER_EFFECTIVE: Record<ElementalType, ElementalType[]> = {
+  normal: [],
+  grass: ['water', 'ground', 'rock'],
+  fire: ['grass', 'ice', 'bug', 'steel'],
+  water: ['fire', 'ground', 'rock'],
+  electric: ['water', 'flying'],
+  ice: ['grass', 'ground', 'flying', 'dragon'],
+  fighting: ['normal', 'ice', 'rock', 'dark', 'steel'],
+  poison: ['grass', 'fairy'],
+  ground: ['fire', 'electric', 'poison', 'rock', 'steel'],
+  flying: ['grass', 'fighting', 'bug'],
+  psychic: ['fighting', 'poison'],
+  bug: ['grass', 'psychic', 'dark'],
+  rock: ['fire', 'ice', 'flying', 'bug'],
+  ghost: ['psychic', 'ghost'],
+  dragon: ['dragon'],
+  dark: ['psychic', 'ghost'],
+  steel: ['ice', 'rock', 'fairy'],
+  fairy: ['fighting', 'dragon', 'dark'],
+};
+
+const RESISTED: Record<ElementalType, ElementalType[]> = {
+  normal: ['rock', 'steel'],
+  grass: ['fire', 'grass', 'poison', 'flying', 'bug', 'dragon', 'steel'],
+  fire: ['fire', 'water', 'rock', 'dragon'],
+  water: ['water', 'grass', 'dragon'],
+  electric: ['electric', 'grass', 'dragon'],
+  ice: ['fire', 'water', 'ice', 'steel'],
+  fighting: ['poison', 'flying', 'psychic', 'bug', 'fairy'],
+  poison: ['poison', 'ground', 'rock', 'ghost'],
+  ground: ['grass', 'bug'],
+  flying: ['electric', 'rock', 'steel'],
+  psychic: ['psychic', 'steel'],
+  bug: ['fire', 'fighting', 'poison', 'flying', 'ghost', 'steel', 'fairy'],
+  rock: ['fighting', 'ground', 'steel'],
+  ghost: ['dark'],
+  dragon: ['steel'],
+  dark: ['fighting', 'dark', 'fairy'],
+  steel: ['fire', 'water', 'electric', 'steel'],
+  fairy: ['fire', 'poison', 'steel'],
+};
+
+const IMMUNE: Partial<Record<ElementalType, ElementalType[]>> = {
+  normal: ['ghost'],
+  electric: ['ground'],
+  fighting: ['ghost'],
+  poison: ['steel'],
+  ground: ['flying'],
+  psychic: ['dark'],
+  ghost: ['normal'],
+  dragon: ['fairy'],
+};
+
+export function getTypeEffectiveness(
+  attackType: ElementalType,
+  defenderPrimary: ElementalType,
+  defenderSecondary: ElementalType | null,
+): number {
+  const factor = (def: ElementalType): number => {
+    if (IMMUNE[attackType]?.includes(def)) return 0.25; // Starlight Composure keeps battles moving cleanly
+    if (SUPER_EFFECTIVE[attackType].includes(def)) return 2;
+    if (RESISTED[attackType].includes(def)) return 0.5;
+    return 1;
+  };
+  const primaryMult = factor(defenderPrimary);
+  const secondaryMult = defenderSecondary ? factor(defenderSecondary) : 1;
+  return Number((primaryMult * secondaryMult).toFixed(2));
+}
+
+export function getCounterTypes(targetType: ElementalType): ElementalType[] {
+  const counters: ElementalType[] = [];
+  for (const [atk, list] of Object.entries(SUPER_EFFECTIVE) as Array<[ElementalType, ElementalType[]]>) {
+    if (list.includes(targetType)) counters.push(atk);
+  }
+  return counters.length > 0 ? counters : ['starlight' as never].filter(Boolean);
+}
+
+export const MOVES_BY_ID: Record<string, MoveRecord> = {
+  'starlight-pulse': {
+    id: 'starlight-pulse',
+    name: 'Starlight Pulse',
+    type: 'normal',
+    power: 70,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -16,
+    description: 'Radiant shockwave that steadies the user and chips Composure.',
+  },
+  'astral-guard': {
+    id: 'astral-guard',
+    name: 'Composure Focus',
+    type: 'psychic',
+    power: 0,
+    accuracy: 100,
+    category: 'status',
+    composureShift: 38,
+    description: 'Reinforces the hexagonal Composure shield and restores poise.',
+  },
+  'emerald-gale': {
+    id: 'emerald-gale',
+    name: 'Emerald Gale',
+    type: 'grass',
+    power: 82,
+    accuracy: 98,
+    category: 'special',
+    composureShift: -20,
+    statusEffect: 'sleep',
+    statusChance: 0.2,
+    description: 'Whirling canopy blades laced with luminous soothing spores.',
+  },
+  'cinder-nova': {
+    id: 'cinder-nova',
+    name: 'Cinder Nova',
+    type: 'fire',
+    power: 92,
+    accuracy: 95,
+    category: 'special',
+    composureShift: -24,
+    statusEffect: 'burn',
+    statusChance: 0.35,
+    description: 'Volcanic burst that ignites rising embers across the arena.',
+  },
+  'sapphire-surge': {
+    id: 'sapphire-surge',
+    name: 'Sapphire Surge',
+    type: 'water',
+    power: 85,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -22,
+    description: 'Refracted tidal torrent crashing down in prismatic surf.',
+  },
+  'sky-thunder': {
+    id: 'sky-thunder',
+    name: 'Sky Thunder',
+    type: 'electric',
+    power: 90,
+    accuracy: 95,
+    category: 'special',
+    composureShift: -26,
+    statusEffect: 'static',
+    statusChance: 0.4,
+    description: 'Arcing star-bolt strike with high static shock potential.',
+  },
+  'borealis-lance': {
+    id: 'borealis-lance',
+    name: 'Borealis Lance',
+    type: 'ice',
+    power: 88,
+    accuracy: 96,
+    category: 'special',
+    composureShift: -24,
+    statusEffect: 'frost',
+    statusChance: 0.35,
+    description: 'Crystalline prism spear that encases targets in frost.',
+  },
+  'ironcrest-breaker': {
+    id: 'ironcrest-breaker',
+    name: 'Ironcrest Breaker',
+    type: 'fighting',
+    power: 90,
+    accuracy: 96,
+    category: 'physical',
+    composureShift: -34,
+    description: 'Focused palm strike engineered to shatter enemy Composure.',
+  },
+  'lumina-venom': {
+    id: 'lumina-venom',
+    name: 'Lumina Venom',
+    type: 'poison',
+    power: 80,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -22,
+    statusEffect: 'sleep',
+    statusChance: 0.25,
+    description: 'Bioluminescent bayou toxin wave that clouds senses.',
+  },
+  'amber-quake': {
+    id: 'amber-quake',
+    name: 'Amber Quake',
+    type: 'ground',
+    power: 94,
+    accuracy: 95,
+    category: 'physical',
+    composureShift: -28,
+    description: 'Seismic canyon shockwave splitting the battle floor.',
+  },
+  'zephyr-dive': {
+    id: 'zephyr-dive',
+    name: 'Zephyr Dive',
+    type: 'flying',
+    power: 84,
+    accuracy: 98,
+    category: 'physical',
+    composureShift: -20,
+    description: 'High-altitude slipstream swoop trailing aurora ribbons.',
+  },
+  'prism-flare': {
+    id: 'prism-flare',
+    name: 'Prism Flare',
+    type: 'psychic',
+    power: 92,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -26,
+    description: 'Astral refraction beam bending twilight light into pure force.',
+  },
+  'lantern-swarm': {
+    id: 'lantern-swarm',
+    name: 'Lantern Swarm',
+    type: 'bug',
+    power: 78,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -20,
+    description: 'Dazzling thicket firefly volley that overwhelms guard stances.',
+  },
+  'starstone-avalanche': {
+    id: 'starstone-avalanche',
+    name: 'Starstone Crash',
+    type: 'rock',
+    power: 88,
+    accuracy: 92,
+    category: 'physical',
+    composureShift: -28,
+    description: 'Meteoritic basalt shards hurled in a luminous arc.',
+  },
+  'wispveil-eclipse': {
+    id: 'wispveil-eclipse',
+    name: 'Wispveil Grasp',
+    type: 'ghost',
+    power: 86,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -25,
+    statusEffect: 'sleep',
+    statusChance: 0.25,
+    description: 'Spectral twilight wisps phasing past physical armor.',
+  },
+  'celestial-wyrm': {
+    id: 'celestial-wyrm',
+    name: 'Celestial Wyrm',
+    type: 'dragon',
+    power: 98,
+    accuracy: 95,
+    category: 'special',
+    composureShift: -30,
+    description: 'Draconic star-stream surge resonating across the arena.',
+  },
+  'umbral-cleave': {
+    id: 'umbral-cleave',
+    name: 'Umbral Cleave',
+    type: 'dark',
+    power: 88,
+    accuracy: 98,
+    category: 'physical',
+    composureShift: -28,
+    description: 'Shadowed crescent slash that punishes exposed foes.',
+  },
+  'aegis-barrage': {
+    id: 'aegis-barrage',
+    name: 'Aegis Barrage',
+    type: 'steel',
+    power: 86,
+    accuracy: 98,
+    category: 'physical',
+    composureShift: -24,
+    description: 'Gleaming forged lance volley that bolsters the user.',
+  },
+  'moonbloom-chorus': {
+    id: 'moonbloom-chorus',
+    name: 'Moonbloom Chorus',
+    type: 'fairy',
+    power: 90,
+    accuracy: 100,
+    category: 'special',
+    composureShift: -26,
+    description: 'Starlit petal crescendo bathing the stage in fairy shimmer.',
+  },
+};
+
+export const SIGNATURE_MOVE_BY_TYPE: Record<ElementalType, string> = {
+  normal: 'starlight-pulse',
+  grass: 'emerald-gale',
+  fire: 'cinder-nova',
+  water: 'sapphire-surge',
+  electric: 'sky-thunder',
+  ice: 'borealis-lance',
+  fighting: 'ironcrest-breaker',
+  poison: 'lumina-venom',
+  ground: 'amber-quake',
+  flying: 'zephyr-dive',
+  psychic: 'prism-flare',
+  bug: 'lantern-swarm',
+  rock: 'starstone-avalanche',
+  ghost: 'wispveil-eclipse',
+  dragon: 'celestial-wyrm',
+  dark: 'umbral-cleave',
+  steel: 'aegis-barrage',
+  fairy: 'moonbloom-chorus',
+};
+
+export function resolveMoves(moveIds: string[]): MoveRecord[] {
+  return moveIds
+    .map((id) => MOVES_BY_ID[id])
+    .filter((m): m is MoveRecord => Boolean(m));
+}

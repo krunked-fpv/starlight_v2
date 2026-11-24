@@ -1,0 +1,23 @@
+{
+  "name": "starlight-v2",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pokémon: Starlight Island — Starlight v2 Cozy HD-2D & Celestial Diorama Graphical Reimagining",
+  "scripts": {
+    "dev": "vite",
+    "bake": "node scripts/bake-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run bake && tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "verify": "npm run build && npm run test:unit && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.1",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.2",
+    "vitest": "^3.1.1"
+  }
+}
