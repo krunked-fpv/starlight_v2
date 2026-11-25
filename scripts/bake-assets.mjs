@@ -358,6 +358,264 @@ function mapPixels(src, fn) {
   return out;
 }
 
+const BAYER_4X4 = [
+  [-0.46875, 0.03125, -0.34375, 0.15625],
+  [0.28125, -0.21875, 0.40625, -0.09375],
+  [-0.28125, 0.21875, -0.40625, 0.09375],
+  [0.46875, -0.03125, 0.34375, -0.15625],
+];
+
+function bayerAt(x, y) {
+  return BAYER_4X4[y & 3][x & 3];
+}
+
+function luma255(r, g, b) {
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+
+function pixelDist(a, b) {
+  const alphaDiff = Math.abs(a[3] - b[3]);
+  if (alphaDiff > 96) return 1000;
+  return (
+    Math.abs(a[0] - b[0]) * 0.30 +
+    Math.abs(a[1] - b[1]) * 0.59 +
+    Math.abs(a[2] - b[2]) * 0.11 +
+    alphaDiff * 0.8
+  );
+}
+
+function getWrappedPixel(img, x, y) {
+  const wx = ((x % img.width) + img.width) % img.width;
+  const wy = ((y % img.height) + img.height) % img.height;
+  const idx = (wy * img.width + wx) * 4;
+  return [img.data[idx], img.data[idx + 1], img.data[idx + 2], img.data[idx + 3]];
+}
+
+function getClampedOrEmptyPixel(img, x, y) {
+  if (x < 0 || y < 0 || x >= img.width || y >= img.height) {
+    return [0, 0, 0, 0];
+  }
+  const idx = (y * img.width + x) * 4;
+  return [img.data[idx], img.data[idx + 1], img.data[idx + 2], img.data[idx + 3]];
+}
+
+function mixRgba(c1, c2, t) {
+  const k = clamp(t, 0, 1);
+  return [
+    Math.round(lerp(c1[0], c2[0], k)),
+    Math.round(lerp(c1[1], c2[1], k)),
+    Math.round(lerp(c1[2], c2[2], k)),
+    Math.round(lerp(c1[3], c2[3], k)),
+  ];
+}
+
+/**
+ * Hue-shifts highlights gently warmer and shadows gently cooler (classic 16/32-bit pixel art craft)
+ * while adding subtle luminance crisping and optional 4x4 Bayer micro-dither.
+ */
+function enhancePixelCraft(src, { sharpen = 0.24, dither = 4.0, wrap = true, warmCool = 0.65 } = {}) {
+  const w = src.width;
+  const h = src.height;
+  const out = new PixelImage(w, h);
+  const sample = wrap
+    ? (x, y) => getWrappedPixel(src, x, y)
+    : (x, y) => getClampedOrEmptyPixel(src, x, y);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = sample(x, y);
+      if (p[3] < 20) continue;
+
+      const u = sample(x, y - 1);
+      const d = sample(x, y + 1);
+      const l = sample(x - 1, y);
+      const r = sample(x + 1, y);
+
+      let nr = p[0];
+      let ng = p[1];
+      let nb = p[2];
+
+      // Interior unsharp luminance crisping (skip edges bordering transparency to keep silhouettes clean)
+      const allOpaque = u[3] > 200 && d[3] > 200 && l[3] > 200 && r[3] > 200;
+      if (allOpaque && sharpen > 0.001) {
+        const avgR = (u[0] + d[0] + l[0] + r[0]) * 0.25;
+        const avgG = (u[1] + d[1] + l[1] + r[1]) * 0.25;
+        const avgB = (u[2] + d[2] + l[2] + r[2]) * 0.25;
+        const lum = luma255(p[0], p[1], p[2]);
+        // Protect dark outlines from ringing
+        const k = lum < 44 ? sharpen * 0.35 : sharpen;
+        nr += (p[0] - avgR) * k;
+        ng += (p[1] - avgG) * k;
+        nb += (p[2] - avgB) * k;
+      }
+
+      // Hue-shifted shadow/highlight curve (warm sunlight peaks, cool twilight crevices)
+      if (warmCool > 0.001) {
+        const lum01 = luma255(nr, ng, nb) / 255;
+        if (lum01 > 0.62) {
+          const hi = (lum01 - 0.62) * warmCool;
+          nr += hi * 10;
+          ng += hi * 6;
+          nb -= hi * 4;
+        } else if (lum01 < 0.36 && lum01 > 0.08) {
+          const lo = (0.36 - lum01) * warmCool;
+          nr -= lo * 8;
+          ng -= lo * 3;
+          nb += lo * 11;
+        }
+      }
+
+      // Subtle ordered 4x4 Bayer grain to keep pixel surfaces tactile and rich
+      if (dither > 0 && allOpaque) {
+        const b = bayerAt(x, y) * dither;
+        nr += b;
+        ng += b;
+        nb += b * 0.9;
+      }
+
+      out.setPixel(x, y, nr, ng, nb, p[3]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Edge-directed 2x pixel-art upscaler for seamless opaque tiles (32x32 -> 64x64).
+ * Uses EPX/Scale2x diagonal beveling with wrap-around sampling so edges stay crisp
+ * and diagonal shapes smooth organically without bilinear blur.
+ */
+function upscaleTile2x(src, edgeThresh = 24) {
+  const sw = src.width;
+  const sh = src.height;
+  const out = new PixelImage(sw * 2, sh * 2);
+
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const P = getWrappedPixel(src, x, y);
+      const A = getWrappedPixel(src, x, y - 1);
+      const B = getWrappedPixel(src, x + 1, y);
+      const C = getWrappedPixel(src, x - 1, y);
+      const D = getWrappedPixel(src, x, y + 1);
+
+      let p0 = P;
+      let p1 = P;
+      let p2 = P;
+      let p3 = P;
+
+      const diffAB = pixelDist(A, B);
+      const diffAC = pixelDist(A, C);
+      const diffDB = pixelDist(D, B);
+      const diffDC = pixelDist(D, C);
+      const diffCB = pixelDist(C, B);
+      const diffAD = pixelDist(A, D);
+
+      if (diffCB > edgeThresh && diffAD > edgeThresh) {
+        if (diffAC < edgeThresh) p0 = mixRgba(P, mixRgba(C, A, 0.5), 0.72);
+        if (diffAB < edgeThresh) p1 = mixRgba(P, mixRgba(A, B, 0.5), 0.72);
+        if (diffDC < edgeThresh) p2 = mixRgba(P, mixRgba(C, D, 0.5), 0.72);
+        if (diffDB < edgeThresh) p3 = mixRgba(P, mixRgba(D, B, 0.5), 0.72);
+      } else {
+        // Gentle directional sub-pixel contour modulation preserving crisp tone steps
+        if (diffAC < edgeThresh * 0.7 && pixelDist(P, A) < edgeThresh * 1.4) p0 = mixRgba(P, A, 0.25);
+        if (diffAB < edgeThresh * 0.7 && pixelDist(P, B) < edgeThresh * 1.4) p1 = mixRgba(P, B, 0.25);
+        if (diffDC < edgeThresh * 0.7 && pixelDist(P, C) < edgeThresh * 1.4) p2 = mixRgba(P, C, 0.25);
+        if (diffDB < edgeThresh * 0.7 && pixelDist(P, D) < edgeThresh * 1.4) p3 = mixRgba(P, D, 0.25);
+      }
+
+      const ox = x * 2;
+      const oy = y * 2;
+      out.setPixel(ox, oy, p0[0], p0[1], p0[2], 255);
+      out.setPixel(ox + 1, oy, p1[0], p1[1], p1[2], 255);
+      out.setPixel(ox, oy + 1, p2[0], p2[1], p2[2], 255);
+      out.setPixel(ox + 1, oy + 1, p3[0], p3[1], p3[2], 255);
+    }
+  }
+  return enhancePixelCraft(out, { sharpen: 0.28, dither: 3.2, wrap: true, warmCool: 0.65 });
+}
+
+/**
+ * Edge-directed 2x pixel-art upscaler for transparent sprites (props & overworld characters).
+ * Smooths 45-degree pixel staircases into crisp high-craft 32-bit curves while keeping
+ * binary transparent silhouettes and subtle top-left directional bevel relief.
+ */
+function upscaleSprite2x(src, { edgeThresh = 28, sharpen = 0.28, bevel = 0.10 } = {}) {
+  const sw = src.width;
+  const sh = src.height;
+  const out = new PixelImage(sw * 2, sh * 2);
+
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const P = getClampedOrEmptyPixel(src, x, y);
+      const A = getClampedOrEmptyPixel(src, x, y - 1);
+      const B = getClampedOrEmptyPixel(src, x + 1, y);
+      const C = getClampedOrEmptyPixel(src, x - 1, y);
+      const D = getClampedOrEmptyPixel(src, x, y + 1);
+
+      let p0 = P;
+      let p1 = P;
+      let p2 = P;
+      let p3 = P;
+
+      const diffCB = pixelDist(C, B);
+      const diffAD = pixelDist(A, D);
+
+      if (diffCB > edgeThresh && diffAD > edgeThresh) {
+        if (pixelDist(C, A) < edgeThresh) p0 = mixRgba(C, A, 0.5);
+        if (pixelDist(A, B) < edgeThresh) p1 = mixRgba(A, B, 0.5);
+        if (pixelDist(C, D) < edgeThresh) p2 = mixRgba(C, D, 0.5);
+        if (pixelDist(D, B) < edgeThresh) p3 = mixRgba(D, B, 0.5);
+      }
+
+      const ox = x * 2;
+      const oy = y * 2;
+      const setClean = (dx, dy, c) => {
+        if (c[3] < 128) {
+          out.setPixel(dx, dy, 0, 0, 0, 0);
+        } else {
+          out.setPixel(dx, dy, c[0], c[1], c[2], 255);
+        }
+      };
+      setClean(ox, oy, p0);
+      setClean(ox + 1, oy, p1);
+      setClean(ox, oy + 1, p2);
+      setClean(ox + 1, oy + 1, p3);
+    }
+  }
+
+  // Refine interior micro-contrast + directional top-left HD-2D pixel highlight bevel
+  const crafted = enhancePixelCraft(out, { sharpen, dither: 1.8, wrap: false, warmCool: 0.72 });
+  if (bevel <= 0.001) return crafted;
+
+  const final = crafted.clone();
+  for (let y = 1; y < crafted.height - 1; y++) {
+    for (let x = 1; x < crafted.width - 1; x++) {
+      const p = crafted.getPixel(x, y);
+      if (p[3] < 200) continue;
+      const lum = luma255(p[0], p[1], p[2]);
+      if (lum < 48) continue; // Keep dark outlines crisp and deep
+
+      const up = crafted.getPixel(x, y - 1);
+      const lt = crafted.getPixel(x - 1, y);
+      const dn = crafted.getPixel(x, y + 1);
+      const rt = crafted.getPixel(x + 1, y);
+
+      const upDark = up[3] < 128 || luma255(up[0], up[1], up[2]) < lum - 28;
+      const ltDark = lt[3] < 128 || luma255(lt[0], lt[1], lt[2]) < lum - 28;
+      const dnDark = dn[3] < 128 || luma255(dn[0], dn[1], dn[2]) < lum - 30;
+      const rtDark = rt[3] < 128 || luma255(rt[0], rt[1], rt[2]) < lum - 30;
+
+      if ((upDark || ltDark) && dn[3] > 200 && rt[3] > 200) {
+        const boost = 1 + bevel;
+        final.setPixel(x, y, p[0] * boost + 5, p[1] * boost + 4, p[2] * boost + 1, 255);
+      } else if ((dnDark || rtDark) && up[3] > 200 && lt[3] > 200) {
+        const dim = 1 - bevel * 0.72;
+        final.setPixel(x, y, p[0] * dim - 2, p[1] * dim - 1, p[2] * dim + 3, 255);
+      }
+    }
+  }
+  return final;
+}
+
 function tintTile(src, targetRgb, strength, gain = 1.0) {
   return mapPixels(src, (r, g, b, a) => {
     const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
@@ -388,52 +646,566 @@ function blendTiles(base, overlay, alphaFn) {
   });
 }
 
-function buildPathVariant(floorTile, pathTile, tintRgb, edgeStrength = 0.78) {
-  // Seamless biome road texture (no per-tile dark square border box; AutotileRenderer draws curbs on exposed edges)
-  const tintedPath = tintTile(pathTile, tintRgb, 0.56, 0.94);
-  return mapPixels(floorTile, (fr, fg, fb, fa, x, y) => {
+function setWrapped(img, x, y, r, g, b, a = 255) {
+  const wx = ((Math.round(x) % img.width) + img.width) % img.width;
+  const wy = ((Math.round(y) % img.height) + img.height) % img.height;
+  if (a >= 254) {
+    img.setPixel(wx, wy, r, g, b, 255);
+  } else {
+    img.blendPixel(wx, wy, r, g, b, a);
+  }
+}
+
+/**
+ * Adds hand-crafted 64x64 meadow grass blade clusters, tiny clovers, dappled shading,
+ * and optional fallen petals/spores/pebbles with wrap-around seamlessness.
+ */
+function detailGrass64(base64, seedLabel, pal) {
+  const out = base64.clone();
+  const rng = mulberry32(hashSeed(SEED, seedLabel));
+  const w = out.width;
+  const h = out.height;
+
+  // Soft sunlit vs cool dappled turf patches with ordered Bayer transition
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const wave =
+        Math.sin((x / w) * Math.PI * 2 + 0.6) * Math.cos((y / h) * Math.PI * 2 - 0.4) * 0.5 +
+        Math.sin(((x + y) / w) * Math.PI * 2) * 0.25;
+      const dithered = wave + bayerAt(x, y) * 0.30;
+      const [r, g, b, a] = out.getPixel(x, y);
+      if (dithered > 0.30) {
+        out.setPixel(x, y, r + 7, g + 9, b + 2, a);
+      } else if (dithered < -0.34) {
+        out.setPixel(x, y, r - 6, g - 4, b + 4, a);
+      }
+    }
+  }
+
+  // Softly blend extreme tile border 2px seam band so repeated meadow tiles never show square edges
+  const seamSnap = out.clone();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const edgeDist = Math.min(x, y, w - 1 - x, h - 1 - y);
+      if (edgeDist >= 2) continue;
+      const opposite = getWrappedPixel(seamSnap, x + (x < 2 ? -2 : x > w - 3 ? 2 : 0), y + (y < 2 ? -2 : y > h - 3 ? 2 : 0));
+      const cur = seamSnap.getPixel(x, y);
+      const t = edgeDist === 0 ? 0.38 : 0.18;
+      out.setPixel(x, y, lerp(cur[0], opposite[0], t), lerp(cur[1], opposite[1], t), lerp(cur[2], opposite[2], t), 255);
+    }
+  }
+
+  // Hand-crafted 3-blade pixel grass tufts (cool shadow root + mid stem + sunlit tip)
+  const tuftCount = pal.tuftCount ?? 11;
+  for (let i = 0; i < tuftCount; i++) {
+    const gx = Math.floor(rng() * w);
+    const gy = Math.floor(rng() * h);
+    const dir = rng() > 0.5 ? 1 : -1;
+    // Shadow root anchor
+    setWrapped(out, gx, gy + 1, pal.shadow[0], pal.shadow[1], pal.shadow[2], 195);
+    setWrapped(out, gx + 1, gy + 1, pal.shadow[0], pal.shadow[1], pal.shadow[2], 160);
+    setWrapped(out, gx - 1, gy + 1, pal.shadow[0], pal.shadow[1], pal.shadow[2], 145);
+    // Center tall blade
+    setWrapped(out, gx, gy, pal.mid[0], pal.mid[1], pal.mid[2], 235);
+    setWrapped(out, gx, gy - 1, pal.mid[0], pal.mid[1], pal.mid[2], 235);
+    setWrapped(out, gx + dir, gy - 2, pal.tip[0], pal.tip[1], pal.tip[2], 240);
+    // Side angled blades
+    setWrapped(out, gx - dir, gy, pal.mid[0], pal.mid[1], pal.mid[2], 220);
+    setWrapped(out, gx - dir * 2, gy - 1, pal.tip[0], pal.tip[1], pal.tip[2], 225);
+    setWrapped(out, gx + dir * 2, gy, pal.mid[0], pal.mid[1], pal.mid[2], 205);
+  }
+
+  // Subtle clover / wild pebble micro-accents
+  const accentCount = pal.accentCount ?? 4;
+  if (pal.accents && pal.accents.length > 0) {
+    for (let i = 0; i < accentCount; i++) {
+      const ax = Math.floor(rng() * w);
+      const ay = Math.floor(rng() * h);
+      const col = pal.accents[i % pal.accents.length];
+      setWrapped(out, ax, ay + 1, pal.shadow[0], pal.shadow[1], pal.shadow[2], 150);
+      setWrapped(out, ax, ay, col[0], col[1], col[2], 225);
+      if (i % 2 === 0) {
+        setWrapped(out, ax + 1, ay, Math.min(255, col[0] + 18), Math.min(255, col[1] + 18), Math.min(255, col[2] + 12), 205);
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Hand-crafted lush 64x64 tall grass tile with 3 depth-layered overlapping blade rows.
+ */
+function detailTallGrass64(base64, seedLabel) {
+  const out = base64.clone();
+  const rng = mulberry32(hashSeed(SEED, seedLabel));
+  // Deepen recessed soil/shadow floor slightly so crisp layered blades pop in 3D
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      const [r, g, b, a] = out.getPixel(x, y);
+      const lum = luma255(r, g, b);
+      if (lum < 78) {
+        out.setPixel(x, y, r * 0.82, g * 0.88, b * 0.94 + 4, a);
+      }
+    }
+  }
+
+  const rows = [14, 30, 46, 60];
+  for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+    const baseY = rows[rIdx];
+    for (let bx = 3; bx < 62; bx += 6) {
+      const jitterX = Math.floor((rng() - 0.5) * 3);
+      const x0 = bx + jitterX + (rIdx % 2 === 0 ? 0 : 2);
+      const bladeH = 10 + Math.floor(rng() * 5);
+      const lean = rng() > 0.5 ? 1 : -1;
+
+      for (let step = 0; step < bladeH; step++) {
+        const frac = step / Math.max(1, bladeH - 1);
+        const cx = x0 + Math.round(lean * frac * frac * 3.0);
+        const cy = baseY - step;
+
+        let col;
+        if (frac < 0.28) col = [14, 54, 44];
+        else if (frac < 0.58) col = [28, 108, 62];
+        else if (frac < 0.84) col = [62, 166, 78];
+        else col = [148, 232, 106];
+
+        // 1px dark undercut on left/shadow side of blade
+        setWrapped(out, cx - lean, cy, 12, 42, 38, 170);
+        setWrapped(out, cx, cy, col[0], col[1], col[2], 245);
+        if (frac < 0.68) {
+          setWrapped(out, cx + 1, cy, col[0] + 10, col[1] + 14, col[2] + 4, 225);
+        }
+      }
+      // Occasional morning dew highlight
+      if (rng() > 0.72) {
+        setWrapped(out, x0 + lean * 2, baseY - bladeH + 2, 220, 255, 198, 225);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Enriches 64x64 cobblestone / biome flagstone paths with crisp upper-left bevel highlights,
+ * cool recessed mortar depth, stone surface grain, and biome-specific mortar inlays.
+ */
+function buildPathVariant64(floorTile, pathTile, tintRgb, edgeStrength = 0.78, opts = {}) {
+  const tintedPath = tintTile(pathTile, tintRgb, opts.tintStrength ?? 0.56, opts.gain ?? 0.95);
+  const blended = mapPixels(floorTile, (fr, fg, fb, fa, x, y) => {
     const idx = (y * tintedPath.width + x) * 4;
     const pr = tintedPath.data[idx];
     const pg = tintedPath.data[idx + 1];
     const pb = tintedPath.data[idx + 2];
-    const pLum = (0.299 * pr + 0.587 * pg + 0.114 * pb) / 255;
-    // Let subtle biome ground peek naturally inside deeper cobblestone mortar joints
-    const mortarPeek = pLum < 0.34 ? 0.62 : 1.0;
-    const weight = clamp(edgeStrength * mortarPeek, 0.35, 0.92);
+    const pLum = luma255(pr, pg, pb) / 255;
+    const mortarPeek = pLum < 0.34 ? 0.58 : 1.0;
+    const weight = clamp(edgeStrength * mortarPeek, 0.34, 0.94);
     return [lerp(fr, pr, weight), lerp(fg, pg, weight), lerp(fb, pb, weight), fa];
   });
-}
 
-function buildWallVariant(baseWall, tintRgb, fleckRgb, fleckSeedLabel) {
-  const rng = mulberry32(hashSeed(SEED, fleckSeedLabel));
-  const out = tintTile(baseWall, tintRgb, 0.64, 0.94);
-  // Subtle organic rock-strata pixel shading without artificial per-tile grid stripes
-  for (let y = 0; y < 32; y++) {
-    for (let x = 0; x < 32; x++) {
-      const idx = (y * 32 + x) * 4;
-      const lum = (0.299 * out.data[idx] + 0.587 * out.data[idx + 1] + 0.114 * out.data[idx + 2]) / 255;
-      // Gently deepen rock crevices & brighten upper-left facet edges for crisp 16-bit mineral relief
-      if (lum < 0.28) {
-        out.data[idx] = clamp(Math.round(out.data[idx] * 0.86), 0, 255);
-        out.data[idx + 1] = clamp(Math.round(out.data[idx + 1] * 0.86), 0, 255);
-        out.data[idx + 2] = clamp(Math.round(out.data[idx + 2] * 0.90), 0, 255);
-      } else if (lum > 0.68 && ((x + y) & 1) === 0) {
-        out.data[idx] = clamp(Math.round(out.data[idx] * 1.07 + 4), 0, 255);
-        out.data[idx + 1] = clamp(Math.round(out.data[idx + 1] * 1.07 + 4), 0, 255);
-        out.data[idx + 2] = clamp(Math.round(out.data[idx + 2] * 1.07 + 5), 0, 255);
+  const w = blended.width;
+  const h = blended.height;
+  const out = blended.clone();
+  const rng = mulberry32(hashSeed(SEED, opts.seedLabel || `path_${tintRgb.join('_')}`));
+
+  // Chiseled 1px HD-2D stone bevel pass: brighten stone faces directly below/right of mortar seams
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = blended.getPixel(x, y);
+      const lum = luma255(p[0], p[1], p[2]) / 255;
+      const up = getWrappedPixel(blended, x, y - 1);
+      const lt = getWrappedPixel(blended, x - 1, y);
+      const dn = getWrappedPixel(blended, x, y + 1);
+      const rt = getWrappedPixel(blended, x + 1, y);
+      const upLum = luma255(up[0], up[1], up[2]) / 255;
+      const ltLum = luma255(lt[0], lt[1], lt[2]) / 255;
+      const dnLum = luma255(dn[0], dn[1], dn[2]) / 255;
+      const rtLum = luma255(rt[0], rt[1], rt[2]) / 255;
+
+      if (lum > 0.44 && (upLum < lum - 0.12 || ltLum < lum - 0.12)) {
+        // Warm sunlit upper-left cobble bevel
+        out.setPixel(x, y, p[0] * 1.12 + 12, p[1] * 1.11 + 10, p[2] * 1.06 + 4, 255);
+      } else if (lum > 0.40 && (dnLum < lum - 0.12 || rtLum < lum - 0.12)) {
+        // Cool undercut stone lower edge
+        out.setPixel(x, y, p[0] * 0.84, p[1] * 0.85, p[2] * 0.90 + 4, 255);
+      } else if (lum < 0.33) {
+        // Deepen mortar crevices slightly
+        out.setPixel(x, y, p[0] * 0.86, p[1] * 0.87, p[2] * 0.92, 255);
+      } else {
+        // Subtle tactile stone surface micro-grain
+        const d = bayerAt(x, y) * 5.0;
+        out.setPixel(x, y, p[0] + d, p[1] + d, p[2] + d * 0.9, 255);
       }
     }
   }
+
+  // Optional tiny biome flecks/moss/sparks nestled in mortar joints
+  if (opts.mortarAccent) {
+    const count = opts.mortarAccentCount ?? 10;
+    const acc = opts.mortarAccent;
+    for (let i = 0; i < count; i++) {
+      const mx = Math.floor(rng() * w);
+      const my = Math.floor(rng() * h);
+      const p = blended.getPixel(mx, my);
+      if (luma255(p[0], p[1], p[2]) < 118) {
+        setWrapped(out, mx, my, acc[0], acc[1], acc[2], 210);
+        setWrapped(out, mx + 1, my, Math.min(255, acc[0] + 18), Math.min(255, acc[1] + 18), Math.min(255, acc[2] + 14), 175);
+      }
+    }
+  }
+
+  // Seamlessly bridge alternating cobble courses across the 64x64 tile edges so contiguous
+  // village plazas & roads read as continuous hand-laid stonework with zero vertical/horizontal grid lines.
+  for (let y = 0; y < h; y++) {
+    const bridgeRow = ((y >> 4) & 1) === 0;
+    for (const bx of [0, 1, w - 2, w - 1]) {
+      const p = out.getPixel(bx, y);
+      const innerX = bx < 4 ? 4 : w - 5;
+      const inner = out.getPixel(innerX, y);
+      const blend = bridgeRow ? 0.82 : 0.42;
+      if (luma255(p[0], p[1], p[2]) < luma255(inner[0], inner[1], inner[2]) - 12 || bridgeRow) {
+        out.setPixel(
+          bx,
+          y,
+          lerp(p[0], inner[0], blend),
+          lerp(p[1], inner[1], blend),
+          lerp(p[2], inner[2], blend),
+          255,
+        );
+      }
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    const bridgeCol = ((x >> 4) & 1) === 1;
+    for (const by of [0, 1, h - 2, h - 1]) {
+      const p = out.getPixel(x, by);
+      const innerY = by < 4 ? 4 : h - 5;
+      const inner = out.getPixel(x, innerY);
+      const blend = bridgeCol ? 0.72 : 0.38;
+      if (luma255(p[0], p[1], p[2]) < luma255(inner[0], inner[1], inner[2]) - 14) {
+        out.setPixel(
+          x,
+          by,
+          lerp(p[0], inner[0], blend),
+          lerp(p[1], inner[1], blend),
+          lerp(p[2], inner[2], blend),
+          255,
+        );
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 cliff / biome wall tile with stratified rock fissures, chiseled bevels,
+ * ordered dithering, and crisp faceted mineral crystal clusters.
+ */
+function buildWallVariant64(baseWall64, tintRgb, fleckRgb, fleckSeedLabel) {
+  const rng = mulberry32(hashSeed(SEED, fleckSeedLabel));
+  const out = tintTile(baseWall64, tintRgb, 0.64, 0.95);
+  const w = out.width;
+  const h = out.height;
+
+  // Crisp stratified mineral relief + chiseled upper-left edge highlights
+  const ref = out.clone();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = ref.getPixel(x, y);
+      const lum = luma255(p[0], p[1], p[2]) / 255;
+      const up = getWrappedPixel(ref, x, y - 1);
+      const upLum = luma255(up[0], up[1], up[2]) / 255;
+
+      if (lum < 0.28) {
+        out.setPixel(x, y, p[0] * 0.80, p[1] * 0.82, p[2] * 0.90 + 4, 255);
+      } else if (lum - upLum > 0.10) {
+        // Sunlit stratified rock lip
+        out.setPixel(x, y, p[0] * 1.15 + 12, p[1] * 1.14 + 10, p[2] * 1.10 + 8, 255);
+      } else if (lum > 0.64) {
+        const b = bayerAt(x, y) * 8;
+        out.setPixel(x, y, p[0] * 1.06 + b, p[1] * 1.06 + b, p[2] * 1.08 + b, 255);
+      }
+    }
+  }
+
+  // Soft organic stone strata veins (blended cleanly into cliff face rather than harsh black lines)
+  for (let c = 0; c < 3; c++) {
+    let cx = 6 + Math.floor(rng() * (w - 16));
+    let cy = 28 + Math.floor(rng() * (h - 34));
+    const len = 8 + Math.floor(rng() * 7);
+    for (let step = 0; step < len; step++) {
+      const cur = out.getPixel(cx, cy);
+      setWrapped(out, cx, cy, cur[0] * 0.74, cur[1] * 0.76, cur[2] * 0.84, 210);
+      setWrapped(out, cx, cy + 1, cur[0] * 1.12 + 8, cur[1] * 1.12 + 8, cur[2] * 1.10 + 6, 175);
+      cx += 1;
+      if (rng() > 0.62) cy += rng() > 0.45 ? 1 : -1;
+    }
+  }
+
+  // Organic mineral crystal glints embedded ONLY inside the vertical cliff rock face (y >= 26)
   if (fleckRgb) {
-    for (let i = 0; i < 6; i++) {
-      const fx = 3 + Math.floor(rng() * 25);
-      const fy = 4 + Math.floor(rng() * 23);
-      // 1px dark undercut shadow makes embedded mineral crystal glints pop crisply
-      const under = out.getPixel(fx, Math.min(31, fy + 1));
-      out.setPixel(fx, Math.min(31, fy + 1), under[0] * 0.55, under[1] * 0.55, under[2] * 0.62, 255);
-      out.setPixel(fx, fy, fleckRgb[0], fleckRgb[1], fleckRgb[2], 255);
+    for (let i = 0; i < 5; i++) {
+      const fx = 6 + Math.floor(rng() * (w - 12));
+      const fy = 28 + Math.floor(rng() * (h - 34));
+      const under = out.getPixel(fx, Math.min(h - 1, fy + 2));
+      out.blendPixel(fx, Math.min(h - 1, fy + 2), under[0] * 0.52, under[1] * 0.52, under[2] * 0.64, 210);
+      out.blendPixel(fx + 1, Math.min(h - 1, fy + 1), fleckRgb[0] * 0.75, fleckRgb[1] * 0.75, fleckRgb[2] * 0.85, 220);
+      out.setPixel(fx, fy + 1, fleckRgb[0], fleckRgb[1], fleckRgb[2], 255);
+      out.setPixel(
+        fx,
+        fy,
+        Math.min(255, fleckRgb[0] + 44),
+        Math.min(255, fleckRgb[1] + 44),
+        Math.min(255, fleckRgb[2] + 38),
+        255,
+      );
       if (i % 2 === 0) {
-        out.setPixel(fx + 1, fy, Math.min(255, fleckRgb[0] + 24), Math.min(255, fleckRgb[1] + 24), Math.min(255, fleckRgb[2] + 24), 255);
+        out.blendPixel(fx - 1, fy + 1, fleckRgb[0] * 0.9, fleckRgb[1] * 0.9, fleckRgb[2], 195);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 wind-rippled sand tile with Bayer-dithered crests, shells & silica glints.
+ */
+function detailSand64(base64, seedLabel, opts = {}) {
+  const out = base64.clone();
+  const rng = mulberry32(hashSeed(SEED, seedLabel));
+  const w = out.width;
+  const h = out.height;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const ripple = Math.sin((y / h) * Math.PI * 6 + Math.sin((x / w) * Math.PI * 2) * 1.4);
+      const d = ripple + bayerAt(x, y) * 0.45;
+      const [r, g, b, a] = out.getPixel(x, y);
+      if (d > 0.62) {
+        out.setPixel(x, y, r + 13, g + 11, b + 5, a);
+      } else if (d < -0.58) {
+        out.setPixel(x, y, r - 11, g - 12, b - 7, a);
+      }
+    }
+  }
+
+  // Tiny scattered sea shells, warm pebbles, and golden silica sparkles
+  const pebbleCount = opts.pebbleCount ?? 9;
+  for (let i = 0; i < pebbleCount; i++) {
+    const px = Math.floor(rng() * w);
+    const py = Math.floor(rng() * h);
+    if (i % 3 === 0) {
+      // Spiral tiny pixel shell
+      setWrapped(out, px, py + 1, 162, 124, 82, 170);
+      setWrapped(out, px, py, 255, 240, 214, 235);
+      setWrapped(out, px + 1, py, 244, 206, 174, 225);
+      setWrapped(out, px, py - 1, 255, 248, 232, 220);
+    } else if (i % 3 === 1) {
+      // Sunlit quartz grain
+      setWrapped(out, px, py, 255, 250, 226, 205);
+    } else {
+      // Warm sandstone pebble
+      setWrapped(out, px, py + 1, 146, 108, 68, 165);
+      setWrapped(out, px, py, 198, 156, 104, 215);
+    }
+  }
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 wooden boardwalk planks with wood grain, bevels, and iron nail heads.
+ */
+function detailBridge64(base64) {
+  const out = base64.clone();
+  const rng = mulberry32(hashSeed(SEED, 'tile_7_bridge_64'));
+  const plankH = 8;
+  for (let y = 0; y < 64; y++) {
+    const py = y % plankH;
+    const plankIdx = Math.floor(y / plankH);
+    const plankShift = (plankIdx % 3 - 1) * 5;
+    for (let x = 0; x < 64; x++) {
+      const [r, g, b] = out.getPixel(x, y);
+      if (py === 0) {
+        // Dark beveled gap between planks
+        out.setPixel(x, y, r * 0.42, g * 0.40, b * 0.46, 255);
+      } else if (py === 1) {
+        // Crisp warm top wood highlight
+        out.setPixel(x, y, r * 1.18 + 14 + plankShift, g * 1.15 + 10 + plankShift, b * 1.08 + 4, 255);
+      } else if (py === plankH - 1) {
+        // Lower wood shadow lip
+        out.setPixel(x, y, r * 0.78 + plankShift, g * 0.76 + plankShift, b * 0.80, 255);
+      } else {
+        // Fine horizontal wood grain streaks
+        const grain = Math.sin((x + plankIdx * 17) * 0.28 + py * 0.9) * 6 + bayerAt(x, y) * 3;
+        out.setPixel(x, y, r + plankShift + grain, g + plankShift + grain * 0.85, b + grain * 0.5, 255);
+      }
+    }
+    // Iron bolt rivets near left and right plank rails
+    if (py === 3 || py === 4) {
+      const isTop = py === 3;
+      const nailCol = isTop ? [148, 156, 178] : [54, 48, 66];
+      out.setPixel(5, y, nailCol[0], nailCol[1], nailCol[2], 255);
+      out.setPixel(6, y, nailCol[0] - 18, nailCol[1] - 18, nailCol[2] - 12, 255);
+      out.setPixel(57, y, nailCol[0], nailCol[1], nailCol[2], 255);
+      out.setPixel(58, y, nailCol[0] - 18, nailCol[1] - 18, nailCol[2] - 12, 255);
+    }
+    // Subtle vertical plank split on alternating boards
+    if (py >= 1 && py < plankH && rng() > 0.72) {
+      const sx = 18 + ((plankIdx * 13) % 28);
+      out.blendPixel(sx, y, 42, 24, 16, 130);
+    }
+  }
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 water / caustic / reef tile detailing.
+ */
+function detailWater64(base64, kind, seedLabel) {
+  const out = base64.clone();
+  const rng = mulberry32(hashSeed(SEED, seedLabel));
+
+  if (kind === 'deep') {
+    for (let i = 0; i < 14; i++) {
+      const wx = Math.floor(rng() * 64);
+      const wy = Math.floor(rng() * 64);
+      const len = 5 + Math.floor(rng() * 6);
+      for (let k = 0; k < len; k++) {
+        const arch = k === 0 || k === len - 1 ? 1 : 0;
+        setWrapped(out, wx + k, wy + arch + 1, 8, 26, 72, 175);
+        setWrapped(out, wx + k, wy + arch, 54, 128, 212, 165);
+        if (k === Math.floor(len * 0.5)) {
+          setWrapped(out, wx + k, wy, 158, 224, 255, 210);
+        }
+      }
+    }
+  } else if (kind === 'shallow' || kind === 'reef') {
+    // Crisp crystalline pixel caustics
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const c1 = Math.sin((x / 64) * Math.PI * 6 + Math.cos((y / 64) * Math.PI * 4) * 1.4);
+        const c2 = Math.cos((y / 64) * Math.PI * 6 - Math.sin((x / 64) * Math.PI * 4) * 1.2);
+        const val = c1 * c2;
+        if (val > 0.72) {
+          const [r, g, b] = out.getPixel(x, y);
+          out.setPixel(x, y, r + 26, g + 34, b + 32, 255);
+        } else if (val < -0.68) {
+          const [r, g, b] = out.getPixel(x, y);
+          out.setPixel(x, y, r * 0.90, g * 0.93, b * 0.98, 255);
+        }
+      }
+    }
+    if (kind === 'reef') {
+      // Tiny crisp sea-sparkle bubbles & coral highlights
+      for (let i = 0; i < 8; i++) {
+        const bx = Math.floor(rng() * 64);
+        const by = Math.floor(rng() * 64);
+        setWrapped(out, bx, by, 215, 252, 255, 215);
+        setWrapped(out, bx + 1, by, 140, 232, 248, 175);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 molten lava tile with beveled basalt plates & bright fissures.
+ */
+function detailLava64(base64) {
+  const out = base64.clone();
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      const [r, g, b] = base64.getPixel(x, y);
+      const up = getWrappedPixel(base64, x, y - 1);
+      const isHot = r > 175 && g > 70;
+      const upHot = up[0] > 175 && up[1] > 70;
+      if (isHot) {
+        const heat = clamp((r + g * 0.8 - 220) / 180, 0, 1);
+        out.setPixel(
+          x,
+          y,
+          Math.min(255, r + 18),
+          Math.min(255, g + heat * 36),
+          Math.min(255, b + heat * 48),
+          255,
+        );
+      } else if (upHot) {
+        // Heated glowing rim along cooled basalt edge
+        out.setPixel(x, y, r + 34, g + 10, b, 255);
+      } else {
+        // Deepen cooled obsidian basalt crust with Bayer grain
+        const d = bayerAt(x, y) * 6;
+        out.setPixel(x, y, r * 0.84 + d, g * 0.80 + d, b * 0.92 + 6 + d, 255);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 Iron Crown beveled steel fortress flagstones (replaces blurry 4-block master).
+ */
+function detailCrownSteel64(base64) {
+  const out = base64.clone();
+  const cell = 32;
+  for (let y = 0; y < 64; y++) {
+    const ly = y % cell;
+    const rowIdx = Math.floor(y / cell);
+    for (let x = 0; x < 64; x++) {
+      const lx = (x + rowIdx * 16) % cell;
+      const [br, bg, bb] = out.getPixel(x, y);
+      const diagSheen = Math.sin((lx - ly) * 0.24) * 9 + bayerAt(x, y) * 4;
+      let r = lerp(br, 92, 0.42) + diagSheen;
+      let g = lerp(bg, 108, 0.42) + diagSheen;
+      let b = lerp(bb, 134, 0.42) + diagSheen * 1.1;
+
+      if (lx === 0 || ly === 0) {
+        r = 34; g = 42; b = 64;
+      } else if (lx === 1 || ly === 1) {
+        r = 166; g = 186; b = 216;
+      } else if (lx === cell - 1 || ly === cell - 1) {
+        r = 52; g = 64; b = 90;
+      } else if (
+        (lx === 4 || lx === cell - 5) &&
+        (ly === 4 || ly === cell - 5)
+      ) {
+        // Steel corner rivets
+        r = 188; g = 212; b = 238;
+      } else if (
+        (lx === 4 || lx === cell - 5) &&
+        (ly === 5 || ly === cell - 4)
+      ) {
+        r = 38; g = 48; b = 72;
+      } else if (lx >= 13 && lx <= 18 && (ly === 15 || ly === 16)) {
+        // Recessed runic plate notch
+        r = 112; g = 168; b = 214;
+      }
+      out.setPixel(x, y, r, g, b, 255);
+    }
+  }
+  return out;
+}
+
+/**
+ * Hand-crafted 64x64 Terastal prismatic diamond facet floor with crisp specular edges.
+ */
+function detailTerastal64(base64) {
+  const out = base64.clone();
+  for (let y = 0; y < 64; y++) {
+    for (let x = 0; x < 64; x++) {
+      const [r, g, b] = base64.getPixel(x, y);
+      const d1 = (x + y) % 16;
+      const d2 = ((x - y) % 16 + 16) % 16;
+      if (d1 === 0 || d2 === 0) {
+        // Razor-crisp bright prismatic facet ridge
+        out.setPixel(x, y, Math.min(255, r + 52), Math.min(255, g + 58), Math.min(255, b + 64), 255);
+      } else if (d1 === 1 || d2 === 1) {
+        // Cool internal refraction bevel
+        out.setPixel(x, y, r * 0.84, g * 0.88, Math.min(255, b * 1.02 + 8), 255);
+      } else {
+        const spark = (d1 === 8 && d2 === 8) ? 38 : bayerAt(x, y) * 5;
+        out.setPixel(x, y, r + spark, g + spark, b + spark, 255);
       }
     }
   }
@@ -484,127 +1256,221 @@ function writeSobelNormalRegion(normalImg, srcImg, ox, oy, tw, th, strength = 2.
 }
 
 // -----------------------------------------------------------------------------
-// 1. Terrain Atlas Baker (TILE 0..60 -> 8x8 @ 32x32 = 256x256)
+// 1. Terrain Atlas Baker (TILE 0..60 -> 8x8 @ 64x64 HD-2D = 512x512)
 // -----------------------------------------------------------------------------
 function bakeTerrainAtlases() {
+  const load64 = (name, edgeThresh = 24) =>
+    upscaleTile2x(new PixelImage(32, 32, loadMasterPng(`tiles/${name}.png`).data), edgeThresh);
+
   const M = {
-    bridge: new PixelImage(32, 32, loadMasterPng('tiles/bridge.png').data),
-    canyonGrass: new PixelImage(32, 32, loadMasterPng('tiles/canyon_grass.png').data),
-    caveFloor: new PixelImage(32, 32, loadMasterPng('tiles/cave_floor.png').data),
-    cliffWall: new PixelImage(32, 32, loadMasterPng('tiles/cliff_wall.png').data),
-    crownFloor: new PixelImage(32, 32, loadMasterPng('tiles/crown_floor.png').data),
-    deepWater: new PixelImage(32, 32, loadMasterPng('tiles/deep_water.png').data),
-    faeGrass: new PixelImage(32, 32, loadMasterPng('tiles/fae_grass.png').data),
-    flowerGrass: new PixelImage(32, 32, loadMasterPng('tiles/flower_grass.png').data),
-    grass: new PixelImage(32, 32, loadMasterPng('tiles/grass.png').data),
-    iceWall: new PixelImage(32, 32, loadMasterPng('tiles/ice_wall.png').data),
-    lava: new PixelImage(32, 32, loadMasterPng('tiles/lava.png').data),
-    marshGrass: new PixelImage(32, 32, loadMasterPng('tiles/marsh_grass.png').data),
-    path: new PixelImage(32, 32, loadMasterPng('tiles/path.png').data),
-    reefWater: new PixelImage(32, 32, loadMasterPng('tiles/reef_water.png').data),
-    riftFloor: new PixelImage(32, 32, loadMasterPng('tiles/rift_floor.png').data),
-    runeFlagstone: new PixelImage(32, 32, loadMasterPng('tiles/rune_flagstone.png').data),
-    sanctumFloor: new PixelImage(32, 32, loadMasterPng('tiles/sanctum_floor.png').data),
-    sand: new PixelImage(32, 32, loadMasterPng('tiles/sand.png').data),
-    sandstoneWall: new PixelImage(32, 32, loadMasterPng('tiles/sandstone_wall.png').data),
-    shallowWater: new PixelImage(32, 32, loadMasterPng('tiles/shallow_water.png').data),
-    snowIce: new PixelImage(32, 32, loadMasterPng('tiles/snow_ice.png').data),
-    tallGrass: new PixelImage(32, 32, loadMasterPng('tiles/tall_grass.png').data),
-    terastalFloor: new PixelImage(32, 32, loadMasterPng('tiles/terastal_floor.png').data),
-    volcanoFloor: new PixelImage(32, 32, loadMasterPng('tiles/volcano_floor.png').data),
+    bridge: load64('bridge', 20),
+    canyonGrass: load64('canyon_grass', 24),
+    caveFloor: load64('cave_floor', 24),
+    cliffWall: load64('cliff_wall', 22),
+    crownFloor: load64('crown_floor', 20),
+    deepWater: load64('deep_water', 22),
+    faeGrass: load64('fae_grass', 24),
+    flowerGrass: load64('flower_grass', 22),
+    grass: load64('grass', 24),
+    iceWall: load64('ice_wall', 22),
+    lava: load64('lava', 22),
+    marshGrass: load64('marsh_grass', 24),
+    path: load64('path', 20),
+    reefWater: load64('reef_water', 22),
+    riftFloor: load64('rift_floor', 22),
+    runeFlagstone: load64('rune_flagstone', 20),
+    sanctumFloor: load64('sanctum_floor', 20),
+    sand: load64('sand', 22),
+    sandstoneWall: load64('sandstone_wall', 20),
+    shallowWater: load64('shallow_water', 22),
+    snowIce: load64('snow_ice', 22),
+    tallGrass: load64('tall_grass', 22),
+    terastalFloor: load64('terastal_floor', 18),
+    volcanoFloor: load64('volcano_floor', 22),
   };
 
   const tiles = new Array(61);
 
   // Core Village & Overworld (0..17)
-  tiles[0] = M.grass.clone();
-  // 1: PATH (gently tone-balanced warm village cobble so overlapping lanterns stay golden without clipping white)
-  tiles[1] = mapPixels(M.path, (r, g, b, a) => {
-    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    const mul = lum > 0.62 ? 0.88 : lum < 0.36 ? 0.92 : 0.93;
-    return [r * mul, g * mul * 0.99, b * mul * 0.96, a];
+  tiles[0] = detailGrass64(M.grass, 'tile_0_grass', {
+    shadow: [26, 86, 46],
+    mid: [58, 152, 74],
+    tip: [132, 212, 102],
+    tuftCount: 12,
+    accentCount: 4,
+    accents: [[116, 198, 92], [186, 224, 134], [244, 232, 156]],
   });
-  tiles[2] = M.tallGrass.clone();
-  // 3: TREE ground bed (lush shaded moss & woodland root floor — NO flat painted green ball peeking behind real tree props!)
+
+  // 1: PATH (crisp chiseled warm village cobblestone with mossy joints)
+  tiles[1] = (() => {
+    const balanced = mapPixels(M.path, (r, g, b, a) => {
+      const lum = luma255(r, g, b) / 255;
+      const mul = lum > 0.62 ? 0.89 : lum < 0.36 ? 0.90 : 0.94;
+      return [r * mul, g * mul * 0.99, b * mul * 0.96, a];
+    });
+    return buildPathVariant64(tiles[0], balanced, [204, 184, 146], 0.90, {
+      tintStrength: 0.22,
+      gain: 1.0,
+      seedLabel: 'tile_1_village_cobble',
+      mortarAccent: [68, 142, 74],
+      mortarAccentCount: 9,
+    });
+  })();
+
+  // 2: TALL_GRASS (lush 3-depth overlapping curved pixel grass blades)
+  tiles[2] = detailTallGrass64(M.tallGrass, 'tile_2_tall_grass');
+
+  // 3: TREE ground bed (seamless grass with Bayer-dithered woodland moss & exposed root bed)
   tiles[3] = (() => {
-    const t = M.grass.clone();
-    const rng = mulberry32(hashSeed(SEED, 'tile_3_tree_bed'));
-    for (let y = 0; y < 32; y++) {
-      for (let x = 0; x < 32; x++) {
-        const dx = (x - 15.5) / 13.5;
-        const dy = (y - 17.5) / 11.5;
+    const t = tiles[0].clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_3_tree_bed_64'));
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const dx = (x - 31.5) / 27.0;
+        const dy = (y - 35.0) / 23.0;
         const d = Math.hypot(dx, dy);
         const [r, g, b, a] = t.getPixel(x, y);
-        if (d < 1.0) {
-          const shade = lerp(0.68, 0.94, d * d);
-          const mossy = rng() > 0.82 ? -8 : rng() < 0.12 ? 6 : 0;
-          t.setPixel(x, y, r * shade + mossy, g * (shade + 0.03) + mossy, b * shade + 4, a);
+        if (d < 1.05) {
+          const shade = lerp(0.64, 0.96, clamp(d * d + bayerAt(x, y) * 0.08, 0, 1));
+          const mossy = rng() > 0.82 ? -9 : rng() < 0.14 ? 7 : 0;
+          t.setPixel(x, y, r * shade + mossy, g * (shade + 0.04) + mossy, b * shade + 5, a);
         }
       }
     }
     return t;
   })();
-  tiles[4] = M.deepWater.clone();
-  tiles[5] = M.shallowWater.clone();
-  tiles[6] = M.sand.clone();
-  tiles[7] = M.bridge.clone();
-  tiles[8] = buildWallVariant(M.cliffWall, [68, 82, 122], [132, 224, 255], 'tile_8_cave_wall');
-  tiles[9] = M.caveFloor.clone();
-  tiles[10] = buildPathVariant(M.caveFloor, M.path, [94, 122, 168], 0.75);
-  // 11: WALL (cottage warm cream & timber masonry)
+
+  tiles[4] = detailWater64(M.deepWater, 'deep', 'tile_4_deep_water');
+  tiles[5] = detailWater64(M.shallowWater, 'shallow', 'tile_5_shallow_water');
+  tiles[6] = detailSand64(M.sand, 'tile_6_sand', { pebbleCount: 10 });
+  tiles[7] = detailBridge64(M.bridge);
+  tiles[8] = buildWallVariant64(M.cliffWall, [68, 82, 126], [132, 228, 255], 'tile_8_cave_wall');
+
+  // 9: CAVE_FLOOR (crisp subterranean slate with mineral flecks & crevices)
+  tiles[9] = (() => {
+    const c = M.caveFloor.clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_9_cave_floor'));
+    for (let i = 0; i < 10; i++) {
+      const cx = Math.floor(rng() * 64);
+      const cy = Math.floor(rng() * 64);
+      setWrapped(c, cx, cy + 1, 24, 30, 56, 185);
+      setWrapped(c, cx, cy, 118, 174, 224, 195);
+      if (i % 3 === 0) setWrapped(c, cx + 1, cy - 1, 172, 232, 255, 225);
+    }
+    return c;
+  })();
+
+  tiles[10] = buildPathVariant64(tiles[9], M.path, [94, 126, 178], 0.78, {
+    seedLabel: 'tile_10_cave_path',
+    mortarAccent: [114, 212, 252],
+    mortarAccentCount: 7,
+  });
+
+  // 11: WALL (cottage warm plaster, half-timber grain, stone plinth base)
   tiles[11] = (() => {
-    const w = tintTile(M.sandstoneWall, [224, 206, 176], 0.65, 1.04);
-    for (let x = 0; x < 32; x++) {
-      for (let y = 0; y < 32; y++) {
-        if (x < 3 || x > 28 || y === 15 || y === 16) {
-          w.setPixel(x, y, 114, 76, 48, 255);
-        } else if (y >= 27) {
-          w.setPixel(x, y, 98, 92, 104, 255);
+    const w = tintTile(M.sandstoneWall, [228, 210, 178], 0.66, 1.04);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const isTimber = x < 6 || x > 57 || (y >= 30 && y <= 33);
+        if (isTimber) {
+          const edge = x === 0 || x === 5 || x === 58 || x === 63 || y === 30 || y === 33;
+          const hi = x === 1 || x === 59 || y === 31;
+          const grain = ((x + y * 3) & 3) === 0 ? -7 : 4;
+          if (edge) w.setPixel(x, y, 74, 46, 28, 255);
+          else if (hi) w.setPixel(x, y, 148, 102, 64, 255);
+          else w.setPixel(x, y, 116 + grain, 76 + grain, 48 + grain * 0.5, 255);
+        } else if (y >= 52) {
+          // Chiseled stone masonry foundation
+          const seamY = y === 52 || y === 58;
+          const seamX = (x + (y >= 58 ? 8 : 0)) % 16 === 0;
+          if (seamY || seamX) w.setPixel(x, y, 54, 52, 70, 255);
+          else if (y === 53 || y === 59) w.setPixel(x, y, 146, 144, 162, 255);
+          else w.setPixel(x, y, 102 + bayerAt(x, y) * 10, 98 + bayerAt(x, y) * 10, 116 + bayerAt(x, y) * 10, 255);
         }
       }
     }
     return w;
   })();
-  // 12: ROOF (indigo-slate shingle roof with warm gold ridge trim)
+
+  // 12: ROOF (crisp scalloped indigo-slate shingles with gilded brass eave trim)
   tiles[12] = (() => {
-    const r = tintTile(M.cliffWall, [64, 82, 146], 0.78, 1.05);
-    for (let y = 0; y < 32; y++) {
-      const rowPhase = (y >> 2) & 1;
-      for (let x = 0; x < 32; x++) {
-        if (y % 4 === 0) {
-          r.setPixel(x, y, 36, 46, 92, 255);
-        } else if ((x + rowPhase * 4) % 8 === 0) {
-          r.setPixel(x, y, 44, 58, 112, 255);
-        } else if (y === 30) {
-          r.setPixel(x, y, 232, 192, 104, 255);
+    const r = tintTile(M.cliffWall, [64, 84, 152], 0.78, 1.04);
+    for (let y = 0; y < 64; y++) {
+      const rowIdx = Math.floor(y / 8);
+      const ly = y % 8;
+      const xOff = (rowIdx & 1) * 8;
+      for (let x = 0; x < 64; x++) {
+        const lx = (x + xOff) % 16;
+        if (y >= 59 && y <= 61) {
+          // Gilded brass eave ridge
+          const col = y === 59 ? [255, 224, 134] : y === 60 ? [226, 182, 86] : [132, 92, 34];
+          r.setPixel(x, y, col[0], col[1], col[2], 255);
+        } else if (ly === 0 || (ly === 7 && (lx === 0 || lx === 15))) {
+          r.setPixel(x, y, 28, 36, 76, 255);
+        } else if (lx === 0) {
+          r.setPixel(x, y, 38, 50, 98, 255);
+        } else if (ly === 1 && lx > 1 && lx < 14) {
+          r.setPixel(x, y, 112, 136, 206, 255);
+        } else if (ly === 6) {
+          r.setPixel(x, y, 48, 62, 118, 255);
+        } else {
+          const [br, bg, bb] = r.getPixel(x, y);
+          const shade = bayerAt(x, y) * 8 + (lx < 8 ? 5 : -4);
+          r.setPixel(x, y, br + shade, bg + shade, bb + shade * 1.1, 255);
         }
       }
     }
     return r;
   })();
-  // 13: FLOWER (harmonize background grass foliage with tile_0 so flower patches blend organically into meadows)
-  tiles[13] = mapPixels(M.flowerGrass, (r, g, b, a, x, y) => {
-    const isBlossom = r > g + 14 || b > g + 12 || (r > 180 && g > 165);
-    if (isBlossom) return [r, g, b, a];
-    const [gr, gg, gb] = M.grass.getPixel(x, y);
-    return [lerp(r, gr, 0.52), lerp(g, gg, 0.52), lerp(b, gb, 0.52), a];
-  });
-  // 14: SIGN ground bed (grass with subtle worn pebble footing under the real signpost prop — zero duplicate painted sign!)
+
+  // 13: FLOWER (harmonized grass + crisp hand-pixelled 5-petal wildflowers)
+  tiles[13] = (() => {
+    const f = mapPixels(M.flowerGrass, (r, g, b, a, x, y) => {
+      const isBlossom = r > g + 16 || b > g + 14 || (r > 186 && g > 170);
+      if (isBlossom) return [r, g, b, a];
+      const [gr, gg, gb] = tiles[0].getPixel(x, y);
+      return [lerp(r, gr, 0.58), lerp(g, gg, 0.58), lerp(b, gb, 0.58), a];
+    });
+    const rng = mulberry32(hashSeed(SEED, 'tile_13_blossoms_64'));
+    const petals = [
+      [255, 136, 192],
+      [255, 224, 92],
+      [136, 214, 255],
+      [255, 244, 232],
+    ];
+    for (let i = 0; i < 7; i++) {
+      const bx = 6 + Math.floor(rng() * 52);
+      const by = 6 + Math.floor(rng() * 52);
+      const col = petals[i % petals.length];
+      // Dark green calyx leaves under blossom
+      setWrapped(f, bx - 1, by + 2, 24, 88, 46, 235);
+      setWrapped(f, bx + 1, by + 2, 32, 108, 54, 235);
+      // 4 crisp petals + bright golden center
+      setWrapped(f, bx, by - 1, col[0], col[1], col[2], 255);
+      setWrapped(f, bx, by + 1, col[0] * 0.86, col[1] * 0.86, col[2] * 0.90, 255);
+      setWrapped(f, bx - 1, by, col[0], col[1], col[2], 255);
+      setWrapped(f, bx + 1, by, col[0] * 0.92, col[1] * 0.92, col[2] * 0.95, 255);
+      setWrapped(f, bx, by, 255, 248, 178, 255);
+    }
+    return f;
+  })();
+
+  // 14: SIGN ground bed (seamless grass with worn earthen pebble footing pad)
   tiles[14] = (() => {
-    const s = M.grass.clone();
-    const rng = mulberry32(hashSeed(SEED, 'tile_14_sign_bed'));
-    for (let y = 18; y <= 29; y++) {
-      for (let x = 9; x <= 22; x++) {
-        const d = Math.hypot((x - 15.5) / 6.5, (y - 24) / 5.0);
+    const s = tiles[0].clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_14_sign_bed_64'));
+    for (let y = 34; y <= 58; y++) {
+      for (let x = 16; x <= 46; x++) {
+        const d = Math.hypot((x - 31.5) / 14.0, (y - 46) / 11.0);
         if (d < 1.0) {
           const [r, g, b] = s.getPixel(x, y);
-          const mixT = (1 - d) * 0.62;
-          const pebble = rng() > 0.84 ? 14 : rng() < 0.16 ? -12 : 0;
+          const mixT = clamp((1 - d) * 0.68 + bayerAt(x, y) * 0.12, 0, 0.78);
+          const pebble = rng() > 0.84 ? 18 : rng() < 0.16 ? -14 : 0;
           s.setPixel(
             x,
             y,
-            lerp(r, 148 + pebble, mixT),
-            lerp(g, 134 + pebble, mixT),
+            lerp(r, 152 + pebble, mixT),
+            lerp(g, 136 + pebble, mixT),
             lerp(b, 104 + pebble, mixT),
             255,
           );
@@ -613,52 +1479,63 @@ function bakeTerrainAtlases() {
     }
     return s;
   })();
-  // 15: HEAL (refined carved starlight plaza tile under healing fountain)
+
+  // 15: HEAL (ornate 64x64 carved celestial fountain plaza compass mosaic)
   tiles[15] = (() => {
-    const h = blendTiles(M.sanctumFloor, M.runeFlagstone, () => 0.42);
-    for (let y = 0; y < 32; y++) {
-      for (let x = 0; x < 32; x++) {
-        const dx = Math.abs(x - 15.5);
-        const dy = Math.abs(y - 15.5);
+    const h = blendTiles(M.sanctumFloor, M.runeFlagstone, () => 0.44);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const dx = Math.abs(x - 31.5);
+        const dy = Math.abs(y - 31.5);
         const dist = Math.hypot(dx, dy);
-        if (Math.abs(dist - 12.0) < 0.9) {
-          h.blendPixel(x, y, 118, 206, 232, 135);
-        } else if (Math.max(dx, dy) > 13.5) {
-          h.blendPixel(x, y, 42, 54, 88, 120);
-        } else if (Math.abs(dx + dy - 8.0) < 0.8) {
-          h.blendPixel(x, y, 148, 224, 212, 115);
+        if (Math.abs(dist - 24.0) < 1.4) {
+          h.blendPixel(x, y, 128, 224, 246, 175);
+        } else if (Math.abs(dist - 25.8) < 0.9) {
+          h.blendPixel(x, y, 36, 48, 86, 145);
+        } else if (Math.max(dx, dy) > 27.5 && Math.max(dx, dy) < 29.5) {
+          h.blendPixel(x, y, 228, 194, 108, 170);
+        } else if (Math.abs(dx + dy - 16.0) < 1.2) {
+          h.blendPixel(x, y, 156, 236, 224, 150);
         }
       }
     }
     return h;
   })();
-  // 16: SHRINE (celestial carved shrine dais tile with subtle gold-trim stone inlay)
+
+  // 16: SHRINE (ornate 64x64 celestial carved dais with gilded double-bevel inlay)
   tiles[16] = (() => {
     const s = M.runeFlagstone.clone();
-    for (let y = 0; y < 32; y++) {
-      for (let x = 0; x < 32; x++) {
-        const dx = Math.abs(x - 15.5);
-        const dy = Math.abs(y - 15.5);
-        if (Math.max(dx, dy) > 12.5 && Math.max(dx, dy) < 14.0) {
-          s.blendPixel(x, y, 226, 188, 102, 190);
-        } else if (Math.abs(dx + dy - 7.5) < 0.85) {
-          s.blendPixel(x, y, 114, 222, 248, 155);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const dx = Math.abs(x - 31.5);
+        const dy = Math.abs(y - 31.5);
+        const box = Math.max(dx, dy);
+        if (box > 25.0 && box < 28.0) {
+          const isInnerHi = box < 26.2;
+          s.blendPixel(x, y, isInnerHi ? 248 : 212, isInnerHi ? 214 : 172, isInnerHi ? 126 : 82, 215);
+        } else if (box >= 28.0 && box < 29.5) {
+          s.blendPixel(x, y, 32, 38, 68, 185);
+        } else if (Math.abs(dx + dy - 15.0) < 1.4) {
+          s.blendPixel(x, y, 124, 232, 255, 195);
+        } else if (dx + dy < 4.5) {
+          s.blendPixel(x, y, 255, 232, 154, 185);
         }
       }
     }
     return s;
   })();
-  // 17: CHEST ground bed (feathered warm sandy-pebble clearing pad — blends smoothly onto sand/grass with zero duplicate chest!)
+
+  // 17: CHEST ground bed (feathered warm sandy-cobble clearing pad)
   tiles[17] = (() => {
-    const c = M.sand.clone();
-    const rng = mulberry32(hashSeed(SEED, 'tile_17_chest_pad'));
-    for (let y = 0; y < 32; y++) {
-      for (let x = 0; x < 32; x++) {
+    const c = tiles[6].clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_17_chest_pad_64'));
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
         const [pr, pg, pb] = tiles[1].getPixel(x, y);
-        const [sr, sg, sb] = M.sand.getPixel(x, y);
-        const d = Math.hypot((x - 15.5) / 13.0, (y - 17.5) / 11.5);
-        const stoneWeight = d < 1.0 ? clamp((1 - d * d) * 0.62, 0, 0.62) : 0;
-        const grain = d < 0.92 ? (rng() > 0.85 ? 8 : rng() < 0.15 ? -8 : 0) : 0;
+        const [sr, sg, sb] = tiles[6].getPixel(x, y);
+        const d = Math.hypot((x - 31.5) / 26.0, (y - 35.0) / 23.0);
+        const stoneWeight = d < 1.0 ? clamp((1 - d * d) * 0.68 + bayerAt(x, y) * 0.08, 0, 0.72) : 0;
+        const grain = d < 0.92 ? (rng() > 0.85 ? 10 : rng() < 0.15 ? -10 : 0) : 0;
         c.setPixel(
           x,
           y,
@@ -673,121 +1550,283 @@ function bakeTerrainAtlases() {
   })();
 
   // Volcano & Peak & Village Lanterns (18..25)
-  tiles[18] = M.lava.clone();
-  tiles[19] = M.volcanoFloor.clone();
-  tiles[20] = buildPathVariant(M.volcanoFloor, M.path, [122, 74, 62], 0.72);
-  tiles[21] = M.iceWall.clone();
-  tiles[22] = M.snowIce.clone();
-  tiles[23] = buildPathVariant(M.snowIce, M.path, [146, 198, 224], 0.7);
-  // 24: RUNE_TRAIL (carved twilight flagstone with subtle recessed starlight diamond inlay)
+  tiles[18] = detailLava64(M.lava);
+  tiles[19] = (() => {
+    const v = M.volcanoFloor.clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_19_volcano_floor'));
+    // Subtle fractured basalt seams + tiny glowing ember specks
+    for (let i = 0; i < 8; i++) {
+      const ex = Math.floor(rng() * 64);
+      const ey = Math.floor(rng() * 64);
+      setWrapped(v, ex, ey, 232, 118, 48, 210);
+      setWrapped(v, ex + 1, ey, 255, 192, 92, 180);
+    }
+    return v;
+  })();
+  tiles[20] = buildPathVariant64(tiles[19], M.path, [126, 76, 62], 0.74, {
+    seedLabel: 'tile_20_volcano_path',
+    mortarAccent: [238, 126, 52],
+    mortarAccentCount: 8,
+  });
+  tiles[21] = (() => {
+    const ice = M.iceWall.clone();
+    // Crisp glacial crystal specular ridges
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        if ((x + y * 2) % 23 === 0 && y < 44) {
+          const [r, g, b] = ice.getPixel(x, y);
+          ice.setPixel(x, y, Math.min(255, r + 42), Math.min(255, g + 44), Math.min(255, b + 48), 255);
+        }
+      }
+    }
+    return ice;
+  })();
+  tiles[22] = (() => {
+    const sn = M.snowIce.clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_22_snow_64'));
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const drift = Math.sin((x / 64) * Math.PI * 2 + (y / 64) * Math.PI * 2) + bayerAt(x, y) * 0.45;
+        const [r, g, b] = sn.getPixel(x, y);
+        if (drift > 0.65) sn.setPixel(x, y, r + 10, g + 10, b + 8, 255);
+        else if (drift < -0.65) sn.setPixel(x, y, r - 12, g - 6, b + 4, 255);
+      }
+    }
+    for (let i = 0; i < 10; i++) {
+      const sx = Math.floor(rng() * 64);
+      const sy = Math.floor(rng() * 64);
+      setWrapped(sn, sx, sy, 255, 255, 255, 235);
+      setWrapped(sn, sx + 1, sy, 186, 238, 255, 190);
+    }
+    return sn;
+  })();
+  tiles[23] = buildPathVariant64(tiles[22], M.path, [148, 202, 232], 0.72, {
+    seedLabel: 'tile_23_snow_path',
+    mortarAccent: [224, 248, 255],
+    mortarAccentCount: 9,
+  });
+
+  // 24: RUNE_TRAIL (crisp carved twilight flagstone with celestial diamond inlay)
   tiles[24] = (() => {
     const r = M.runeFlagstone.clone();
-    for (let y = 0; y < 32; y++) {
-      for (let x = 0; x < 32; x++) {
-        const dx = Math.abs(x - 15.5);
-        const dy = Math.abs(y - 15.5);
-        if (Math.abs(dx + dy - 7.5) < 0.9) {
-          r.blendPixel(x, y, 134, 218, 246, 175);
-        } else if (dx + dy < 2.2) {
-          r.blendPixel(x, y, 238, 206, 128, 200);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const dx = Math.abs(x - 31.5);
+        const dy = Math.abs(y - 31.5);
+        if (Math.abs(dx + dy - 15.0) < 1.5) {
+          r.blendPixel(x, y, 134, 224, 252, 205);
+        } else if (Math.abs(dx + dy - 17.0) < 0.9) {
+          r.blendPixel(x, y, 28, 38, 72, 160);
+        } else if (dx + dy < 4.5) {
+          r.blendPixel(x, y, 248, 214, 132, 225);
         }
       }
     }
     return r;
   })();
-  // 25: LANTERN ground tile (calibrated village cobble with subtle carved slate lamp plinth — zero flat yellow ground blob!)
+
+  // 25: LANTERN ground tile (warm village cobble + carved octagonal slate & brass plinth)
   tiles[25] = (() => {
     const l = tiles[1].clone();
-    for (let y = 21; y <= 28; y++) {
-      for (let x = 12; x <= 19; x++) {
-        const border = y === 21 || y === 28 || x === 12 || x === 19;
-        l.blendPixel(x, y, border ? 42 : 76, border ? 48 : 84, border ? 68 : 104, border ? 180 : 150);
+    for (let y = 40; y <= 57; y++) {
+      for (let x = 23; x <= 40; x++) {
+        const dx = Math.abs(x - 31.5);
+        const dy = Math.abs(y - 48.5);
+        if (dx + dy > 12.5) continue; // Octagonal chamfered stone plinth
+        const isOuter = dx > 7.5 || dy > 7.5 || dx + dy > 11.2;
+        const isHi = y <= 43 || x <= 25;
+        if (isOuter) {
+          l.blendPixel(x, y, 28, 34, 56, 220);
+        } else if (isHi) {
+          l.blendPixel(x, y, 128, 138, 166, 205);
+        } else {
+          l.blendPixel(x, y, 74, 82, 108, 195);
+        }
       }
+    }
+    // 4 subtle brass corner bolts on plinth
+    for (const [bx, by] of [[26, 43], [37, 43], [26, 54], [37, 54]]) {
+      l.setPixel(bx, by, 232, 194, 104, 255);
     }
     return l;
   })();
 
   // Grove (26..27)
-  tiles[26] = tintTile(M.grass, [42, 138, 86], 0.52, 0.98);
-  tiles[27] = buildPathVariant(tiles[26], M.path, [154, 150, 106], 0.75);
+  tiles[26] = detailGrass64(tintTile(M.grass, [42, 142, 88], 0.52, 0.98), 'tile_26_grove_grass', {
+    shadow: [20, 74, 52],
+    mid: [46, 142, 86],
+    tip: [112, 208, 132],
+    tuftCount: 11,
+    accentCount: 6,
+    accents: [[255, 178, 214], [255, 216, 236], [148, 228, 166]],
+  });
+  tiles[27] = buildPathVariant64(tiles[26], M.path, [160, 154, 114], 0.76, {
+    seedLabel: 'tile_27_grove_path',
+    mortarAccent: [252, 178, 214],
+    mortarAccentCount: 8,
+  });
 
   // Desert (28..30)
-  tiles[28] = tintTile(M.sand, [242, 192, 112], 0.48, 0.98);
-  tiles[29] = buildPathVariant(tiles[28], M.sandstoneWall, [212, 166, 98], 0.68);
-  tiles[30] = M.sandstoneWall.clone();
+  tiles[28] = detailSand64(tintTile(M.sand, [244, 194, 110], 0.48, 0.98), 'tile_28_desert_sand', {
+    pebbleCount: 8,
+  });
+  tiles[29] = buildPathVariant64(tiles[28], M.sandstoneWall, [218, 170, 98], 0.70, {
+    seedLabel: 'tile_29_desert_path',
+    mortarAccent: [248, 216, 142],
+    mortarAccentCount: 6,
+  });
+  tiles[30] = buildWallVariant64(M.sandstoneWall, [214, 152, 82], [255, 222, 138], 'tile_30_sandstone_wall');
 
   // Marsh (31..33)
-  tiles[31] = M.marshGrass.clone();
-  tiles[32] = buildPathVariant(M.marshGrass, M.bridge, [98, 92, 128], 0.72);
-  tiles[33] = buildWallVariant(M.cliffWall, [54, 48, 84], [186, 128, 255], 'tile_33_marsh_wall');
+  tiles[31] = detailGrass64(M.marshGrass, 'tile_31_marsh_grass', {
+    shadow: [18, 48, 56],
+    mid: [42, 108, 96],
+    tip: [88, 174, 146],
+    tuftCount: 10,
+    accentCount: 6,
+    accents: [[124, 238, 218], [186, 132, 255]],
+  });
+  tiles[32] = buildPathVariant64(tiles[31], detailBridge64(M.bridge), [98, 94, 134], 0.74, {
+    seedLabel: 'tile_32_marsh_path',
+    mortarAccent: [92, 222, 198],
+    mortarAccentCount: 6,
+  });
+  tiles[33] = buildWallVariant64(M.cliffWall, [54, 48, 86], [192, 134, 255], 'tile_33_marsh_wall');
 
   // Sanctum (34..36)
   tiles[34] = M.sanctumFloor.clone();
   tiles[35] = (() => {
-    const sp = buildPathVariant(M.sanctumFloor, M.runeFlagstone, [224, 212, 186], 0.55);
-    for (let y = 0; y < 32; y++) {
-      sp.setPixel(5, y, 224, 186, 92, 255);
-      sp.setPixel(26, y, 224, 186, 92, 255);
+    const sp = buildPathVariant64(M.sanctumFloor, M.runeFlagstone, [228, 216, 190], 0.58, {
+      seedLabel: 'tile_35_sanctum_path',
+    });
+    for (let y = 0; y < 64; y++) {
+      // Double-beveled gilded brass marble inlay rails
+      sp.setPixel(9, y, 138, 104, 42, 255);
+      sp.setPixel(10, y, 242, 206, 114, 255);
+      sp.setPixel(11, y, 255, 232, 154, 255);
+      sp.setPixel(52, y, 255, 232, 154, 255);
+      sp.setPixel(53, y, 242, 206, 114, 255);
+      sp.setPixel(54, y, 138, 104, 42, 255);
     }
     return sp;
   })();
-  tiles[36] = buildWallVariant(M.sandstoneWall, [216, 206, 192], [255, 226, 138], 'tile_36_sanctum_wall');
+  tiles[36] = buildWallVariant64(M.sandstoneWall, [220, 210, 196], [255, 230, 146], 'tile_36_sanctum_wall');
 
   // Canyon (37..39)
-  tiles[37] = M.canyonGrass.clone();
-  tiles[38] = buildPathVariant(M.canyonGrass, M.path, [196, 122, 82], 0.75);
-  tiles[39] = buildWallVariant(M.sandstoneWall, [168, 76, 52], [255, 196, 128], 'tile_39_canyon_wall');
+  tiles[37] = detailGrass64(M.canyonGrass, 'tile_37_canyon_grass', {
+    shadow: [98, 50, 32],
+    mid: [176, 98, 56],
+    tip: [238, 178, 92],
+    tuftCount: 9,
+    accentCount: 5,
+    accents: [[246, 204, 112], [202, 120, 74]],
+  });
+  tiles[38] = buildPathVariant64(tiles[37], M.path, [202, 126, 84], 0.76, {
+    seedLabel: 'tile_38_canyon_path',
+    mortarAccent: [248, 208, 116],
+    mortarAccentCount: 6,
+  });
+  tiles[39] = buildWallVariant64(M.sandstoneWall, [172, 78, 52], [255, 202, 128], 'tile_39_canyon_wall');
 
   // Reef (40..42)
-  tiles[40] = M.reefWater.clone();
-  tiles[41] = buildPathVariant(M.reefWater, M.sand, [238, 222, 178], 0.76);
-  tiles[42] = buildWallVariant(M.cliffWall, [72, 138, 174], [255, 146, 196], 'tile_42_reef_wall');
+  tiles[40] = detailWater64(M.reefWater, 'reef', 'tile_40_reef_water');
+  tiles[41] = buildPathVariant64(tiles[40], tiles[6], [240, 224, 180], 0.78, {
+    seedLabel: 'tile_41_reef_path',
+    mortarAccent: [128, 236, 248],
+    mortarAccentCount: 8,
+  });
+  tiles[42] = buildWallVariant64(M.cliffWall, [72, 142, 178], [255, 152, 202], 'tile_42_reef_wall');
 
   // Ruins (43..45)
   tiles[43] = M.runeFlagstone.clone();
-  tiles[44] = buildPathVariant(M.runeFlagstone, M.path, [152, 166, 138], 0.72);
-  tiles[45] = buildWallVariant(M.cliffWall, [104, 114, 108], [136, 228, 204], 'tile_45_ruins_wall');
+  tiles[44] = buildPathVariant64(M.runeFlagstone, M.path, [154, 168, 140], 0.74, {
+    seedLabel: 'tile_44_ruins_path',
+    mortarAccent: [126, 218, 192],
+    mortarAccentCount: 8,
+  });
+  tiles[45] = buildWallVariant64(M.cliffWall, [104, 116, 110], [142, 234, 208], 'tile_45_ruins_wall');
 
   // Rift (46..48)
-  tiles[46] = M.riftFloor.clone();
+  tiles[46] = (() => {
+    const rf = M.riftFloor.clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_46_rift_stars'));
+    for (let i = 0; i < 14; i++) {
+      const sx = Math.floor(rng() * 64);
+      const sy = Math.floor(rng() * 64);
+      const cyan = i % 2 === 0;
+      setWrapped(rf, sx, sy, cyan ? 176 : 244, cyan ? 242 : 168, 255, 235);
+      if (i % 3 === 0) {
+        setWrapped(rf, sx - 1, sy, cyan ? 112 : 186, cyan ? 196 : 112, 255, 150);
+        setWrapped(rf, sx + 1, sy, cyan ? 112 : 186, cyan ? 196 : 112, 255, 150);
+      }
+    }
+    return rf;
+  })();
   tiles[47] = (() => {
-    const rp = buildPathVariant(M.riftFloor, M.terastalFloor, [96, 72, 178], 0.64);
-    for (let y = 0; y < 32; y++) {
-      if ((y & 3) === 1) {
-        rp.setPixel(6, y, 186, 142, 255, 255);
-        rp.setPixel(25, y, 126, 232, 255, 255);
+    const rp = buildPathVariant64(tiles[46], detailTerastal64(M.terastalFloor), [98, 74, 184], 0.66, {
+      seedLabel: 'tile_47_rift_path',
+    });
+    for (let y = 0; y < 64; y++) {
+      if ((y & 7) === 2 || (y & 7) === 3) {
+        rp.setPixel(11, y, 196, 152, 255, 255);
+        rp.setPixel(12, y, 236, 210, 255, 255);
+        rp.setPixel(51, y, 134, 238, 255, 255);
+        rp.setPixel(52, y, 212, 252, 255, 255);
       }
     }
     return rp;
   })();
-  tiles[48] = buildWallVariant(M.cliffWall, [44, 24, 78], [218, 126, 255], 'tile_48_rift_wall');
+  tiles[48] = buildWallVariant64(M.cliffWall, [44, 24, 80], [224, 132, 255], 'tile_48_rift_wall');
 
   // Faeveldt (49..51)
-  tiles[49] = M.faeGrass.clone();
-  tiles[50] = buildPathVariant(M.faeGrass, M.path, [218, 182, 232], 0.72);
-  tiles[51] = buildWallVariant(M.cliffWall, [132, 98, 168], [255, 182, 236], 'tile_51_fae_wall');
+  tiles[49] = detailGrass64(M.faeGrass, 'tile_49_fae_grass', {
+    shadow: [78, 54, 118],
+    mid: [142, 108, 192],
+    tip: [224, 184, 246],
+    tuftCount: 10,
+    accentCount: 7,
+    accents: [[255, 188, 236], [164, 238, 255], [255, 242, 178]],
+  });
+  tiles[50] = buildPathVariant64(tiles[49], M.path, [222, 186, 236], 0.74, {
+    seedLabel: 'tile_50_fae_path',
+    mortarAccent: [255, 182, 232],
+    mortarAccentCount: 8,
+  });
+  tiles[51] = buildWallVariant64(M.cliffWall, [134, 100, 172], [255, 186, 240], 'tile_51_fae_wall');
 
   // Atoll (52..54)
-  tiles[52] = tintTile(M.sand, [252, 236, 188], 0.55, 1.04);
-  tiles[53] = buildPathVariant(tiles[52], M.bridge, [214, 198, 164], 0.65);
-  tiles[54] = buildWallVariant(M.sandstoneWall, [166, 162, 148], [114, 234, 242], 'tile_54_atoll_wall');
+  tiles[52] = detailSand64(tintTile(M.sand, [254, 238, 190], 0.55, 1.04), 'tile_52_atoll_sand', {
+    pebbleCount: 10,
+  });
+  tiles[53] = buildPathVariant64(tiles[52], detailBridge64(M.bridge), [218, 200, 166], 0.68, {
+    seedLabel: 'tile_53_atoll_path',
+  });
+  tiles[54] = buildWallVariant64(M.sandstoneWall, [168, 164, 150], [118, 238, 246], 'tile_54_atoll_wall');
 
   // Highlands / Crown (55..57)
-  tiles[55] = M.crownFloor.clone();
-  tiles[56] = buildPathVariant(M.crownFloor, M.path, [126, 138, 162], 0.72);
-  tiles[57] = buildWallVariant(M.cliffWall, [74, 88, 118], [174, 214, 246], 'tile_57_crown_wall');
+  tiles[55] = detailCrownSteel64(M.crownFloor);
+  tiles[56] = buildPathVariant64(tiles[55], M.path, [128, 142, 168], 0.74, {
+    seedLabel: 'tile_56_crown_path',
+    mortarAccent: [168, 212, 248],
+    mortarAccentCount: 7,
+  });
+  tiles[57] = buildWallVariant64(M.cliffWall, [76, 90, 122], [178, 218, 250], 'tile_57_crown_wall');
 
   // Crater / Terastal (58..60)
-  tiles[58] = M.terastalFloor.clone();
-  tiles[59] = buildPathVariant(M.terastalFloor, M.sanctumFloor, [186, 212, 255], 0.68);
-  tiles[60] = buildWallVariant(M.iceWall, [136, 168, 242], [238, 250, 255], 'tile_60_tera_wall');
+  tiles[58] = detailTerastal64(M.terastalFloor);
+  tiles[59] = buildPathVariant64(tiles[58], M.sanctumFloor, [190, 216, 255], 0.70, {
+    seedLabel: 'tile_59_tera_path',
+    mortarAccent: [220, 246, 255],
+    mortarAccentCount: 9,
+  });
+  tiles[60] = buildWallVariant64(tiles[21], [138, 170, 246], [242, 252, 255], 'tile_60_tera_wall');
 
-  // Pack into 8x8 @ 32x32 = 256x256
-  const tileSize = 32;
+  // Pack into 8x8 @ 64x64 HD-2D = 512x512
+  const tileSize = 64;
   const cols = 8;
   const rows = 8;
-  const width = cols * tileSize; // 256
-  const height = rows * tileSize; // 256
+  const width = cols * tileSize; // 512
+  const height = rows * tileSize; // 512
 
   const albedo = new PixelImage(width, height);
   const normal = new PixelImage(width, height);
@@ -804,9 +1843,9 @@ function bakeTerrainAtlases() {
 
     albedo.blit(tile, ox, oy);
 
-    // Sobel tangent-space normal map per 32x32 tile (no bleed across neighbors)
+    // Sobel tangent-space normal map per 64x64 tile (no bleed across neighbors)
     const isWater = id === 4 || id === 5 || id === 40;
-    writeSobelNormalRegion(normal, albedo, ox, oy, tileSize, tileSize, isWater ? 1.8 : 2.9, false);
+    writeSobelNormalRegion(normal, albedo, ox, oy, tileSize, tileSize, isWater ? 1.9 : 3.1, false);
 
     // Emissive mask isolation for luminous tiles
     for (let y = 0; y < tileSize; y++) {
@@ -824,7 +1863,7 @@ function bakeTerrainAtlases() {
             er = r;
             eg = Math.round(g * 0.88);
             eb = Math.round(b * 0.55);
-            ea = 195;
+            ea = 200;
           }
         } else if (id === 19 || id === 20) {
           // Volcano floor: ONLY tiny glowing ember cracks, never the basalt body
@@ -832,7 +1871,7 @@ function bakeTerrainAtlases() {
             er = r;
             eg = Math.round(g * 0.85);
             eb = Math.round(b * 0.6);
-            ea = 140;
+            ea = 148;
           }
         } else if (id === 15 || id === 16 || id === 24) {
           // Heal pad, Shrine, Rune trail subtle carved glow
@@ -840,23 +1879,23 @@ function bakeTerrainAtlases() {
             er = r;
             eg = g;
             eb = b;
-            ea = 115;
+            ea = 122;
           }
         } else if (id === 46 || id === 47 || id === 48) {
           // Rift floor/path/wall: ONLY bright starlight specks & crystal edges, NEVER the dark stone body
-          if (lum >= 145 || (b >= 210 && r >= 150)) {
+          if (lum >= 152 || (b >= 214 && r >= 155)) {
             er = r;
             eg = g;
             eb = b;
-            ea = 145;
+            ea = 148;
           }
         } else if (id === 58 || id === 59 || id === 60) {
           // Terastal crystal specular facets only
-          if (lum > 228 || (b > 238 && g > 215 && r > 180)) {
+          if (lum > 230 || (b > 240 && g > 218 && r > 185)) {
             er = r;
             eg = g;
             eb = b;
-            ea = 135;
+            ea = 138;
           }
         } else if (id === 8 || id === 9 || id === 10 || id === 21 || id === 33 || id === 49 || id === 50) {
           // Crystal & biolume flecks
@@ -864,7 +1903,7 @@ function bakeTerrainAtlases() {
             er = r;
             eg = g;
             eb = b;
-            ea = 145;
+            ea = 148;
           }
         }
 
@@ -930,12 +1969,15 @@ function bakePropsAtlases() {
     'signpost',
   ];
 
+  // Upgrade every prop to crisp 2x HD-2D pixel art (cottages 192x192, trees/shrines/fountains 128x128, small props 96x96/96x128)
   const loaded = PROP_IDS.map((id) => {
     const raw = loadMasterPng(`props/${id}.png`);
-    return { id, image: new PixelImage(raw.width, raw.height, raw.data) };
+    const base = new PixelImage(raw.width, raw.height, raw.data);
+    const hd = upscaleSprite2x(base, { edgeThresh: 28, sharpen: 0.30, bevel: 0.11 });
+    return { id, image: hd };
   });
 
-  const packed = packShelf(loaded, 512, 2);
+  const packed = packShelf(loaded, 1024, 4);
   const albedo = new PixelImage(packed.width, packed.height);
   const normal = new PixelImage(packed.width, packed.height);
   const emissive = new PixelImage(packed.width, packed.height);
@@ -943,7 +1985,7 @@ function bakePropsAtlases() {
 
   for (const p of packed.placements) {
     albedo.blit(p.image, p.x, p.y);
-    writeSobelNormalRegion(normal, albedo, p.x, p.y, p.image.width, p.image.height, 2.5, true);
+    writeSobelNormalRegion(normal, albedo, p.x, p.y, p.image.width, p.image.height, 2.8, true);
 
     // Extract luminous pixels per prop kind
     for (let y = 0; y < p.image.height; y++) {
@@ -957,58 +1999,58 @@ function bakePropsAtlases() {
         switch (p.id) {
           case 'cottage_violet':
             // Warm glowing windows only
-            emit = r >= 228 && g >= 178 && b <= 130;
-            ea = 152;
+            emit = r >= 224 && g >= 174 && b <= 134;
+            ea = 158;
             break;
           case 'cottage_lab':
             // Cyan skylight/window glass only (avoid blowing out cream plaster/roof)
-            emit = b >= 210 && g >= 210 && b - r >= 32;
-            ea = 152;
+            emit = b >= 208 && g >= 208 && b - r >= 30;
+            ea = 158;
             break;
           case 'lantern':
             // Warm lantern glass flame only
-            emit = r >= 220 && g >= 186 && lum >= 190 && y < p.image.height * 0.56;
-            ea = 180;
+            emit = r >= 218 && g >= 184 && lum >= 188 && y < p.image.height * 0.56;
+            ea = 186;
             break;
           case 'shrine_open':
             // Cyan/mint glowing shrine crystals
-            emit = g >= 190 && b >= 190 && g + b - 2 * r > 32;
-            ea = 168;
+            emit = g >= 188 && b >= 188 && g + b - 2 * r > 30;
+            ea = 172;
             break;
           case 'shrine_cleared':
             // Soft amber residual crystal glow
-            emit = r >= 230 && g >= 190 && b <= 155;
-            ea = 115;
+            emit = r >= 228 && g >= 188 && b <= 156;
+            ea = 120;
             break;
           case 'fountain':
             // Specular water crest highlights only (never stone basin rim)
-            emit = b >= 220 && g >= 212 && b > r + 32;
-            ea = 128;
+            emit = b >= 218 && g >= 210 && b > r + 30;
+            ea = 132;
             break;
           case 'prop_mushroom':
             // Bioluminescent cap spots only (never cream mushroom stem)
-            emit = y < p.image.height * 0.62 && ((b >= 200 && g >= 170 && b > r + 28) || (b >= 222 && r >= 150 && b > g + 42));
-            ea = 155;
+            emit = y < p.image.height * 0.62 && ((b >= 198 && g >= 168 && b > r + 26) || (b >= 220 && r >= 148 && b > g + 40));
+            ea = 160;
             break;
           case 'prop_crystal':
             // Faceted glowing crystal cluster
-            emit = b >= 195 && g >= 165 && b > r + 25;
-            ea = 175;
+            emit = b >= 192 && g >= 162 && b > r + 24;
+            ea = 180;
             break;
           case 'landmark_obelisk':
             // Carved glowing runes
-            emit = b >= 180 && g >= 170 && b > r + 35;
-            ea = 185;
+            emit = b >= 178 && g >= 168 && b > r + 34;
+            ea = 190;
             break;
           case 'landmark_observatory':
             // Starlight telescope lens glint & brass lamp
-            emit = (r >= 225 && g >= 185 && b <= 135) || (b >= 225 && g >= 215 && b > r + 20);
-            ea = 165;
+            emit = (r >= 222 && g >= 182 && b <= 136) || (b >= 222 && g >= 212 && b > r + 20);
+            ea = 170;
             break;
           case 'chest_open':
             // Treasure gleam inside open chest
-            emit = r >= 225 && g >= 180 && b <= 135;
-            ea = 200;
+            emit = r >= 222 && g >= 178 && b <= 136;
+            ea = 204;
             break;
           default:
             emit = false;
@@ -1029,7 +2071,63 @@ function bakePropsAtlases() {
     };
   }
 
-  return { albedo, normal, emissive, regions, width: packed.width, height: packed.height, tileSize: 64 };
+  return { albedo, normal, emissive, regions, width: packed.width, height: packed.height, tileSize: 128 };
+}
+
+/**
+ * Derives a bespoke 64x80 HD-2D villager sprite by palette-recoloring a clean trainer silhouette
+ * (preserving skin, eyes, and dark pixel contours while transforming hair, outfit, and trim so
+ * village NPCs have distinct personalities instead of cloning Professor Willow's lab coat).
+ */
+function deriveVillagerSprite64(base64, palette) {
+  const { hair, outfit, trim, boots } = palette;
+  return mapPixels(base64, (r, g, b, a, x, y) => {
+    if (a < 128) return [0, 0, 0, 0];
+    const lum = luma255(r, g, b) / 255;
+    // Keep crisp dark ink contours & pupils intact
+    if (lum < 0.24) return [r, g, b, 255];
+
+    // Preserve entire face, warm peach skin, rosy blush, shaded chin, and sclera whites cleanly!
+    const inFaceZone = y >= 21 && y <= 41 && x >= 19 && x <= 45;
+    const isWarmSkin =
+      inFaceZone &&
+      r > 130 &&
+      g > 82 &&
+      b > 62 &&
+      r >= g + 4 &&
+      r >= b + 12 &&
+      r - g <= 78;
+    const isEyePixel = inFaceZone && y >= 26 && y <= 36 && x >= 22 && x <= 42 && (lum > 0.82 || lum < 0.36);
+    if (isWarmSkin || isEyePixel) {
+      return [r, g, b, 255];
+    }
+
+    // Preserve golden clasps/buckles (bright warm yellow)
+    const isGold = r > 205 && g > 165 && b < 115;
+    if (isGold) {
+      const shade = 0.72 + lum * 0.45;
+      return [trim[0] * shade, trim[1] * shade, trim[2] * shade, 255];
+    }
+
+    // Head/cap/hair region (y < 39)
+    if (y < 39) {
+      const shade = 0.56 + lum * 0.76;
+      const target = y < 18 ? outfit : hair;
+      return [target[0] * shade, target[1] * shade, target[2] * shade, 255];
+    }
+
+    // Boots / shoes region (y >= 64)
+    if (y >= 64) {
+      const shade = 0.55 + lum * 0.75;
+      return [boots[0] * shade, boots[1] * shade, boots[2] * shade, 255];
+    }
+
+    // Torso / tunic / skirt / trousers (y: 39..63)
+    const shade = 0.52 + lum * 0.84;
+    const isAccentStripe = y >= 41 && y <= 49 && Math.abs(x - 32) <= 5 && lum > 0.54;
+    const target = isAccentStripe ? trim : outfit;
+    return [target[0] * shade, target[1] * shade, target[2] * shade, 255];
+  });
 }
 
 function bakeCharactersAtlas() {
@@ -1052,12 +2150,76 @@ function bakeCharactersAtlas() {
     'rival_idle',
   ];
 
+  // Keep UI portraits at ultra-crisp enhanced 64x64 (matches 46-76px HUD/Title canvases without downscale alias);
+  // upgrade all 12 overworld character sprites to 2x HD-2D pixel art (64x80) to shine at zoomed desktop scale!
   const loaded = CHAR_IDS.map((id) => {
     const raw = loadMasterPng(`characters/${id}.png`);
-    return { id, image: new PixelImage(raw.width, raw.height, raw.data) };
+    const base = new PixelImage(raw.width, raw.height, raw.data);
+    const isPortrait = id.endsWith('_portrait');
+    const image = isPortrait
+      ? enhancePixelCraft(base, { sharpen: 0.24, dither: 1.2, wrap: false, warmCool: 0.55 })
+      : upscaleSprite2x(base, { edgeThresh: 26, sharpen: 0.26, bevel: 0.09 });
+    return { id, image };
   });
 
-  const packed = packShelf(loaded, 512, 2);
+  // Add 4 bespoke HD-2D villager archetypes so townsfolk never clone Professor Willow's lab coat!
+  const ozias64 = loaded.find((item) => item.id === 'ozias_idle').image;
+  const violet64 = loaded.find((item) => item.id === 'violet_idle').image;
+  const villagerSpecs = [
+    {
+      id: 'villager_scout',
+      base: ozias64,
+      palette: {
+        hair: [118, 72, 46],
+        outfit: [46, 138, 86],
+        trim: [242, 204, 102],
+        boots: [98, 66, 44],
+      },
+    },
+    {
+      id: 'villager_scholar',
+      base: violet64,
+      palette: {
+        hair: [152, 76, 62],
+        outfit: [58, 96, 178],
+        trim: [244, 212, 128],
+        boots: [64, 58, 94],
+      },
+    },
+    {
+      id: 'villager_artisan',
+      base: violet64,
+      palette: {
+        hair: [198, 146, 78],
+        outfit: [196, 94, 62],
+        trim: [252, 224, 146],
+        boots: [94, 60, 44],
+      },
+    },
+    {
+      id: 'villager_sailor',
+      base: ozias64,
+      palette: {
+        hair: [52, 62, 92],
+        outfit: [38, 118, 152],
+        trim: [246, 240, 216],
+        boots: [54, 64, 88],
+      },
+    },
+  ];
+  for (const spec of villagerSpecs) {
+    loaded.push({
+      id: spec.id,
+      image: enhancePixelCraft(deriveVillagerSprite64(spec.base, spec.palette), {
+        sharpen: 0.20,
+        dither: 1.2,
+        wrap: false,
+        warmCool: 0.65,
+      }),
+    });
+  }
+
+  const packed = packShelf(loaded, 1024, 4);
   const albedo = new PixelImage(packed.width, packed.height);
   const regions = {};
 
@@ -1072,7 +2234,7 @@ function bakeCharactersAtlas() {
     };
   }
 
-  return { albedo, regions, width: packed.width, height: packed.height, tileSize: 32 };
+  return { albedo, regions, width: packed.width, height: packed.height, tileSize: 64 };
 }
 
 function deriveAquaticFallback(serpentineImg) {

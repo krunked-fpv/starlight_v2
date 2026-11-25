@@ -39,6 +39,7 @@ export {
 export {
   CharacterRigRenderer,
   AURA_VISUALS,
+  getSoftenedFollowerFrame,
   resolveCharacterRegion,
   resolveFallbackArchetypeRegion,
 } from './CharacterRigRenderer';
