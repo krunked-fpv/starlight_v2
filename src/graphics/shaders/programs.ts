@@ -164,38 +164,46 @@ void main() {
     }
 
     // Gentle overhead-left key light gives crisp 2.5D pixel bevel relief everywhere
-    vec3 keyDir = normalize(vec3(-0.32, -0.46, 0.83));
+    const vec3 keyDir = vec3(-0.3202563, -0.4603684, 0.8306648);
     float keyDiff = max(dot(N, keyDir), 0.0);
     vec3 diffuseAccum = vec3(0.76 + 0.30 * keyDiff);
     vec3 specAccum = vec3(0.0);
-    vec3 viewDir = vec3(0.0, 0.0, 1.0);
+    const vec3 viewDir = vec3(0.0, 0.0, 1.0);
 
-    for (int i = 0; i < MAX_LIGHTS; i++) {
-      if (i >= uLightCount) {
-        break;
-      }
-      vec4 posRad = uLightPosRad[i];
-      vec4 colInt = uLightColInt[i];
-      float radius = max(posRad.z, 1.0);
-      vec2 delta = posRad.xy - vWorldPos;
-      float dist = length(delta);
+    if (uLightCount > 0) {
+      for (int i = 0; i < MAX_LIGHTS; i++) {
+        if (i >= uLightCount) {
+          break;
+        }
+        vec4 posRad = uLightPosRad[i];
+        float radius = max(posRad.z, 1.0);
+        vec2 delta = posRad.xy - vWorldPos;
+        float distSq = dot(delta, delta);
+        float radSq = radius * radius;
 
-      if (dist < radius) {
-        float normDist = dist / radius;
-        float att = 1.0 - normDist;
-        att = att * att * (3.0 - 2.0 * att);
+        if (distSq < radSq) {
+          vec4 colInt = uLightColInt[i];
+          float dist = sqrt(distSq);
+          float att = 1.0 - (dist / radius);
+          att = att * att * (3.0 - 2.0 * att);
 
-        float lightZ = max(posRad.w, 24.0);
-        vec3 L = normalize(vec3(delta.x, delta.y, lightZ));
-        float ndotl = max(dot(N, L), 0.0);
-        float wrapDiff = clamp((dot(N, L) + 0.25) / 1.25, 0.0, 1.0);
-        float energy = max(colInt.a, 0.0) * att;
+          float lightZ = max(posRad.w, 24.0);
+          vec3 L = normalize(vec3(delta.x, delta.y, lightZ));
+          float rawNdotL = dot(N, L);
+          float ndotl = max(rawNdotL, 0.0);
+          float wrapDiff = clamp((rawNdotL + 0.25) * 0.8, 0.0, 1.0);
+          float energy = max(colInt.a, 0.0) * att;
 
-        diffuseAccum += colInt.rgb * energy * (wrapDiff * 0.34);
+          diffuseAccum += colInt.rgb * energy * (wrapDiff * 0.34);
 
-        vec3 H = normalize(L + viewDir);
-        float spec = pow(max(dot(N, H), 0.0), 22.0) * ndotl;
-        specAccum += colInt.rgb * energy * spec * 0.14;
+          vec3 H = normalize(L + viewDir);
+          float ndoth = max(dot(N, H), 0.0);
+          float s2 = ndoth * ndoth;
+          float s4 = s2 * s2;
+          float s8 = s4 * s4;
+          float spec = (s8 * s8 * s4 * s2) * ndotl;
+          specAccum += colInt.rgb * energy * spec * 0.14;
+        }
       }
     }
 
@@ -432,10 +440,14 @@ precision highp float;
 
 layout(location = 0) in vec2 aUnitPos; // [0..1]
 
+uniform float uSunbeamAngle;
+
 out vec2 vUv;
+flat out vec2 vSunbeamCS;
 
 void main() {
   vUv = aUnitPos;
+  vSunbeamCS = vec2(cos(uSunbeamAngle), sin(uSunbeamAngle));
   gl_Position = vec4(aUnitPos * 2.0 - 1.0, 0.0, 1.0);
 }
 `,
@@ -445,6 +457,7 @@ precision highp float;
 const int MAX_LIGHTS = 24;
 
 in vec2 vUv;
+flat in vec2 vSunbeamCS;
 
 uniform sampler2D uSceneTex;
 uniform sampler2D uNormalTex;
@@ -466,7 +479,6 @@ uniform float uLightFlickerAmount[MAX_LIGHTS];
 
 uniform float uCanopyEnabled;
 uniform float uSunbeamIntensity;
-uniform float uSunbeamAngle;
 uniform vec3 uSunbeamColor;
 uniform vec2 uCloudSpeed;
 uniform float uCloudOpacity;
@@ -491,11 +503,7 @@ float valueNoise(vec2 p) {
 }
 
 float cloudFbm(vec2 p) {
-  float v = 0.0;
-  v += 0.55 * valueNoise(p);
-  v += 0.30 * valueNoise(p * 2.07 + vec2(4.1, 1.7));
-  v += 0.15 * valueNoise(p * 4.13 - vec2(2.3, 6.2));
-  return v;
+  return 0.65 * valueNoise(p) + 0.35 * valueNoise(p * 2.13 + vec2(4.1, 1.7));
 }
 
 void main() {
@@ -521,39 +529,42 @@ void main() {
   vec3 pointAccum = vec3(0.0);
   vec3 haloAccum = vec3(0.0);
 
-  for (int i = 0; i < MAX_LIGHTS; i++) {
-    if (i >= uLightCount) {
-      break;
-    }
-    vec4 posRad = uLightPosRadius[i];
-    vec4 colInt = uLightColorIntensity[i];
-    float radius = max(posRad.z, 1.0);
-    vec2 delta = posRad.xy - screenPos;
-    float dist = length(delta);
-
-    if (dist < radius) {
-      float normDist = dist / radius;
-      float att = 1.0 - normDist;
-      // Smooth cubic falloff with zero hard edge
-      att = att * att * (3.0 - 2.0 * att);
-
-      float flickSpeed = posRad.w;
-      float flickAmt = uLightFlickerAmount[i] * motionScale;
-      float flicker = 1.0;
-      if (flickAmt > 0.001) {
-        float phase = uTime * max(flickSpeed, 0.5) + float(i) * 2.37;
-        flicker = 1.0 + (sin(phase) * 0.65 + sin(phase * 2.13) * 0.35) * flickAmt;
+  if (uLightCount > 0) {
+    for (int i = 0; i < MAX_LIGHTS; i++) {
+      if (i >= uLightCount) {
+        break;
       }
+      vec4 posRad = uLightPosRadius[i];
+      float radius = max(posRad.z, 1.0);
+      vec2 delta = posRad.xy - screenPos;
+      float distSq = dot(delta, delta);
+      float radSq = radius * radius;
 
-      float ndotl = 1.0;
-      if (uHasNormal > 0.5) {
-        vec3 lightDir = normalize(vec3(delta.x, -delta.y, radius * 0.38));
-        ndotl = clamp(dot(normal, lightDir) * 0.65 + 0.45, 0.35, 1.1);
+      if (distSq < radSq) {
+        vec4 colInt = uLightColorIntensity[i];
+        float dist = sqrt(distSq);
+        float att = 1.0 - (dist / radius);
+        // Smooth cubic falloff with zero hard edge
+        att = att * att * (3.0 - 2.0 * att);
+
+        float flickAmt = uLightFlickerAmount[i] * motionScale;
+        float flicker = 1.0;
+        if (flickAmt > 0.001) {
+          float phase = uTime * max(posRad.w, 0.5) + float(i) * 2.37;
+          flicker = 1.0 + (sin(phase) * 0.65 + sin(phase * 2.13) * 0.35) * flickAmt;
+        }
+
+        float ndotl = 1.0;
+        if (uHasNormal > 0.5) {
+          vec3 lightDir = normalize(vec3(delta.x, -delta.y, radius * 0.38));
+          ndotl = clamp(dot(normal, lightDir) * 0.65 + 0.45, 0.35, 1.1);
+        }
+
+        float baseEnergy = max(colInt.a, 0.0) * flicker;
+        float attEnergy = baseEnergy * att;
+        pointAccum += colInt.rgb * (attEnergy * ndotl * 0.44);
+        haloAccum += colInt.rgb * (attEnergy * att * 0.065);
       }
-
-      float energy = max(colInt.a, 0.0) * flicker * att * ndotl;
-      pointAccum += colInt.rgb * energy * 0.44;
-      haloAccum += colInt.rgb * (max(colInt.a, 0.0) * flicker * att * att * 0.065);
     }
   }
 
@@ -565,8 +576,8 @@ void main() {
 
   // Diagonal forest canopy sunbeam shafts & drifting cloud shadows
   if (uCanopyEnabled > 0.5) {
-    float ca = cos(uSunbeamAngle);
-    float sa = sin(uSunbeamAngle);
+    float ca = vSunbeamCS.x;
+    float sa = vSunbeamCS.y;
     vec2 centeredUv = vUv - 0.5;
     vec2 rotUv = vec2(centeredUv.x * ca - centeredUv.y * sa, centeredUv.x * sa + centeredUv.y * ca);
 
@@ -574,7 +585,8 @@ void main() {
     float drift = uTime * 0.14 * motionScale;
     float beam1 = 0.5 + 0.5 * sin(rotUv.x * 16.0 + drift);
     float beam2 = 0.5 + 0.5 * sin(rotUv.x * 29.0 - drift * 0.7 + 1.3);
-    float shaft = pow(clamp(beam1 * 0.65 + beam2 * 0.35, 0.0, 1.0), 3.2);
+    float beamMix = clamp(beam1 * 0.65 + beam2 * 0.35, 0.0, 1.0);
+    float shaft = beamMix * beamMix * beamMix;
     float verticalFade = smoothstep(0.05, 0.92, vUv.y);
     lit += uSunbeamColor * (shaft * verticalFade * max(uSunbeamIntensity, 0.0) * 0.42);
 
@@ -649,50 +661,44 @@ uniform float uReducedMotion;
 
 out vec4 fragColor;
 
-vec3 extractBloom(vec2 uv, float threshold) {
+vec3 extractLitBloom(vec2 uv, float kneeLo, float kneeHi) {
   vec2 safeUv = clamp(uv, vec2(0.001), vec2(0.999));
   vec3 c = texture(uLitTex, safeUv).rgb;
   float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
   float peak = max(c.r, max(c.g, c.b));
   float energy = max(luma, peak * 0.86);
-  float effectiveThresh = max(threshold, 0.76);
-  float softKnee = smoothstep(effectiveThresh - 0.08, effectiveThresh + 0.16, energy);
-  vec3 result = c * softKnee;
-  if (uHasEmissive > 0.5) {
-    vec3 em = texture(uEmissiveTex, safeUv).rgb;
-    result += em * 0.46;
-  }
-  return result;
+  float softKnee = smoothstep(kneeLo, kneeHi, energy);
+  return c * softKnee;
 }
 
 void main() {
   vec4 base = texture(uLitTex, vUv);
   vec3 color = base.rgb;
 
-  // Soft 12-tap Dual-Kawase-inspired multi-ring bloom halo
+  // Ultra-fast bilinear Dual-Kawase bloom halo (2.5x fewer texture fetches than 12-tap dual fetch)
   if (uBloomIntensity > 0.005) {
-    vec2 t1 = uTexelSize * 1.75;
-    vec2 t2 = uTexelSize * 3.75;
-    vec2 t3 = uTexelSize * 6.5;
+    float effectiveThresh = max(uBloomThreshold, 0.76);
+    float kneeLo = effectiveThresh - 0.08;
+    float kneeHi = effectiveThresh + 0.16;
 
-    vec3 bloom = vec3(0.0);
-    // Inner diagonal ring
-    bloom += extractBloom(vUv + vec2(-t1.x, -t1.y), uBloomThreshold) * 0.12;
-    bloom += extractBloom(vUv + vec2( t1.x, -t1.y), uBloomThreshold) * 0.12;
-    bloom += extractBloom(vUv + vec2(-t1.x,  t1.y), uBloomThreshold) * 0.12;
-    bloom += extractBloom(vUv + vec2( t1.x,  t1.y), uBloomThreshold) * 0.12;
+    // 4-tap bilinear diagonal Kawase ring on lit highlights (each linear tap covers 4 texels)
+    vec2 t1 = uTexelSize * 2.15;
+    vec3 bloom =
+      (extractLitBloom(vUv + vec2(-t1.x, -t1.y), kneeLo, kneeHi) +
+       extractLitBloom(vUv + vec2( t1.x, -t1.y), kneeLo, kneeHi) +
+       extractLitBloom(vUv + vec2(-t1.x,  t1.y), kneeLo, kneeHi) +
+       extractLitBloom(vUv + vec2( t1.x,  t1.y), kneeLo, kneeHi)) * 0.25;
 
-    // Mid cardinal ring
-    bloom += extractBloom(vUv + vec2(-t2.x, 0.0), uBloomThreshold) * 0.08;
-    bloom += extractBloom(vUv + vec2( t2.x, 0.0), uBloomThreshold) * 0.08;
-    bloom += extractBloom(vUv + vec2(0.0, -t2.y), uBloomThreshold) * 0.08;
-    bloom += extractBloom(vUv + vec2(0.0,  t2.y), uBloomThreshold) * 0.08;
-
-    // Outer diagonal soft halo
-    bloom += extractBloom(vUv + vec2(-t3.x, -t3.y), uBloomThreshold) * 0.05;
-    bloom += extractBloom(vUv + vec2( t3.x, -t3.y), uBloomThreshold) * 0.05;
-    bloom += extractBloom(vUv + vec2(-t3.x,  t3.y), uBloomThreshold) * 0.05;
-    bloom += extractBloom(vUv + vec2( t3.x,  t3.y), uBloomThreshold) * 0.05;
+    // Dedicated wide emissive halo (lanterns, shrine crystals, cottage windows, lava; center already in uLitTex)
+    if (uHasEmissive > 0.5) {
+      vec2 t2 = uTexelSize * 4.25;
+      vec3 emBloom =
+        (texture(uEmissiveTex, clamp(vUv + vec2(-t2.x, -t2.y), vec2(0.001), vec2(0.999))).rgb +
+         texture(uEmissiveTex, clamp(vUv + vec2( t2.x, -t2.y), vec2(0.001), vec2(0.999))).rgb +
+         texture(uEmissiveTex, clamp(vUv + vec2(-t2.x,  t2.y), vec2(0.001), vec2(0.999))).rgb +
+         texture(uEmissiveTex, clamp(vUv + vec2( t2.x,  t2.y), vec2(0.001), vec2(0.999))).rgb) * 0.25;
+      bloom += emBloom * 0.46;
+    }
 
     color += bloom * (uBloomIntensity * 0.27);
   }
@@ -808,13 +814,14 @@ in float vSoftness;
 out vec4 fragColor;
 
 void main() {
-  float d = length(vLocalPos);
-  if (d >= 1.0) {
+  float d2 = dot(vLocalPos, vLocalPos);
+  if (d2 >= 1.0) {
     discard;
   }
+  float d = sqrt(d2);
 
   float edge = smoothstep(1.0, max(0.0, 1.0 - vSoftness), d);
-  float core = exp(-d * d * mix(2.4, 5.2, vSoftness));
+  float core = exp(-d2 * mix(2.4, 5.2, vSoftness));
   float alpha = clamp(edge * vColor.a, 0.0, 1.0);
   if (alpha <= 0.003) {
     discard;

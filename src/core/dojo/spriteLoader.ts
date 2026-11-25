@@ -340,19 +340,26 @@ export function resolveCorsSpriteCandidates(
   ];
 }
 
+function markImmutableCanvas(canvas: HTMLCanvasElement): HTMLCanvasElement {
+  (canvas as HTMLCanvasElement & { __starlightImmutable?: boolean }).__starlightImmutable = true;
+  return canvas;
+}
+
+const harmonizedMiniCache = new WeakMap<HTMLCanvasElement, Map<number, HTMLCanvasElement>>();
+
 function rawFramesToCanvases(raw: { width: number; height: number; frames: RawGifFrame[] }): DecodedSpriteFrame[] {
   if (typeof document === 'undefined') return [];
   return raw.frames.map((frame) => {
     const canvas = document.createElement('canvas');
     canvas.width = frame.width;
     canvas.height = frame.height;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    const ctx = canvas.getContext('2d');
     if (ctx) {
       const imgData = ctx.createImageData(frame.width, frame.height);
       imgData.data.set(frame.rgba);
       ctx.putImageData(imgData, 0, 0);
     }
-    return { canvas, delayMs: frame.delayMs };
+    return { canvas: markImmutableCanvas(canvas), delayMs: frame.delayMs };
   });
 }
 
@@ -377,14 +384,14 @@ async function decodeWithImageDecoder(bytes: Uint8Array, mime: string): Promise<
       const canvas = document.createElement('canvas');
       canvas.width = img.displayWidth || img.codedWidth || 64;
       canvas.height = img.displayHeight || img.codedHeight || 64;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+      const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img as unknown as CanvasImageSource, 0, 0);
       }
       const delayMs = img.duration ? Math.max(20, Math.round(img.duration / 1000)) : 100;
       img.close();
-      frames.push({ canvas, delayMs });
+      frames.push({ canvas: markImmutableCanvas(canvas), delayMs });
     }
     decoder.close();
     return frames.length > 0 ? frames : null;
@@ -394,7 +401,28 @@ async function decodeWithImageDecoder(bytes: Uint8Array, mime: string): Promise<
 }
 
 async function decodeStaticImageBlob(blob: Blob): Promise<DecodedSpriteFrame[] | null> {
-  if (typeof document === 'undefined' || typeof URL === 'undefined') return null;
+  if (typeof document === 'undefined') return null;
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width || 64;
+        canvas.height = bitmap.height || 64;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(bitmap, 0, 0);
+        }
+        return [{ canvas: markImmutableCanvas(canvas), delayMs: 1000 }];
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      // Fall through to HTMLImageElement decode
+    }
+  }
+  if (typeof URL === 'undefined') return null;
   const url = URL.createObjectURL(blob);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -407,12 +435,12 @@ async function decodeStaticImageBlob(blob: Blob): Promise<DecodedSpriteFrame[] |
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth || 64;
     canvas.height = img.naturalHeight || 64;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(img, 0, 0);
     }
-    return [{ canvas, delayMs: 1000 }];
+    return [{ canvas: markImmutableCanvas(canvas), delayMs: 1000 }];
   } catch {
     return null;
   } finally {
@@ -427,6 +455,7 @@ async function decodeStaticImageBlob(blob: Blob): Promise<DecodedSpriteFrame[] |
 export class SpriteAssetLoader {
   private readonly cache = new Map<string, DecodedSpriteFrames>();
   private readonly inflight = new Map<string, Promise<DecodedSpriteFrames>>();
+  private readonly failedUntil = new Map<string, number>();
   private forceOffline = false;
   private version = 0;
   private readonly listeners = new Set<() => void>();
@@ -509,6 +538,14 @@ export class SpriteAssetLoader {
     const cached = this.cache.get(key);
     if (cached) return cached;
 
+    const failedUntilTs = this.failedUntil.get(key);
+    if (failedUntilTs !== undefined) {
+      if (Date.now() < failedUntilTs) {
+        return this.createOfflineFallback(id, back, shiny);
+      }
+      this.failedUntil.delete(key);
+    }
+
     const pending = this.inflight.get(key);
     if (pending) return pending;
 
@@ -521,19 +558,85 @@ export class SpriteAssetLoader {
   }
 
   /**
-   * Picks the current animation frame for a given elapsed time (seconds) cleanly.
+   * Picks the current animation frame index for a given elapsed time (seconds) cleanly.
    */
-  static selectFrame(decoded: DecodedSpriteFrames | null, elapsedSeconds: number): HTMLCanvasElement | null {
-    if (!decoded || decoded.frames.length === 0) return null;
-    if (decoded.frames.length === 1) return decoded.frames[0].canvas;
+  static selectFrameIndex(decoded: DecodedSpriteFrames | null, elapsedSeconds: number): number {
+    if (!decoded || decoded.frames.length === 0) return -1;
+    if (decoded.frames.length === 1) return 0;
     const total = Math.max(1, decoded.totalDurationMs);
     const t = ((elapsedSeconds * 1000) % total + total) % total;
     let acc = 0;
-    for (const frame of decoded.frames) {
-      acc += frame.delayMs;
-      if (t < acc) return frame.canvas;
+    const frames = decoded.frames;
+    for (let i = 0; i < frames.length; i++) {
+      acc += frames[i].delayMs;
+      if (t < acc) return i;
     }
-    return decoded.frames[decoded.frames.length - 1].canvas;
+    return frames.length - 1;
+  }
+
+  /**
+   * Picks the current animation frame for a given elapsed time (seconds) cleanly.
+   */
+  static selectFrame(decoded: DecodedSpriteFrames | null, elapsedSeconds: number): HTMLCanvasElement | null {
+    const idx = SpriteAssetLoader.selectFrameIndex(decoded, elapsedSeconds);
+    return idx >= 0 && decoded ? decoded.frames[idx].canvas : null;
+  }
+
+  /**
+   * Returns a cached, smoothly downsampled & gently edge-harmonized offscreen canvas for
+   * overworld following mini-Pokémon so high-res Gen V/Showdown sprites integrate warmly
+   * into 32x32 pixel terrain without harsh nearest-neighbor aliasing.
+   */
+  static getHarmonizedMiniFrame(source: HTMLCanvasElement, targetSize = 32): HTMLCanvasElement {
+    if (typeof document === 'undefined' || !source || source.width <= 0 || source.height <= 0) {
+      return source;
+    }
+    const clampedTarget = Math.max(16, Math.min(64, Math.round(targetSize)));
+    let sizeMap = harmonizedMiniCache.get(source);
+    if (sizeMap) {
+      const hit = sizeMap.get(clampedTarget);
+      if (hit) return hit;
+    } else {
+      sizeMap = new Map<number, HTMLCanvasElement>();
+      harmonizedMiniCache.set(source, sizeMap);
+    }
+
+    const scale = Math.min(1, clampedTarget / Math.max(source.width, source.height));
+    const outW = Math.max(1, Math.round(source.width * scale));
+    const outH = Math.max(1, Math.round(source.height * scale));
+    const out = document.createElement('canvas');
+    out.width = outW;
+    out.height = outH;
+    const ctx = out.getContext('2d');
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      if ('imageSmoothingQuality' in ctx) {
+        ctx.imageSmoothingQuality = 'high';
+      }
+      // Two-step smooth downsample when shrinking by > 2x to eliminate harsh 1px outline sparkle
+      if (scale < 0.5 && source.width > outW * 2 && source.height > outH * 2) {
+        const mid = document.createElement('canvas');
+        mid.width = Math.max(outW, Math.round(source.width * 0.5));
+        mid.height = Math.max(outH, Math.round(source.height * 0.5));
+        const mctx = mid.getContext('2d');
+        if (mctx) {
+          mctx.imageSmoothingEnabled = true;
+          if ('imageSmoothingQuality' in mctx) {
+            mctx.imageSmoothingQuality = 'high';
+          }
+          mctx.drawImage(source, 0, 0, mid.width, mid.height);
+          ctx.drawImage(mid, 0, 0, outW, outH);
+        } else {
+          ctx.drawImage(source, 0, 0, outW, outH);
+        }
+      } else {
+        ctx.drawImage(source, 0, 0, outW, outH);
+      }
+    }
+
+    markImmutableCanvas(out);
+    sizeMap.set(clampedTarget, out);
+    return out;
   }
 
   private async fetchAndDecode(
@@ -587,6 +690,7 @@ export class SpriteAssetLoader {
             archetype,
             mirrorX: cand.mirrorX,
           };
+          this.failedUntil.delete(key);
           this.cache.set(key, result);
           this.notifyUpdate();
           return result;
@@ -597,12 +701,14 @@ export class SpriteAssetLoader {
     }
 
     const fallback = this.createOfflineFallback(speciesId, back, shiny);
-    // Do not permanently cache fallback when online failed transiently; allow retry if online resumes
+    // Cooldown transient online failures for 30s so hot render loops never spam retries
+    this.failedUntil.set(key, Date.now() + 30000);
     return fallback;
   }
 
   clearCache(): void {
     this.cache.clear();
     this.inflight.clear();
+    this.failedUntil.clear();
   }
 }

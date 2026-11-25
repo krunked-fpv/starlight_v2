@@ -1630,4 +1630,53 @@ describe('RenderEngine backend negotiation, canvas swap & context-loss recovery'
     expect(engine.getSheetImage('terrain')).toBeNull();
     expect(engine.getArenaImage('village')).toBeNull();
   });
+
+  it('keeps static/immutable canvas sprite sources GPU-resident without per-frame texImage2D re-uploads and caps Canvas2D DPR for 60fps+', async () => {
+    const { initialCanvas, doc } = createMockCanvasHarness({ webgl2Available: true });
+    vi.stubGlobal('document', doc);
+
+    const backend = new WebGL2Backend();
+    await backend.init(initialCanvas as unknown as HTMLCanvasElement, {
+      dprCap: 1.5,
+      reducedMotion: false,
+      crtMode: false,
+    });
+    const gl = initialCanvas.lastWebGL2Context!;
+
+    const immutableSprite = {
+      width: 64,
+      height: 64,
+      __starlightImmutable: true,
+    } as unknown as HTMLCanvasElement;
+    const staticHintSprite = { width: 48, height: 48 } as unknown as HTMLCanvasElement;
+
+    const uploadsBefore = gl._calls.texImage2D.mock.calls.length;
+    for (let frame = 0; frame < 4; frame++) {
+      backend.beginFrame(frame * 0.016, 0.016);
+      backend.drawSprite({ source: immutableSprite, dx: 10, dy: 10, dw: 64, dh: 64 });
+      backend.drawSprite({ source: staticHintSprite, dx: 90, dy: 10, dw: 48, dh: 48, staticSource: true });
+      backend.endFrame();
+    }
+    const uploadsAfter = gl._calls.texImage2D.mock.calls.length;
+    // Exactly 2 texture uploads total across 4 frames (1 per static source, zero per-frame re-uploads)
+    expect(uploadsAfter - uploadsBefore).toBe(2);
+    backend.dispose();
+
+    // RenderEngine caps Canvas2D DPR to 1.0 even on HiDPI 2x displays to sustain 60fps+
+    const c2dHarness = createMockCanvasHarness({ webgl2Available: false });
+    vi.stubGlobal('document', c2dHarness.doc);
+    vi.stubGlobal('window', { devicePixelRatio: 2, innerWidth: 1280, innerHeight: 720, addEventListener: vi.fn(), removeEventListener: vi.fn() });
+    const getCtxSpy = vi.spyOn(c2dHarness.initialCanvas, 'getContext');
+    const engine = createRenderEngine();
+    const caps = await engine.init(c2dHarness.initialCanvas as unknown as HTMLCanvasElement, {
+      preferredMode: 'canvas2d',
+      reducedMotion: false,
+      crtMode: false,
+    });
+    expect(caps.kind).toBe('canvas2d');
+    expect(caps.dpr).toBe(1);
+    // Main Canvas2D context must NOT request willReadFrequently: true (which forces Skia CPU software rasterization)
+    expect(getCtxSpy).toHaveBeenCalledWith('2d', { alpha: false });
+    engine.dispose();
+  });
 });
