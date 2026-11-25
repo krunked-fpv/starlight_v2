@@ -1111,6 +1111,7 @@ export class WebGL2Backend implements IRenderBackend {
     const tex = gl.createTexture();
     if (!tex) throw new Error('Failed to create image WebGL2 texture');
     const filter = pixelCrisp ? (gl.NEAREST ?? 0x2600) : gl.LINEAR;
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
@@ -1306,6 +1307,7 @@ export class WebGL2Backend implements IRenderBackend {
         cached.mutable = true;
       }
       if (cached.mutable && cached.lastUploadFrameId !== this.frameSeq) {
+        gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, cached.tex);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
         if (
@@ -1428,8 +1430,6 @@ export class WebGL2Backend implements IRenderBackend {
       }
     }
 
-    const spriteLightCount = this.collectSpriteWorldLights();
-
     const prog = this.shaders.sprite;
     gl.useProgram(prog.program);
     gl.uniform2f(prog.getUniform('uResolution'), this.cssWidth, this.cssHeight);
@@ -1445,17 +1445,24 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1i(prog.getUniform('uAlbedoTex'), 0);
     gl.uniform1i(prog.getUniform('uNormalTex'), 1);
     gl.uniform1i(prog.getUniform('uEmissiveTex'), 2);
-    gl.uniform1i(prog.getUniform('uLightCount'), spriteLightCount);
-    if (spriteLightCount > 0) {
-      gl.uniform4fv(
-        prog.getUniform('uLightPosRad[0]') ?? prog.getUniform('uLightPosRad'),
-        this.spriteLightPosRadBuf.subarray(0, spriteLightCount * 4),
-      );
-      gl.uniform4fv(
-        prog.getUniform('uLightColInt[0]') ?? prog.getUniform('uLightColInt'),
-        this.spriteLightColIntBuf.subarray(0, spriteLightCount * 4),
-      );
-    }
+
+    let lightsUploaded = false;
+    const ensureSpriteLightsUploaded = (): void => {
+      if (lightsUploaded) return;
+      lightsUploaded = true;
+      const spriteLightCount = this.collectSpriteWorldLights();
+      gl.uniform1i(prog.getUniform('uLightCount'), spriteLightCount);
+      if (spriteLightCount > 0) {
+        gl.uniform4fv(
+          prog.getUniform('uLightPosRad[0]') ?? prog.getUniform('uLightPosRad'),
+          this.spriteLightPosRadBuf.subarray(0, spriteLightCount * 4),
+        );
+        gl.uniform4fv(
+          prog.getUniform('uLightColInt[0]') ?? prog.getUniform('uLightColInt'),
+          this.spriteLightColIntBuf.subarray(0, spriteLightCount * 4),
+        );
+      }
+    };
 
     let drawCalls = 0;
     let batchAlbedo: WebGLTexture | null = null;
@@ -1470,9 +1477,19 @@ export class WebGL2Backend implements IRenderBackend {
     let batchCount = 0;
     let activeBlendAdditive = false;
 
+    // Redundant GL state elision across consecutive sprite batches
+    let boundNormalTex: WebGLTexture | null | undefined = undefined;
+    let boundEmissiveTex: WebGLTexture | null | undefined = undefined;
+    let lastHasNormal = -1;
+    let lastHasEmissive = -1;
+    let lastTexelW = -1;
+    let lastTexelH = -1;
+
     const uHasNormalLoc = prog.getUniform('uHasNormal');
     const uHasEmissiveLoc = prog.getUniform('uHasEmissive');
     const uTexelSizeLoc = prog.getUniform('uTexelSize');
+
+    gl.bindVertexArray(this.spriteVao);
 
     const flush = (): void => {
       if (batchCount === 0 || !batchAlbedo) return;
@@ -1489,6 +1506,10 @@ export class WebGL2Backend implements IRenderBackend {
           );
         }
         activeBlendAdditive = batchAdditive;
+      }
+
+      if (batchNormal) {
+        ensureSpriteLightsUploaded();
       }
 
       gl.activeTexture(gl.TEXTURE0);
@@ -1508,21 +1529,40 @@ export class WebGL2Backend implements IRenderBackend {
         batchDynamic.pixelCrisp = batchPixelCrisp;
       }
 
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, batchNormal ?? this.fallbackNormalTex);
-      gl.uniform1i(uHasNormalLoc, batchNormal ? 1 : 0);
+      const wantNormalTex = batchNormal ?? this.fallbackNormalTex;
+      if (wantNormalTex !== boundNormalTex) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, wantNormalTex);
+        boundNormalTex = wantNormalTex;
+      }
+      const hasNormFlag = batchNormal ? 1 : 0;
+      if (hasNormFlag !== lastHasNormal) {
+        gl.uniform1i(uHasNormalLoc, hasNormFlag);
+        lastHasNormal = hasNormFlag;
+      }
 
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, batchEmissive ?? this.fallbackBlackTex);
-      gl.uniform1i(uHasEmissiveLoc, batchEmissive ? 1 : 0);
+      const wantEmissiveTex = batchEmissive ?? this.fallbackBlackTex;
+      if (wantEmissiveTex !== boundEmissiveTex) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, wantEmissiveTex);
+        boundEmissiveTex = wantEmissiveTex;
+      }
+      const hasEmFlag = batchEmissive ? 1 : 0;
+      if (hasEmFlag !== lastHasEmissive) {
+        gl.uniform1i(uHasEmissiveLoc, hasEmFlag);
+        lastHasEmissive = hasEmFlag;
+      }
 
-      gl.uniform2f(
-        uTexelSizeLoc,
-        1 / Math.max(batchWidth, 1),
-        1 / Math.max(batchHeight, 1),
-      );
+      if (batchWidth !== lastTexelW || batchHeight !== lastTexelH) {
+        gl.uniform2f(
+          uTexelSizeLoc,
+          1 / Math.max(batchWidth, 1),
+          1 / Math.max(batchHeight, 1),
+        );
+        lastTexelW = batchWidth;
+        lastTexelH = batchHeight;
+      }
 
-      gl.bindVertexArray(this.spriteVao);
       this.uploadInstanceData(
         gl,
         this.spriteInstanceVbo!,
@@ -1530,7 +1570,6 @@ export class WebGL2Backend implements IRenderBackend {
         'sprite',
       );
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batchCount);
-      gl.bindVertexArray(null);
 
       drawCalls += 1;
       batchCount = 0;
@@ -1673,6 +1712,7 @@ export class WebGL2Backend implements IRenderBackend {
     }
 
     flush();
+    gl.bindVertexArray(null);
 
     // Restore standard blend func if last batch was additive
     if (activeBlendAdditive) {

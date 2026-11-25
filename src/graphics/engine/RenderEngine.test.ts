@@ -1660,6 +1660,26 @@ describe('RenderEngine backend negotiation, canvas swap & context-loss recovery'
     const uploadsAfter = gl._calls.texImage2D.mock.calls.length;
     // Exactly 2 texture uploads total across 4 frames (1 per static source, zero per-frame re-uploads)
     expect(uploadsAfter - uploadsBefore).toBe(2);
+
+    // Toggling staticSource: false -> true -> false on a reused cosmetic canvas uploads ONLY on dirty frames
+    const dirtyCosmetic = { width: 64, height: 64 } as unknown as HTMLCanvasElement;
+    const beforeDirty = gl._calls.texImage2D.mock.calls.length;
+    backend.beginFrame(0.1, 0.016);
+    backend.drawSprite({ source: dirtyCosmetic, dx: 0, dy: 0, dw: 64, dh: 64, staticSource: false });
+    backend.endFrame();
+    const afterFrame1 = gl._calls.texImage2D.mock.calls.length;
+    expect(afterFrame1 - beforeDirty).toBe(1); // initial upload
+
+    backend.beginFrame(0.116, 0.016);
+    backend.drawSprite({ source: dirtyCosmetic, dx: 0, dy: 0, dw: 64, dh: 64, staticSource: true });
+    backend.endFrame();
+    expect(gl._calls.texImage2D.mock.calls.length).toBe(afterFrame1); // clean frame: zero upload
+
+    backend.beginFrame(0.132, 0.016);
+    backend.drawSprite({ source: dirtyCosmetic, dx: 0, dy: 0, dw: 64, dh: 64, staticSource: false });
+    backend.endFrame();
+    expect(gl._calls.texImage2D.mock.calls.length).toBe(afterFrame1 + 1); // dirty frame: re-uploaded!
+
     backend.dispose();
 
     // RenderEngine caps Canvas2D DPR to 1.0 even on HiDPI 2x displays to sustain 60fps+
