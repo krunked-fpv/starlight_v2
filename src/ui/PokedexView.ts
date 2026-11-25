@@ -1,35 +1,42 @@
 import {
+  BIOME_IDS,
   ELEMENTAL_TYPES,
+  type AtlasManifest,
+  type BiomeId,
   type CryWaveformSnapshot,
+  type DecodedSpriteFrames,
+  type DojoProfileState,
+  type DojoSpeciesEntry,
   type ElementalType,
-  type HolographicCardState,
-  type IOfflineSpriteRigSynthesizer,
-  type PokedexEntryState,
-  type SpeciesRecord,
-  type TrainerProfile,
   type UIBridgeCallbacks,
 } from '../contracts';
 import {
-  BIOME_DESCRIPTORS,
+  EVOLUTIONS,
+  getAbilityEntry,
+  getAllEvolutionItems,
   getAllSpecies,
-  getSpecies,
+  getBiomeVisualProfile,
+  getEvolutionRules,
+  getSpeciesEntry,
   TOTAL_SPECIES_COUNT,
   TYPE_PALETTES,
+  typeToIconId,
 } from '../core';
-import { iconSvg, safeText, typeIconId } from './iconHelper';
-import { drawSpeciesPortrait } from './StyleStudioStage';
+import { createIconSvg, renderPokemonPreviewCanvas, safeText } from './iconHelper';
 
 export interface PokedexQueryOptions {
   query: string;
   typeFilter: ElementalType | 'all';
+  genFilter?: number | 'all';
+  biomeFilter?: BiomeId | 'all';
   caughtOnly: boolean;
   page: number;
   pageSize?: number;
-  pokedex: Record<number, PokedexEntryState>;
+  pokedex: DojoProfileState['pokedex'];
 }
 
 export interface PokedexPageResult {
-  items: SpeciesRecord[];
+  items: DojoSpeciesEntry[];
   totalMatches: number;
   caughtCount: number;
   seenCount: number;
@@ -37,28 +44,39 @@ export interface PokedexPageResult {
   totalPages: number;
 }
 
+export interface PokedexAssets {
+  manifest: AtlasManifest | null;
+  fallbacksSheet: CanvasImageSource | null;
+  frames: DecodedSpriteFrames | null;
+}
+
 export function filterAndPaginatePokedex(opts: PokedexQueryOptions): PokedexPageResult {
   const catalog = getAllSpecies();
   const rawQ = opts.query.trim().toLowerCase();
   const q = rawQ.startsWith('#') ? rawQ.slice(1).trim() : rawQ;
   const pageSize = Math.max(1, Math.floor(opts.pageSize ?? 24));
+  const genFilter = opts.genFilter ?? 'all';
+  const biomeFilter = opts.biomeFilter ?? 'all';
+
+  const seenSet = new Set<number>(Array.isArray(opts.pokedex?.seen) ? opts.pokedex.seen : []);
+  const caughtMap = opts.pokedex?.caught ?? {};
 
   let caughtCount = 0;
   let seenCount = 0;
-  const matches: SpeciesRecord[] = [];
+  const matches: DojoSpeciesEntry[] = [];
 
   for (let i = 0; i < catalog.length; i++) {
     const sp = catalog[i];
-    const entry = opts.pokedex[sp.id];
-    const isCaught = Boolean(entry?.caught);
-    const isSeen = Boolean(entry?.seen || isCaught);
+    const isCaught = Number(caughtMap[sp.id] ?? 0) > 0;
+    const isSeen = isCaught || seenSet.has(sp.id);
     if (isCaught) caughtCount += 1;
     if (isSeen) seenCount += 1;
 
     if (opts.caughtOnly && !isCaught) continue;
-    if (opts.typeFilter !== 'all' && sp.primaryType !== opts.typeFilter && sp.secondaryType !== opts.typeFilter) {
-      continue;
-    }
+    if (opts.typeFilter !== 'all' && sp.type !== opts.typeFilter) continue;
+    if (genFilter !== 'all' && sp.generation !== genFilter) continue;
+    if (biomeFilter !== 'all' && sp.biome !== biomeFilter) continue;
+
     if (q) {
       const padded = String(sp.id).padStart(4, '0');
       if (!sp.name.toLowerCase().includes(q) && !padded.includes(q) && String(sp.id) !== q) {
@@ -85,7 +103,15 @@ export function filterAndPaginatePokedex(opts: PokedexQueryOptions): PokedexPage
 }
 
 export function computeHoloCardMetrics(
-  state: HolographicCardState,
+  state: {
+    speciesId: number;
+    pointerTiltX: number;
+    pointerTiltY: number;
+    starRank: number;
+    bondLevel: number;
+    caught: boolean;
+    shiny: boolean;
+  },
   reducedMotion: boolean,
 ): {
   rxDeg: number;
@@ -127,6 +153,27 @@ export function computeHoloCardMetrics(
   };
 }
 
+// Build reverse evolution index once for instant evolution chain lookup
+const PRE_EVO_MAP: Map<number, Array<{ fromId: number; label: string }>> = (() => {
+  const map = new Map<number, Array<{ fromId: number; label: string }>>();
+  const itemLookup = new Map(getAllEvolutionItems().map((it) => [it.id, it.name]));
+  for (const [fromRaw, rules] of Object.entries(EVOLUTIONS)) {
+    const fromId = Number(fromRaw);
+    if (!Array.isArray(rules)) continue;
+    for (const r of rules) {
+      const list = map.get(r.to) ?? [];
+      const req = r.item
+        ? (itemLookup.get(r.item) ?? r.item)
+        : r.minLevel
+          ? `Lv.${r.minLevel}`
+          : 'Evolve';
+      list.push({ fromId, label: req });
+      map.set(r.to, list);
+    }
+  }
+  return map;
+})();
+
 function formatDexNum(id: number): string {
   return `#${String(id).padStart(4, '0')}`;
 }
@@ -137,10 +184,11 @@ function capitalize(str: string): string {
 
 export class PokedexView {
   private callbacks: UIBridgeCallbacks | null = null;
-  private rigSynthesizer: IOfflineSpriteRigSynthesizer | null = null;
 
   private searchQuery = '';
   private typeFilter: ElementalType | 'all' = 'all';
+  private genFilter: number | 'all' = 'all';
+  private biomeFilter: BiomeId | 'all' = 'all';
   private caughtOnly = false;
   private currentPage = 1;
   private readonly pageSize = 24;
@@ -149,11 +197,12 @@ export class PokedexView {
   private pointerTiltY = 0;
   private reducedMotion = false;
   private lastSelectedId = 25;
-  private currentProfile: TrainerProfile | null = null;
+  private currentProfile: DojoProfileState | null = null;
   private currentWaveform: CryWaveformSnapshot | null = null;
 
-  // Persistent DOM references (never tear down focused search input)
   private searchInput: HTMLInputElement | null = null;
+  private genSelect: HTMLSelectElement | null = null;
+  private biomeSelect: HTMLSelectElement | null = null;
   private caughtToggleBtn: HTMLButtonElement | null = null;
   private countBadgeEl: HTMLElement | null = null;
   private typeButtons = new Map<string, HTMLButtonElement>();
@@ -169,9 +218,8 @@ export class PokedexView {
   private portraitCanvas: HTMLCanvasElement | null = null;
   private cryCanvas: HTMLCanvasElement | null = null;
   private playCryBtn: HTMLButtonElement | null = null;
-  private starPipsEl: HTMLElement | null = null;
-  private bondValEl: HTMLElement | null = null;
-  private bondBarEl: HTMLElement | null = null;
+  private cardAbilityEl: HTMLElement | null = null;
+  private cardEvoEl: HTMLElement | null = null;
   private cardLoreEl: HTMLElement | null = null;
   private cardHabitatEl: HTMLElement | null = null;
   private cardStatusEl: HTMLElement | null = null;
@@ -180,133 +228,148 @@ export class PokedexView {
   private lastListKey = '';
   private lastDetailKey = '';
 
-  setRigSynthesizer(synth: IOfflineSpriteRigSynthesizer | null): void {
-    this.rigSynthesizer = synth;
-  }
-
   mount(container: HTMLElement, callbacks: UIBridgeCallbacks): void {
     this.callbacks = callbacks;
     this.typeButtons.clear();
     this.statRows = [];
+    this.lastListKey = '';
+    this.lastDetailKey = '';
+
+    const biomeOptionsHtml = BIOME_IDS.map((bId) => {
+      const bp = getBiomeVisualProfile(bId);
+      return `<option value="${bId}">${safeText(bp.displayName)}</option>`;
+    }).join('');
+
+    const genOptionsHtml = Array.from({ length: 9 }, (_, i) => i + 1)
+      .map((g) => `<option value="${g}">Gen ${g}</option>`)
+      .join('');
 
     container.innerHTML = `
-      <div class="sl-modal-panel sl-glass" role="dialog" aria-modal="true" aria-label="Starlight 1,025 Collector Pokédex">
-        <div class="sl-modal-header">
-          <h2 class="sl-modal-title">
-            ${iconSvg('icon-pokedex', 'sl-icon-md')}
-            <span>Collector Pokédex</span>
-            <span class="sl-pill sl-num" data-testid="pokedex-counts">0 / ${TOTAL_SPECIES_COUNT}</span>
-          </h2>
-          <button type="button" class="sl-btn" data-testid="pokedex-close">Return to Island</button>
-        </div>
-        <div class="sl-pokedex-body">
-          <div class="sl-dex-browser">
-            <div class="sl-dex-toolbar">
-              <input
-                type="search"
-                class="sl-input sl-dex-search"
-                data-testid="pokedex-search"
-                placeholder="Search #0001..#1025 or species name"
-                aria-label="Search Pokédex species"
-              />
-              <button type="button" class="sl-btn" data-testid="pokedex-caught-toggle" aria-pressed="false">
-                ${iconSvg('icon-starball', 'sl-icon-sm')}
-                <span>All 1,025</span>
-              </button>
-            </div>
-            <div class="sl-dex-type-strip" role="group" aria-label="Filter by Elemental Type">
-              <button type="button" class="sl-btn sl-chip is-active" data-testid="pokedex-type-all" data-filter-type="all" aria-pressed="true">
-                All
-              </button>
-              ${ELEMENTAL_TYPES.map(
-                (t) => `
-                <button type="button" class="sl-btn sl-chip" data-testid="pokedex-type-${t}" data-filter-type="${t}" aria-pressed="false">
-                  ${iconSvg(typeIconId(t), 'sl-icon-sm')}
-                  <span>${capitalize(t)}</span>
-                </button>
-              `,
-              ).join('')}
-            </div>
-            <div class="sl-dex-list" data-testid="pokedex-list" role="listbox" aria-label="Species Catalog"></div>
-            <div class="sl-dex-pagination">
-              <button type="button" class="sl-btn" data-testid="pokedex-prev-page">Prev</button>
-              <span class="sl-pill sl-num" data-testid="pokedex-page-info">Page 1 / 1</span>
-              <button type="button" class="sl-btn" data-testid="pokedex-next-page">Next</button>
-            </div>
+      <div class="sl-pokedex-body">
+        <div class="sl-dex-browser">
+          <div class="sl-dex-toolbar">
+            <input
+              type="search"
+              class="sl-input sl-dex-search"
+              data-testid="pokedex-search"
+              placeholder="Search #0001..#1025 or name"
+              aria-label="Search Pokédex species"
+            />
+            <button type="button" class="sl-btn" data-testid="pokedex-caught-toggle" aria-pressed="false">
+              ${createIconSvg('icon-starball', 'sl-icon-sm')}
+              <span>All 1,025</span>
+            </button>
           </div>
 
-          <div class="sl-dex-detail">
-            <div class="sl-holo-card" data-testid="pokedex-holo-card" data-type="electric" data-star-rank="5" data-max-bond="false">
-              <div class="sl-holo-foil" aria-hidden="true"></div>
-              <div class="sl-holo-glare" aria-hidden="true"></div>
-              <div class="sl-holo-header">
-                <div>
-                  <span class="sl-pill sl-num" data-testid="pokedex-card-number">#0025</span>
-                  <strong class="sl-profile-name" data-testid="pokedex-card-name" style="margin-left: 6px;">Pikachu</strong>
-                </div>
-                <div class="sl-combatant-badges" data-testid="pokedex-card-types"></div>
+          <div class="sl-dex-subfilters">
+            <select class="sl-select" data-testid="pokedex-gen-filter" aria-label="Filter by Generation">
+              <option value="all">All Gens (1-9)</option>
+              ${genOptionsHtml}
+            </select>
+            <select class="sl-select" data-testid="pokedex-biome-filter" aria-label="Filter by Biome">
+              <option value="all">All 18 Biomes</option>
+              ${biomeOptionsHtml}
+            </select>
+            <span class="sl-pill sl-num" data-testid="pokedex-counts">0 / ${TOTAL_SPECIES_COUNT}</span>
+          </div>
+
+          <div class="sl-dex-type-strip" role="group" aria-label="Filter by Elemental Type">
+            <button type="button" class="sl-btn sl-chip is-active" data-testid="pokedex-type-all" data-filter-type="all" aria-pressed="true">
+              All
+            </button>
+            ${ELEMENTAL_TYPES.map(
+              (t) => `
+              <button type="button" class="sl-btn sl-chip" data-testid="pokedex-type-${t}" data-filter-type="${t}" aria-pressed="false">
+                ${createIconSvg(typeToIconId(t), 'sl-icon-sm')}
+                <span>${capitalize(t)}</span>
+              </button>
+            `,
+            ).join('')}
+          </div>
+
+          <div class="sl-dex-list" data-testid="pokedex-list" role="listbox" aria-label="Species Catalog"></div>
+
+          <div class="sl-dex-pagination">
+            <button type="button" class="sl-btn" data-testid="pokedex-prev-page">Prev</button>
+            <span class="sl-pill sl-num" data-testid="pokedex-page-info">Page 1 / 1</span>
+            <button type="button" class="sl-btn" data-testid="pokedex-next-page">Next</button>
+          </div>
+        </div>
+
+        <div class="sl-dex-detail">
+          <div class="sl-holo-card" data-holo-card="true" data-testid="pokedex-holo-card" data-type="electric" data-star-rank="0" data-max-bond="false">
+            <div class="sl-holo-foil" aria-hidden="true"></div>
+            <div class="sl-holo-glare" aria-hidden="true"></div>
+
+            <div class="sl-holo-header">
+              <div>
+                <span class="sl-pill sl-num" data-testid="pokedex-card-number">#0025</span>
+                <strong class="sl-profile-name" data-testid="pokedex-card-name" style="margin-left: 6px;">Pikachu</strong>
               </div>
-              <div class="sl-holo-portrait-wrap">
-                <canvas class="sl-holo-portrait" width="184" height="156" data-testid="pokedex-portrait-canvas" aria-label="Species Portrait"></canvas>
-                <div class="sl-stat-list">
-                  ${(['HP', 'ATK', 'DEF', 'SPD'] as const)
-                    .map(
-                      (label, idx) => `
-                    <div class="sl-stat-row">
-                      <span>${label}</span>
-                      <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-xp" data-stat-bar="${idx}" style="--fill: 0.5;"></div></div>
-                      <span class="sl-num" data-stat-val="${idx}">0</span>
-                    </div>
-                  `,
-                    )
-                    .join('')}
-                  <div class="sl-stat-row" style="margin-top: 4px;">
-                    <span>${iconSvg('icon-bond', 'sl-icon-sm')}</span>
-                    <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-bond" data-testid="pokedex-bond-bar" style="--fill: 0;"></div></div>
-                    <span class="sl-num" data-testid="pokedex-bond-val">0</span>
+              <div class="sl-combatant-badges" data-testid="pokedex-card-types"></div>
+            </div>
+
+            <div class="sl-holo-portrait-wrap">
+              <canvas class="sl-holo-portrait" width="160" height="140" data-testid="pokedex-portrait-canvas" aria-label="Species Pixel Portrait"></canvas>
+              <div class="sl-stat-list">
+                ${(['HP', 'ATK', 'DEF', 'SPD'] as const)
+                  .map(
+                    (label, idx) => `
+                  <div class="sl-stat-row">
+                    <span>${label}</span>
+                    <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-xp" data-stat-bar="${idx}" style="--fill: 0.5;"></div></div>
+                    <span class="sl-num" data-stat-val="${idx}">0</span>
                   </div>
-                </div>
+                `,
+                  )
+                  .join('')}
               </div>
-              <div style="position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
-                <div class="sl-star-pips" data-testid="pokedex-star-pips" aria-label="Star Rank"></div>
-                <span class="sl-pill" data-testid="pokedex-card-status">Registered</span>
-                <span class="sl-pill" data-testid="pokedex-card-habitat">Starlight Village</span>
-              </div>
-              <p data-testid="pokedex-card-lore" style="position: relative; z-index: 1; margin: 0; font-size: 12px; color: var(--sl-text-secondary); min-height: 34px;"></p>
-              <div class="sl-cry-row">
-                <canvas class="sl-cry-canvas" width="260" height="48" data-testid="pokedex-cry-canvas" aria-label="Procedural Cry Waveform"></canvas>
-                <button type="button" class="sl-btn sl-btn-cyan" data-testid="pokedex-play-cry">
-                  ${iconSvg('icon-audio-on', 'sl-icon-sm')}
-                  <span>Play Cry</span>
-                </button>
-              </div>
+            </div>
+
+            <div class="sl-dex-meta-pills">
+              <span class="sl-pill" data-testid="pokedex-card-status">Catalog</span>
+              <span class="sl-pill" data-testid="pokedex-card-habitat">Gen 1 • Whispering Forest</span>
+              <span class="sl-pill" data-testid="pokedex-card-ability">Ability: Static</span>
+            </div>
+
+            <div class="sl-dex-evo-chain" data-testid="pokedex-evo-chain"></div>
+
+            <p class="sl-dex-lore" data-testid="pokedex-card-lore"></p>
+
+            <div class="sl-cry-row">
+              <canvas class="sl-cry-canvas" width="240" height="44" data-testid="pokedex-cry-canvas" aria-label="Live Cry Waveform"></canvas>
+              <button type="button" class="sl-btn sl-btn-cyan" data-testid="pokedex-play-cry">
+                ${createIconSvg('icon-audio-on', 'sl-icon-sm')}
+                <span>Play Cry</span>
+              </button>
             </div>
           </div>
         </div>
       </div>
     `;
 
-    this.searchInput = container.querySelector('[data-testid="pokedex-search"]') as HTMLInputElement | null;
-    this.caughtToggleBtn = container.querySelector('[data-testid="pokedex-caught-toggle"]') as HTMLButtonElement | null;
-    this.countBadgeEl = container.querySelector('[data-testid="pokedex-counts"]') as HTMLElement | null;
-    this.listEl = container.querySelector('[data-testid="pokedex-list"]') as HTMLElement | null;
-    this.pageInfoEl = container.querySelector('[data-testid="pokedex-page-info"]') as HTMLElement | null;
-    this.prevPageBtn = container.querySelector('[data-testid="pokedex-prev-page"]') as HTMLButtonElement | null;
-    this.nextPageBtn = container.querySelector('[data-testid="pokedex-next-page"]') as HTMLButtonElement | null;
+    this.searchInput = container.querySelector('[data-testid="pokedex-search"]');
+    this.genSelect = container.querySelector('[data-testid="pokedex-gen-filter"]');
+    this.biomeSelect = container.querySelector('[data-testid="pokedex-biome-filter"]');
+    this.caughtToggleBtn = container.querySelector('[data-testid="pokedex-caught-toggle"]');
+    this.countBadgeEl = container.querySelector('[data-testid="pokedex-counts"]');
+    this.listEl = container.querySelector('[data-testid="pokedex-list"]');
+    this.pageInfoEl = container.querySelector('[data-testid="pokedex-page-info"]');
+    this.prevPageBtn = container.querySelector('[data-testid="pokedex-prev-page"]');
+    this.nextPageBtn = container.querySelector('[data-testid="pokedex-next-page"]');
 
-    this.holoCardEl = container.querySelector('[data-testid="pokedex-holo-card"]') as HTMLElement | null;
-    this.cardNumberEl = container.querySelector('[data-testid="pokedex-card-number"]') as HTMLElement | null;
-    this.cardNameEl = container.querySelector('[data-testid="pokedex-card-name"]') as HTMLElement | null;
-    this.cardTypesEl = container.querySelector('[data-testid="pokedex-card-types"]') as HTMLElement | null;
-    this.portraitCanvas = container.querySelector('[data-testid="pokedex-portrait-canvas"]') as HTMLCanvasElement | null;
-    this.cryCanvas = container.querySelector('[data-testid="pokedex-cry-canvas"]') as HTMLCanvasElement | null;
-    this.playCryBtn = container.querySelector('[data-testid="pokedex-play-cry"]') as HTMLButtonElement | null;
-    this.starPipsEl = container.querySelector('[data-testid="pokedex-star-pips"]') as HTMLElement | null;
-    this.bondValEl = container.querySelector('[data-testid="pokedex-bond-val"]') as HTMLElement | null;
-    this.bondBarEl = container.querySelector('[data-testid="pokedex-bond-bar"]') as HTMLElement | null;
-    this.cardLoreEl = container.querySelector('[data-testid="pokedex-card-lore"]') as HTMLElement | null;
-    this.cardHabitatEl = container.querySelector('[data-testid="pokedex-card-habitat"]') as HTMLElement | null;
-    this.cardStatusEl = container.querySelector('[data-testid="pokedex-card-status"]') as HTMLElement | null;
+    this.holoCardEl = container.querySelector('[data-testid="pokedex-holo-card"]');
+    this.cardNumberEl = container.querySelector('[data-testid="pokedex-card-number"]');
+    this.cardNameEl = container.querySelector('[data-testid="pokedex-card-name"]');
+    this.cardTypesEl = container.querySelector('[data-testid="pokedex-card-types"]');
+    this.portraitCanvas = container.querySelector('[data-testid="pokedex-portrait-canvas"]');
+    this.cryCanvas = container.querySelector('[data-testid="pokedex-cry-canvas"]');
+    this.playCryBtn = container.querySelector('[data-testid="pokedex-play-cry"]');
+    this.cardAbilityEl = container.querySelector('[data-testid="pokedex-card-ability"]');
+    this.cardEvoEl = container.querySelector('[data-testid="pokedex-evo-chain"]');
+    this.cardLoreEl = container.querySelector('[data-testid="pokedex-card-lore"]');
+    this.cardHabitatEl = container.querySelector('[data-testid="pokedex-card-habitat"]');
+    this.cardStatusEl = container.querySelector('[data-testid="pokedex-card-status"]');
 
     for (let i = 0; i < 4; i++) {
       const bar = container.querySelector(`[data-stat-bar="${i}"]`) as HTMLElement | null;
@@ -314,13 +377,24 @@ export class PokedexView {
       if (bar && val) this.statRows.push({ bar, val });
     }
 
-    const closeBtn = container.querySelector('[data-testid="pokedex-close"]') as HTMLButtonElement | null;
-    closeBtn?.addEventListener('click', () => {
-      this.callbacks?.onNavigateScreen('overworld');
-    });
-
     this.searchInput?.addEventListener('input', () => {
       this.searchQuery = this.searchInput?.value ?? '';
+      this.currentPage = 1;
+      this.lastListKey = '';
+      this.refreshListOnly();
+    });
+
+    this.genSelect?.addEventListener('change', () => {
+      const val = this.genSelect?.value ?? 'all';
+      this.genFilter = val === 'all' ? 'all' : Number(val);
+      this.currentPage = 1;
+      this.lastListKey = '';
+      this.refreshListOnly();
+    });
+
+    this.biomeSelect?.addEventListener('change', () => {
+      const val = this.biomeSelect?.value ?? 'all';
+      this.biomeFilter = val === 'all' ? 'all' : (val as BiomeId);
       this.currentPage = 1;
       this.lastListKey = '';
       this.refreshListOnly();
@@ -333,8 +407,7 @@ export class PokedexView {
       this.refreshListOnly();
     });
 
-    const allFilterButtons = container.querySelectorAll('[data-filter-type]');
-    allFilterButtons.forEach((el) => {
+    container.querySelectorAll('[data-filter-type]').forEach((el) => {
       const btn = el as HTMLButtonElement;
       const t = btn.getAttribute('data-filter-type') ?? 'all';
       this.typeButtons.set(t, btn);
@@ -360,17 +433,25 @@ export class PokedexView {
       this.refreshListOnly();
     });
 
+    const selectSpeciesById = (id: number) => {
+      if (!Number.isInteger(id) || id < 1 || id > TOTAL_SPECIES_COUNT) return;
+      this.lastSelectedId = id;
+      this.callbacks?.onSelectPokedexSpecies(id);
+      this.refreshDetailOnly();
+      this.lastListKey = '';
+      this.refreshListOnly();
+    };
+
     this.listEl?.addEventListener('click', (evt) => {
       const target = (evt.target as HTMLElement | null)?.closest('[data-species-id]') as HTMLElement | null;
       if (!target) return;
-      const id = Number(target.getAttribute('data-species-id'));
-      if (Number.isInteger(id) && id >= 1) {
-        this.lastSelectedId = id;
-        this.callbacks?.onSelectPokedexSpecies(id);
-        this.refreshDetailOnly();
-        this.lastListKey = '';
-        this.refreshListOnly();
-      }
+      selectSpeciesById(Number(target.getAttribute('data-species-id')));
+    });
+
+    this.cardEvoEl?.addEventListener('click', (evt) => {
+      const target = (evt.target as HTMLElement | null)?.closest('[data-evo-species-id]') as HTMLElement | null;
+      if (!target) return;
+      selectSpeciesById(Number(target.getAttribute('data-evo-species-id')));
     });
 
     this.playCryBtn?.addEventListener('click', () => {
@@ -396,12 +477,13 @@ export class PokedexView {
   }
 
   sync(
-    profile: TrainerProfile,
+    profile: DojoProfileState,
     selectedId: number,
     cryWaveform: CryWaveformSnapshot,
     reducedMotion: boolean,
     active: boolean,
     timeSec: number,
+    assets?: PokedexAssets,
   ): void {
     this.currentProfile = profile;
     this.lastSelectedId = Math.max(1, Math.min(TOTAL_SPECIES_COUNT, Math.floor(selectedId || 25)));
@@ -412,7 +494,26 @@ export class PokedexView {
 
     this.refreshListOnly();
     this.refreshDetailOnly();
-    this.renderCanvases(timeSec);
+    this.renderCanvases(timeSec, assets);
+  }
+
+  private getOwnedSummary(speciesId: number): {
+    caught: boolean;
+    seen: boolean;
+    starRank: number;
+    bond: number;
+    shiny: boolean;
+    caughtCount: number;
+  } {
+    const profile = this.currentProfile;
+    const caughtCount = Number(profile?.pokedex?.caught?.[speciesId] ?? 0);
+    const caught = caughtCount > 0;
+    const seen = caught || Boolean(profile?.pokedex?.seen?.includes(speciesId));
+    const owned = [...(profile?.team ?? []), ...(profile?.box ?? [])].filter((m) => m.speciesId === speciesId);
+    const bestStar = owned.reduce((acc, m) => Math.max(acc, m.upgradeTier ?? 0), 0);
+    const bestBond = owned.reduce((acc, m) => Math.max(acc, m.bond ?? 0), 0);
+    const anyShiny = owned.some((m) => m.isShiny);
+    return { caught, seen, starRank: bestStar, bond: bestBond, shiny: anyShiny, caughtCount };
   }
 
   private refreshListOnly(): void {
@@ -421,6 +522,8 @@ export class PokedexView {
     const result = filterAndPaginatePokedex({
       query: this.searchQuery,
       typeFilter: this.typeFilter,
+      genFilter: this.genFilter,
+      biomeFilter: this.biomeFilter,
       caughtOnly: this.caughtOnly,
       page: this.currentPage,
       pageSize: this.pageSize,
@@ -431,6 +534,8 @@ export class PokedexView {
     const memo = [
       this.searchQuery,
       this.typeFilter,
+      this.genFilter,
+      this.biomeFilter,
       this.caughtOnly ? '1' : '0',
       result.page,
       result.totalPages,
@@ -474,16 +579,18 @@ export class PokedexView {
       return;
     }
 
+    const seenSet = new Set(this.currentProfile.pokedex.seen);
+    const caughtMap = this.currentProfile.pokedex.caught;
+
     this.listEl.innerHTML = result.items
       .map((sp) => {
-        const entry = this.currentProfile?.pokedex[sp.id];
-        const caught = Boolean(entry?.caught);
-        const seen = Boolean(entry?.seen || caught);
+        const caught = Number(caughtMap[sp.id] ?? 0) > 0;
+        const seen = caught || seenSet.has(sp.id);
         const selected = sp.id === this.lastSelectedId;
         const statusIcon = caught
-          ? iconSvg('icon-starball', 'sl-icon-sm')
+          ? createIconSvg('icon-starball', 'sl-icon-sm')
           : seen
-            ? iconSvg('icon-pokeball', 'sl-icon-sm')
+            ? createIconSvg('icon-pokeball', 'sl-icon-sm')
             : '';
         return `
           <button
@@ -495,8 +602,8 @@ export class PokedexView {
             aria-selected="${selected}"
           >
             <span class="sl-num">${formatDexNum(sp.id)}</span>
-            <span><strong>${safeText(sp.name)}</strong></span>
-            <span>${iconSvg(typeIconId(sp.primaryType), 'sl-icon-sm')}${sp.secondaryType ? iconSvg(typeIconId(sp.secondaryType), 'sl-icon-sm') : ''}</span>
+            <span class="sl-dex-row-name"><strong>${safeText(sp.name)}</strong></span>
+            <span>${createIconSvg(typeToIconId(sp.type), 'sl-icon-sm')}</span>
             <span>${statusIcon}</span>
           </button>
         `;
@@ -506,42 +613,32 @@ export class PokedexView {
 
   private refreshDetailOnly(): void {
     if (!this.currentProfile) return;
-    const sp = getSpecies(this.lastSelectedId);
-    const entry = this.currentProfile.pokedex[sp.id];
-    const caught = Boolean(entry?.caught);
-    const seen = Boolean(entry?.seen || caught);
-    const starRank = entry?.starRank ?? 0;
-    const bond = entry?.bond ?? 0;
-    const shiny = Boolean(entry?.shiny);
+    const sp = getSpeciesEntry(this.lastSelectedId);
+    const owned = this.getOwnedSummary(sp.id);
 
-    const detailKey = `${sp.id}|${caught}|${seen}|${starRank}|${bond}|${shiny}|${this.reducedMotion}`;
+    const detailKey = `${sp.id}|${owned.caught}|${owned.seen}|${owned.starRank}|${owned.bond}|${owned.shiny}|${this.reducedMotion}`;
     this.updateHoloCssVars();
     if (detailKey === this.lastDetailKey) return;
     this.lastDetailKey = detailKey;
 
     if (this.holoCardEl) {
-      this.holoCardEl.setAttribute('data-type', sp.primaryType);
-      this.holoCardEl.setAttribute('data-star-rank', String(starRank));
-      this.holoCardEl.setAttribute('data-max-bond', String(bond >= 100));
+      this.holoCardEl.setAttribute('data-type', sp.type);
+      this.holoCardEl.setAttribute('data-star-rank', String(owned.starRank));
+      this.holoCardEl.setAttribute('data-max-bond', String(owned.bond >= 100));
     }
     if (this.cardNumberEl) this.cardNumberEl.textContent = formatDexNum(sp.id);
     if (this.cardNameEl) this.cardNameEl.textContent = sp.name;
 
     if (this.cardTypesEl) {
-      const typeBadges = [sp.primaryType, sp.secondaryType].filter((t): t is ElementalType => Boolean(t));
-      this.cardTypesEl.innerHTML = typeBadges
-        .map(
-          (t) => `
-          <span class="sl-pill sl-type-pill" data-type="${t}">
-            ${iconSvg(typeIconId(t), 'sl-icon-sm')}
-            <span>${capitalize(t)}</span>
-          </span>
-        `,
-        )
-        .join('');
+      this.cardTypesEl.innerHTML = `
+        <span class="sl-pill sl-type-pill" data-type="${sp.type}">
+          ${createIconSvg(typeToIconId(sp.type), 'sl-icon-sm')}
+          <span>${capitalize(sp.type)}</span>
+        </span>
+      `;
     }
 
-    const stats = [sp.baseHp, sp.baseAtk, sp.baseDef, sp.baseSpd];
+    const stats = [sp.baseStats.hp, sp.baseStats.atk, sp.baseStats.def, sp.baseStats.spd];
     stats.forEach((v, idx) => {
       const row = this.statRows[idx];
       if (!row) return;
@@ -549,50 +646,79 @@ export class PokedexView {
       row.val.textContent = String(v);
     });
 
-    if (this.bondBarEl) {
-      this.bondBarEl.style.setProperty('--fill', String(Math.min(1, bond / 100)));
-    }
-    if (this.bondValEl) {
-      this.bondValEl.textContent = `${bond}`;
-    }
-
-    if (this.starPipsEl) {
-      this.starPipsEl.innerHTML = Array.from({ length: 5 }, (_, i) => {
-        const filled = i < starRank;
-        return `<span class="sl-star-pip ${filled ? 'is-filled' : ''}">${iconSvg('icon-star-rank', 'sl-icon-sm')}</span>`;
-      }).join('');
-    }
-
     if (this.cardStatusEl) {
-      const statusParts = [caught ? 'Caught' : seen ? 'Seen' : 'Catalog'];
-      if (shiny) statusParts.push('Shiny');
-      if (bond >= 100) statusParts.push('Max Bond');
+      const statusParts = [
+        owned.caught ? `Caught (${owned.caughtCount})` : owned.seen ? 'Seen' : 'Catalog',
+      ];
+      if (owned.shiny) statusParts.push('Shiny');
+      if (owned.starRank > 0) statusParts.push(`${owned.starRank}-Star`);
       this.cardStatusEl.textContent = statusParts.join(' • ');
     }
 
     if (this.cardHabitatEl) {
-      const biome = BIOME_DESCRIPTORS[sp.habitat];
-      this.cardHabitatEl.textContent = `Gen ${sp.generation} • ${biome ? biome.name : sp.habitat}`;
+      const biome = getBiomeVisualProfile(sp.biome);
+      const catchPct = Math.round(sp.catchFactor * 100);
+      this.cardHabitatEl.textContent = `Gen ${sp.generation} • ${biome.displayName} • Catch ${catchPct}%`;
+    }
+
+    if (this.cardAbilityEl) {
+      const ab = getAbilityEntry(sp.ability);
+      this.cardAbilityEl.textContent = ab ? `Ability: ${ab.name}` : 'Ability: Starlight Spirit';
+      this.cardAbilityEl.setAttribute('title', ab?.description ?? '');
+    }
+
+    if (this.cardEvoEl) {
+      const pre = PRE_EVO_MAP.get(sp.id) ?? [];
+      const nextRules = getEvolutionRules(sp.id);
+      const itemMap = new Map(getAllEvolutionItems().map((it) => [it.id, it.name]));
+
+      const parts: string[] = [];
+      for (const p of pre) {
+        const preSp = getSpeciesEntry(p.fromId);
+        parts.push(`
+          <button type="button" class="sl-btn sl-chip" data-evo-species-id="${preSp.id}">
+            <span>From ${safeText(preSp.name)} (${safeText(p.label)})</span>
+          </button>
+        `);
+      }
+      for (const r of nextRules) {
+        const nextSp = getSpeciesEntry(r.to);
+        const req = r.item
+          ? (itemMap.get(r.item) ?? r.item)
+          : r.minLevel
+            ? `Lv.${r.minLevel}`
+            : 'Evolve';
+        parts.push(`
+          <button type="button" class="sl-btn sl-chip sl-btn-cyan" data-evo-species-id="${nextSp.id}">
+            ${createIconSvg('icon-evolve', 'sl-icon-sm')}
+            <span>To ${safeText(nextSp.name)} (${safeText(req)})</span>
+          </button>
+        `);
+      }
+      this.cardEvoEl.innerHTML =
+        parts.length > 0
+          ? parts.join('')
+          : `<span class="sl-pill">Final or Standalone Stage</span>`;
     }
 
     if (this.cardLoreEl) {
-      const evoHint = sp.evolvesTo ? ` Evolves into ${getSpecies(sp.evolvesTo).name} at Lv.${sp.evolveLevel ?? 20}.` : '';
-      this.cardLoreEl.textContent = `${sp.lore}${evoHint}`;
+      const ab = getAbilityEntry(sp.ability);
+      this.cardLoreEl.textContent = ab ? `${sp.description} (${ab.name}: ${ab.description})` : sp.description;
     }
   }
 
   private updateHoloCssVars(): void {
     if (!this.holoCardEl) return;
-    const entry = this.currentProfile?.pokedex[this.lastSelectedId];
+    const owned = this.getOwnedSummary(this.lastSelectedId);
     const metrics = computeHoloCardMetrics(
       {
         speciesId: this.lastSelectedId,
         pointerTiltX: this.pointerTiltX,
         pointerTiltY: this.pointerTiltY,
-        starRank: entry?.starRank ?? 0,
-        bondLevel: entry?.bond ?? 0,
-        caught: Boolean(entry?.caught),
-        shiny: Boolean(entry?.shiny),
+        starRank: owned.starRank,
+        bondLevel: owned.bond,
+        caught: owned.caught,
+        shiny: owned.shiny,
       },
       this.reducedMotion,
     );
@@ -603,38 +729,20 @@ export class PokedexView {
     this.holoCardEl.style.setProperty('--holo-intensity', String(metrics.intensity));
   }
 
-  private renderCanvases(timeSec: number): void {
-    const sp = getSpecies(this.lastSelectedId);
-    const entry = this.currentProfile?.pokedex[sp.id];
+  private renderCanvases(timeSec: number, assets?: PokedexAssets): void {
+    const sp = getSpeciesEntry(this.lastSelectedId);
+    const owned = this.getOwnedSummary(sp.id);
 
     if (this.portraitCanvas) {
-      let ctx: CanvasRenderingContext2D | null = null;
-      try {
-        ctx = this.portraitCanvas.getContext('2d');
-      } catch {
-        ctx = null;
-      }
-      if (ctx) {
-        const w = this.portraitCanvas.width || 184;
-        const h = this.portraitCanvas.height || 156;
-        ctx.clearRect(0, 0, w, h);
-        const pal = TYPE_PALETTES[sp.primaryType];
-        const bg = ctx.createRadialGradient(w * 0.5, h * 0.45, 10, w * 0.5, h * 0.5, w * 0.65);
-        bg.addColorStop(0, `${pal.primary}38`);
-        bg.addColorStop(1, 'rgba(6, 10, 26, 0.92)');
-        ctx.fillStyle = bg;
-        ctx.fillRect(0, 0, w, h);
-
-        drawSpeciesPortrait(ctx, sp, this.rigSynthesizer, {
-          cx: w * 0.5,
-          cy: h * 0.52,
-          size: 112,
-          time: timeSec,
-          facing: 'left',
-          shiny: Boolean(entry?.shiny),
-          reducedMotion: this.reducedMotion,
-        });
-      }
+      renderPokemonPreviewCanvas(
+        this.portraitCanvas,
+        sp.id,
+        assets?.frames ?? null,
+        assets?.fallbacksSheet ?? null,
+        assets?.manifest ?? null,
+        owned.shiny,
+        timeSec,
+      );
     }
 
     if (this.cryCanvas && this.currentWaveform) {
@@ -645,14 +753,14 @@ export class PokedexView {
         ctx = null;
       }
       if (ctx) {
-        const w = this.cryCanvas.width || 260;
-        const h = this.cryCanvas.height || 48;
+        const w = this.cryCanvas.width || 240;
+        const h = this.cryCanvas.height || 44;
         const midY = h * 0.5;
-        const pal = TYPE_PALETTES[sp.primaryType];
+        const pal = TYPE_PALETTES[sp.type];
         const samples = this.currentWaveform.samples;
 
         ctx.clearRect(0, 0, w, h);
-        ctx.strokeStyle = 'rgba(124, 232, 255, 0.2)';
+        ctx.strokeStyle = 'rgba(124, 232, 255, 0.22)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(0, midY);
@@ -681,6 +789,8 @@ export class PokedexView {
     this.typeButtons.clear();
     this.statRows = [];
     this.searchInput = null;
+    this.genSelect = null;
+    this.biomeSelect = null;
     this.caughtToggleBtn = null;
     this.countBadgeEl = null;
     this.listEl = null;
