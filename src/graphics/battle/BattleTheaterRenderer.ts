@@ -38,15 +38,21 @@ import { BattleVfxDirector } from './BattleVfxDirector';
 import { OfflineSpriteRigSynthesizer } from './OfflineSpriteRigSynthesizer';
 import {
   SILHOUETTE_CONTOUR_PAD,
+  getSpriteHitFlashCanvas,
   getSpriteSilhouetteContour,
   measureSpriteOpaqueBounds,
+  type SpriteOpaqueBounds,
 } from './SpriteSilhouette';
 
-function buildBattleColorGrade(base: BiomeColorGrade): BiomeColorGrade {
-  // Preserve rich biome atmosphere while protecting Pokémon sprite hues from extreme ambient tinting or bloom washout
+const BATTLE_COLOR_GRADE_CACHE = new Map<BiomeId, BiomeColorGrade>();
+const BATTLE_CANOPY_CACHE = new Map<BiomeId, CanopyShadowConfig>();
+
+function getBattleColorGrade(biomeId: BiomeId, base: BiomeColorGrade): BiomeColorGrade {
+  const cached = BATTLE_COLOR_GRADE_CACHE.get(biomeId);
+  if (cached) return cached;
   const liftAmbient = (c: number): number => clamp(c + (1 - c) * 0.48, 0.82, 1.04);
   const tameTint = (c: number): number => 1 + (c - 1) * 0.44;
-  return {
+  const built: BiomeColorGrade = {
     ...base,
     ambientRgb: [
       liftAmbient(base.ambientRgb[0]),
@@ -61,18 +67,24 @@ function buildBattleColorGrade(base: BiomeColorGrade): BiomeColorGrade {
     ],
     saturation: clamp(base.saturation, 1.0, 1.12),
     contrast: clamp(base.contrast, 0.99, 1.07),
-    bloomIntensity: Math.min(base.bloomIntensity, 0.30),
+    bloomIntensity: Math.min(base.bloomIntensity, 0.28),
     bloomThreshold: Math.max(base.bloomThreshold, 0.78),
     vignetteStrength: clamp(base.vignetteStrength * 0.84, 0.14, 0.28),
   };
+  BATTLE_COLOR_GRADE_CACHE.set(biomeId, built);
+  return built;
 }
 
-function buildBattleCanopyConfig(base: CanopyShadowConfig): CanopyShadowConfig {
-  return {
+function getBattleCanopyConfig(biomeId: BiomeId, base: CanopyShadowConfig): CanopyShadowConfig {
+  const cached = BATTLE_CANOPY_CACHE.get(biomeId);
+  if (cached) return cached;
+  const built: CanopyShadowConfig = {
     ...base,
     sunbeamIntensity: base.sunbeamIntensity * 0.42,
     cloudOpacity: Math.min(base.cloudOpacity, 0.13),
   };
+  BATTLE_CANOPY_CACHE.set(biomeId, built);
+  return built;
 }
 
 interface CameraSpringState {
@@ -86,6 +98,31 @@ interface CameraSpringState {
   vRot: number;
   shakeAmp: number;
   shakePhase: number;
+}
+
+interface PreparedCombatant {
+  visual: BattleCombatantVisual;
+  pad: BattleStageLayout['playerPad'];
+  depth: number;
+  cx: number;
+  cy: number;
+  groundY: number;
+  drawSize: number;
+  captureScale: number;
+  captureAlpha: number;
+  facing: 'left' | 'right';
+  rimColor: string;
+  tilt: number;
+  flipX: boolean;
+  liveFrame: HTMLCanvasElement | null;
+  opaqueBounds: SpriteOpaqueBounds | null;
+  liveFrameW: number;
+  liveFrameH: number;
+  liveDrawW: number;
+  liveDrawH: number;
+  liveDrawX: number;
+  liveDrawY: number;
+  liveVisibleW: number;
 }
 
 const MAX_REDUCED_MOTION_SHUTTER_SEC = 0.22;
@@ -176,6 +213,28 @@ function getShinyTint(time: number, alpha: number, reducedMotion: boolean): [num
   return [r, g, b, alpha];
 }
 
+function updateFighterTimers(
+  fighter: BattleCombatantVisual,
+  dt: number,
+  reducedMotion: boolean,
+): void {
+  fighter.hitFlash = Math.max(0, fighter.hitFlash - dt * (reducedMotion ? 3.5 : 4.5));
+  fighter.bracedFlash = Math.max(0, fighter.bracedFlash - dt * 1.6);
+  fighter.buffFlash = Math.max(0, fighter.buffFlash - dt * 1.8);
+  fighter.healFlash = Math.max(0, fighter.healFlash - dt * 1.8);
+  const damp = Math.max(0, 1 - dt * 7.5);
+  fighter.lungeOffset *= damp;
+  fighter.recoilOffset *= damp;
+  if (Math.abs(fighter.lungeOffset) < 0.002) fighter.lungeOffset = 0;
+  if (Math.abs(fighter.recoilOffset) < 0.002) fighter.recoilOffset = 0;
+  if (fighter.abilityBanner) {
+    fighter.abilityBanner.elapsed += dt;
+    if (fighter.abilityBanner.elapsed >= 2.4) {
+      fighter.abilityBanner = null;
+    }
+  }
+}
+
 export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   private readonly rigSynth = new OfflineSpriteRigSynthesizer();
   private readonly vfxDirector = new BattleVfxDirector();
@@ -238,23 +297,20 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   }
 
   triggerShutter(tier: EncounterTier, reducedMotion: boolean): void {
-    // Clear any stale VFX, camera cues, or spring recoil left over from a fled or previous battle
     this.pendingVfx.length = 0;
     this.pendingCameraCue = null;
     this.lastObservedCue = 'idle';
     this.lastObservedCueSeq = -1;
-    this.spring = {
-      x: 0,
-      y: 0,
-      zoom: 1,
-      rotation: 0,
-      vx: 0,
-      vy: 0,
-      vZoom: 0,
-      vRot: 0,
-      shakeAmp: 0,
-      shakePhase: 0,
-    };
+    this.spring.x = 0;
+    this.spring.y = 0;
+    this.spring.zoom = 1;
+    this.spring.rotation = 0;
+    this.spring.vx = 0;
+    this.spring.vy = 0;
+    this.spring.vZoom = 0;
+    this.spring.vRot = 0;
+    this.spring.shakeAmp = 0;
+    this.spring.shakePhase = 0;
 
     const duration = reducedMotion
       ? 0.2
@@ -322,7 +378,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     }
 
     if (this.pendingVfx.length > 0) {
-      for (const evt of this.pendingVfx) {
+      for (let i = 0; i < this.pendingVfx.length; i++) {
+        const evt = this.pendingVfx[i];
         state.activeVfx.push(evt);
         state.arenaLightingType = evt.type;
         state.arenaLightingPulse = 1;
@@ -344,8 +401,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       this.lastObservedCueSeq = state.cameraCueSeq;
       this.pendingCameraCue = null;
     } else if (
-      state.cameraCue !== this.lastObservedCue
-      || (typeof state.cameraCueSeq === 'number' && state.cameraCueSeq !== this.lastObservedCueSeq)
+      state.cameraCue !== this.lastObservedCue ||
+      (typeof state.cameraCueSeq === 'number' && state.cameraCueSeq !== this.lastObservedCueSeq)
     ) {
       state.cameraCueElapsed = 0;
       if (state.cameraCue === 'hit' && !state.reducedMotion) {
@@ -395,22 +452,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     }
 
     if (!inHitStop) {
-      for (const fighter of [state.player, state.enemy]) {
-        fighter.hitFlash = Math.max(0, fighter.hitFlash - dt * (state.reducedMotion ? 3.5 : 4.5));
-        fighter.bracedFlash = Math.max(0, fighter.bracedFlash - dt * 1.6);
-        fighter.buffFlash = Math.max(0, fighter.buffFlash - dt * 1.8);
-        fighter.healFlash = Math.max(0, fighter.healFlash - dt * 1.8);
-        fighter.lungeOffset *= Math.max(0, 1 - dt * 7.5);
-        fighter.recoilOffset *= Math.max(0, 1 - dt * 7.5);
-        if (Math.abs(fighter.lungeOffset) < 0.002) fighter.lungeOffset = 0;
-        if (Math.abs(fighter.recoilOffset) < 0.002) fighter.recoilOffset = 0;
-        if (fighter.abilityBanner) {
-          fighter.abilityBanner.elapsed += dt;
-          if (fighter.abilityBanner.elapsed >= 2.4) {
-            fighter.abilityBanner = null;
-          }
-        }
-      }
+      updateFighterTimers(state.player, dt, state.reducedMotion);
+      updateFighterTimers(state.enemy, dt, state.reducedMotion);
     }
 
     state.cameraCueElapsed += dt;
@@ -424,21 +467,21 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     const stiffness = state.reducedMotion ? 28 : 68;
     const damping = state.reducedMotion ? 11 : 13.5;
 
-    const stepAxis = (pos: number, vel: number, tgt: number): [number, number] => {
-      const acc = (tgt - pos) * stiffness - vel * damping;
-      const nextVel = vel + acc * dt;
-      const nextPos = pos + nextVel * dt;
-      return [nextPos, nextVel];
-    };
+    const accX = (target.x - this.spring.x) * stiffness - this.spring.vx * damping;
+    this.spring.vx += accX * dt;
+    this.spring.x += this.spring.vx * dt;
 
-    [this.spring.x, this.spring.vx] = stepAxis(this.spring.x, this.spring.vx, target.x);
-    [this.spring.y, this.spring.vy] = stepAxis(this.spring.y, this.spring.vy, target.y);
-    [this.spring.zoom, this.spring.vZoom] = stepAxis(this.spring.zoom, this.spring.vZoom, target.zoom);
-    [this.spring.rotation, this.spring.vRot] = stepAxis(
-      this.spring.rotation,
-      this.spring.vRot,
-      target.rotation,
-    );
+    const accY = (target.y - this.spring.y) * stiffness - this.spring.vy * damping;
+    this.spring.vy += accY * dt;
+    this.spring.y += this.spring.vy * dt;
+
+    const accZ = (target.zoom - this.spring.zoom) * stiffness - this.spring.vZoom * damping;
+    this.spring.vZoom += accZ * dt;
+    this.spring.zoom += this.spring.vZoom * dt;
+
+    const accR = (target.rotation - this.spring.rotation) * stiffness - this.spring.vRot * damping;
+    this.spring.vRot += accR * dt;
+    this.spring.rotation += this.spring.vRot * dt;
 
     if (!state.reducedMotion) {
       this.spring.shakePhase += dt;
@@ -476,8 +519,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     const visualProfile = getBiomeVisualProfile(arena.biomeId);
     const camera = this.getCameraTransform(state.reducedMotion);
 
-    backend.setColorGrade(buildBattleColorGrade(visualProfile.colorGrade));
-    backend.setCanopyConfig(buildBattleCanopyConfig(visualProfile.canopyConfig));
+    backend.setColorGrade(getBattleColorGrade(arena.biomeId, visualProfile.colorGrade));
+    backend.setCanopyConfig(getBattleCanopyConfig(arena.biomeId, visualProfile.canopyConfig));
     backend.setWaterConfig({
       ...visualProfile.waterConfig,
       time: state.elapsedSeconds,
@@ -497,7 +540,17 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     const activeShutter = this.pendingShutter ?? state.shutter;
     const arenaImg = this.getArenaImageFn ? this.getArenaImageFn(arena.biomeId) : null;
 
-    // 1. Bespoke 480x270 Pixel Arena Backdrop + Grounded Pedestals + Atmospheric Motes
+    // Precompute stage layout & both combatants BEFORE emitting backend commands so ALL
+    // world 2D passes (pedestals + motes + BOTH shadows/reflections) merge into ONE single
+    // WebGL2 hybrid layer blit, followed by ONE single batched sprite pass for BOTH fighters!
+    const stageLayout = computeBattleStageLayout(
+      this.cachedViewportWidth,
+      this.cachedViewportHeight,
+    );
+    const enemyPrep = this.prepareCombatant(state, state.enemy, stageLayout.enemyPad, stageLayout, 10);
+    const playerPrep = this.prepareCombatant(state, state.player, stageLayout.playerPad, stageLayout, 20);
+
+    // 1. Arena Backdrop (480x270 pixel PNG or cached HD-2D fallback) + Cached Pedestals + Motes
     renderArenaBackdrop(
       backend,
       arena,
@@ -509,18 +562,37 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       arenaImg,
     );
 
-    // 2. Combatants (Enemy in back, Player in front — crisp animated sprites or offline pixel rigs)
-    const stageLayout = computeBattleStageLayout(
-      this.cachedViewportWidth,
-      this.cachedViewportHeight,
-    );
-    this.renderCombatant(backend, state, arena, state.enemy, stageLayout.enemyPad, stageLayout, camera, 10);
-    this.renderCombatant(backend, state, arena, state.player, stageLayout.playerPad, stageLayout, camera, 20);
+    // 2. Ground Shadows, Planar Reflections & Offline Rigs (merged consecutively into the SAME
+    //    WebGL2 'world' hybrid layer as pedestals — eliminates mid-frame full-screen GPU uploads!)
+    if (enemyPrep || playerPrep) {
+      backend.drawCustom2D((ctx, width, height) => {
+        this.cachedViewportWidth = width;
+        this.cachedViewportHeight = height;
+        const px = Math.max(2, Math.round(Math.min(width, height) / 220));
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        applyCameraToContext(ctx, width, height, camera);
 
-    // 3. Arena Foreground Pixel Frame
-    renderArenaForeground(backend, arena, state, camera, state.elapsedSeconds);
+        if (enemyPrep) {
+          this.drawCombatantGroundAndOffline(ctx, state, arena, enemyPrep, px);
+        }
+        if (playerPrep) {
+          this.drawCombatantGroundAndOffline(ctx, state, arena, playerPrep, px);
+        }
 
-    // 4. Deferred PointLights & Elemental Sparks
+        ctx.restore();
+      }, 'world');
+    }
+
+    // 3. Live Animated Combatant Sprites (both enemy & player batched into ONE 'sprites' segment)
+    if (enemyPrep && enemyPrep.liveFrame) {
+      this.emitLiveCombatantSprites(backend, state, enemyPrep);
+    }
+    if (playerPrep && playerPrep.liveFrame) {
+      this.emitLiveCombatantSprites(backend, state, playerPrep);
+    }
+
+    // 4. Deferred PointLights & Elemental Particles
     emitArenaPointLights(backend, arena, state, stageLayout);
     this.vfxDirector.emitParticlesAndLights(
       backend,
@@ -530,7 +602,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       this.cachedViewportHeight,
     );
 
-    // 5. Post-Light Pixel VFX, Shield/Braced/Stat/Ability Overlays, Capture Ball & Evolution Spiral
+    // 5. Post-Light Composite (cached foreground framing + pixel VFX merged into ONE 'post-light' blit!)
+    renderArenaForeground(backend, arena, state, camera, state.elapsedSeconds, 'post-light');
     this.vfxDirector.renderPostLightVfx(backend, state, activeEvents, camera);
 
     // 6. 4-Mode Encounter Transition Shutter ('screen' layer)
@@ -541,16 +614,13 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     }
   }
 
-  private renderCombatant(
-    backend: IRenderBackend,
+  private prepareCombatant(
     state: BattleSceneState,
-    arena: BattleArenaDescriptor,
     visual: BattleCombatantVisual,
     pad: BattleStageLayout['playerPad'],
     layout: BattleStageLayout,
-    camera: BattleCameraTransform,
     depth: number,
-  ): void {
+  ): PreparedCombatant | null {
     const dir = visual.side === 'player' ? 1 : -1;
     const lungePx = visual.lungeOffset * layout.width * 0.045;
     const recoilPx = visual.recoilOffset * layout.width * 0.032;
@@ -572,20 +642,20 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     }
     const faintDrop = clamp(visual.faintDrop ?? 0, 0, 1);
     const sendOut = clamp(visual.sendOutProgress ?? 1, 0, 1);
-    const sendOutScale = sendOut >= 0.99
-      ? 1
-      : 0.25 + 0.75 * (1 - Math.pow(1 - sendOut, 3));
+    const sendOutScale =
+      sendOut >= 0.99 ? 1 : 0.25 + 0.75 * (1 - Math.pow(1 - sendOut, 3));
     const sendOutAlpha = sendOut >= 0.99 ? 1 : clamp(sendOut * 1.9, 0, 1);
 
     captureScale *= sendOutScale;
     captureAlpha *= sendOutAlpha * (1 - faintDrop);
-    if (captureAlpha <= 0.01) return;
+    if (captureAlpha <= 0.01) return null;
 
-    const bobPx = state.reducedMotion || faintDrop > 0.05
-      ? 0
-      : Math.round(
-          Math.sin(state.elapsedSeconds * 3.1 + (visual.side === 'player' ? 0 : 1.7)) * 2,
-        );
+    const bobPx =
+      state.reducedMotion || faintDrop > 0.05
+        ? 0
+        : Math.round(
+            Math.sin(state.elapsedSeconds * 3.1 + (visual.side === 'player' ? 0 : 1.7)) * 2,
+          );
     const evoScale =
       visual.side === 'player' && state.phase === 'evolving' && !state.reducedMotion
         ? 1 + Math.sin(state.elapsedSeconds * 9) * 0.08
@@ -611,11 +681,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         ? SpriteAssetLoader.selectFrame(visual.frames, state.elapsedSeconds)
         : null;
 
-    const opaqueBounds = liveFrame
-      ? measureSpriteOpaqueBounds(visual.frames, liveFrame)
-      : null;
+    const opaqueBounds = liveFrame ? measureSpriteOpaqueBounds(visual.frames, liveFrame) : null;
 
-    // Precompute live sprite draw geometry so grounded shadow width aligns with the real silhouette
     let liveDrawW = drawSize;
     let liveDrawH = drawSize;
     let liveDrawX = Math.round(cx - drawSize * 0.5);
@@ -631,7 +698,6 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
 
       let scale = Math.min(drawSize / liveFrameW, drawSize / liveFrameH);
       if (opaqueBounds && opaqueBounds.contentW > 0 && opaqueBounds.contentH > 0) {
-        // Scale from visible opaque silhouette so sprites with generous transparent GIF padding or wide wings (e.g. Moltres) read heroically
         const effectiveDim = Math.max(opaqueBounds.contentW * 0.82, opaqueBounds.contentH, 34);
         const desiredScale = (drawSize * 0.96) / effectiveDim;
         const maxScaleW = (pad.size * 1.30 * captureScale * evoScale) / opaqueBounds.contentW;
@@ -651,7 +717,11 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         const contentCenterY = (opaqueBounds.minY + opaqueBounds.maxY + 1) * 0.5 * scale;
         const pullDy = cy - contentCenterY;
         liveDrawY = Math.round(standingDy * captureScale + pullDy * (1 - captureScale));
-        liveVisibleW = clamp(opaqueBounds.contentW * scale, pad.size * 0.44 * captureScale, pad.size * 1.06 * captureScale);
+        liveVisibleW = clamp(
+          opaqueBounds.contentW * scale,
+          pad.size * 0.44 * captureScale,
+          pad.size * 1.06 * captureScale,
+        );
       } else {
         liveDrawX = Math.round(cx - liveDrawW * 0.5);
         const standingDy = groundY - liveDrawH + 4 + shiftY - bobPx;
@@ -660,178 +730,136 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       }
     }
 
-    // Grounded 2-tier pixel-stepped contact shadow (plus offline planar reflection when using offline rig)
-    backend.drawCustom2D((ctx, width, height) => {
-      this.cachedViewportWidth = width;
-      this.cachedViewportHeight = height;
-      const px = Math.max(2, Math.round(Math.min(width, height) / 180));
-      ctx.save();
-      ctx.imageSmoothingEnabled = false;
-      applyCameraToContext(ctx, width, height, camera);
+    return {
+      visual,
+      pad,
+      depth,
+      cx,
+      cy,
+      groundY,
+      drawSize,
+      captureScale,
+      captureAlpha,
+      facing,
+      rimColor,
+      tilt,
+      flipX,
+      liveFrame,
+      opaqueBounds,
+      liveFrameW,
+      liveFrameH,
+      liveDrawW,
+      liveDrawH,
+      liveDrawX,
+      liveDrawY,
+      liveVisibleW,
+    };
+  }
 
-      const shadowRx = Math.max(pad.size * 0.28 * captureScale, liveVisibleW * 0.46);
-      const shadowRy = Math.max(px * 2.5, pad.size * 0.095 * captureScale);
-      drawPixelSteppedDisc(
-        ctx,
-        cx,
-        groundY + px,
-        shadowRx * 1.12,
-        shadowRy * 1.18,
-        px,
-        `rgba(6, 9, 24, ${(0.28 * captureAlpha).toFixed(3)})`,
-      );
-      drawPixelSteppedDisc(
-        ctx,
-        cx,
-        groundY + px,
-        shadowRx * 0.86,
-        shadowRy * 0.84,
-        px,
-        `rgba(5, 7, 20, ${(0.58 * captureAlpha).toFixed(3)})`,
-      );
+  private drawCombatantGroundAndOffline(
+    ctx: CanvasRenderingContext2D,
+    state: BattleSceneState,
+    arena: BattleArenaDescriptor,
+    prep: PreparedCombatant,
+    px: number,
+  ): void {
+    const { visual, pad, cx, cy, groundY, drawSize, captureScale, captureAlpha, facing, rimColor, tilt, flipX, liveFrame, opaqueBounds, liveFrameW, liveFrameH, liveDrawW, liveDrawH, liveDrawX, liveVisibleW } = prep;
+    const mon = visual.mon;
 
-      if (arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
-        if (liveFrame && typeof HTMLCanvasElement !== 'undefined' && liveFrame instanceof HTMLCanvasElement) {
-          // True vertically-flipped soft planar reflection beneath feet (fixes un-flipped upright smear!)
-          const feetSrcY = opaqueBounds ? opaqueBounds.maxY + 1 : liveFrameH;
-          const reflScaleX = liveDrawW / liveFrameW;
-          const reflScaleY = liveDrawH / liveFrameH;
-          ctx.save();
-          ctx.globalAlpha = arena.reflectionAlpha * 0.24 * captureAlpha;
-          ctx.translate(liveDrawX + liveDrawW * 0.5, groundY + px);
-          ctx.scale(flipX ? -1 : 1, -0.34);
-          ctx.drawImage(
-            liveFrame,
-            0,
-            0,
-            liveFrameW,
-            feetSrcY,
-            -liveDrawW * 0.5,
-            -Math.round(feetSrcY * reflScaleY),
-            Math.round(liveFrameW * reflScaleX),
-            Math.round(feetSrcY * reflScaleY),
-          );
-          ctx.restore();
-        } else if (!liveFrame) {
-          const rig: OfflineRigDescriptor = {
-            speciesId: mon.speciesId,
-            name: mon.name,
-            primaryType: mon.type,
-            archetype: mon.archetype,
-            colorHex: mon.colorHex,
-            shiny: mon.isShiny,
-          };
-          ctx.save();
-          ctx.globalAlpha = arena.reflectionAlpha * 0.36 * captureAlpha;
-          ctx.translate(cx, groundY + drawSize * 0.22);
-          ctx.scale(1, -0.34);
-          this.rigSynth.renderRig(ctx, rig, {
-            cx: 0,
-            cy: 0,
-            size: drawSize,
-            time: state.elapsedSeconds,
-            facing,
-            reducedMotion: state.reducedMotion,
-          });
-          ctx.restore();
-        }
-      }
-      ctx.restore();
-    }, 'world');
-
-    if (liveFrame) {
-      const fw = liveFrameW;
-      const fh = liveFrameH;
-      const dw = liveDrawW;
-      const dh = liveDrawH;
-      const dx = liveDrawX;
-      const dy = liveDrawY;
-
-      // Dual-contrast pixel-art silhouette contour backing (dark ink outline + subtle starlight rim-halo)
-      const contourCanvas = getSpriteSilhouetteContour(liveFrame);
-      if (contourCanvas) {
-        const padX = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dw) / fw));
-        const padY = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dh) / fh));
-        backend.drawSprite({
-          source: contourCanvas,
-          sx: 0,
-          sy: 0,
-          sw: contourCanvas.width,
-          sh: contourCanvas.height,
-          dx: dx - padX,
-          dy: dy - padY,
-          dw: dw + padX * 2,
-          dh: dh + padY * 2,
-          flipX,
-          rotation: tilt,
-          alpha: captureAlpha,
-          tint: [1, 1, 1, captureAlpha],
-          pixelCrisp: true,
-          depth: depth - 0.12,
-        });
-      }
-
-      const tint: [number, number, number, number] =
-        visual.hitFlash > 0.05
-          ? [1.0, 0.96, 0.78, captureAlpha]
-          : mon.isShiny
-            ? getShinyTint(state.elapsedSeconds, captureAlpha, state.reducedMotion)
-            : [1, 1, 1, captureAlpha];
-
-      // Reserve shader rim tinting strictly for active combat states so native pixel ink outlines stay crisp
-      const rimRgba: [number, number, number, number] | undefined =
-        visual.healFlash > 0.05
-          ? [0.35, 1.0, 0.62, visual.healFlash]
-          : visual.buffFlash > 0.05
-            ? [1.0, 0.88, 0.38, visual.buffFlash]
+    // 1. Subtle elemental ground rim ring on elite / shiny / buffed / healing combatants
+    if (mon.isElite || mon.encounterTrait === 'apex' || mon.isShiny || visual.buffFlash > 0.08 || visual.healFlash > 0.08) {
+      const auraHex =
+        visual.healFlash > 0.08
+          ? '#4ade80'
+          : visual.buffFlash > 0.08
+            ? '#fde047'
             : mon.isElite || mon.encounterTrait === 'apex'
-              ? [1.0, 0.42, 0.45, 0.65]
-              : undefined;
-
-      backend.drawSprite({
-        source: liveFrame,
-        sx: 0,
-        sy: 0,
-        sw: fw,
-        sh: fh,
-        dx,
-        dy,
-        dw,
-        dh,
-        flipX,
-        rotation: tilt,
-        alpha: captureAlpha,
-        tint,
-        rimColor: rimRgba,
-        emissive: visual.hitFlash > 0.05 ? visual.hitFlash * 0.85 : mon.isShiny ? 0.22 : 0,
-        pixelCrisp: true,
-        depth,
-      });
-
-      if (visual.hitFlash > 0.05) {
-        backend.drawSprite({
-          source: liveFrame,
-          sx: 0,
-          sy: 0,
-          sw: fw,
-          sh: fh,
-          dx,
-          dy,
-          dw,
-          dh,
-          flipX,
-          rotation: tilt,
-          alpha: visual.hitFlash * 0.82 * captureAlpha,
-          additive: true,
-          pixelCrisp: true,
-          depth: depth + 0.1,
-        });
-      }
-      return;
+              ? '#ff6b6b'
+              : '#7ce8ff';
+      const pulse = state.reducedMotion ? 0.5 : 0.45 + 0.35 * Math.sin(state.elapsedSeconds * 4.2);
+      drawPixelSteppedDisc(
+        ctx,
+        cx,
+        groundY + px,
+        Math.max(pad.size * 0.34, liveVisibleW * 0.54),
+        Math.max(px * 3, pad.size * 0.115),
+        px,
+        'rgba(0, 0, 0, 0)',
+        hexToRgba(auraHex, pulse * 0.65 * captureAlpha),
+      );
     }
 
-    // Offline Pixel Fallback Rig (fallbacks-atlas.png or 16x16 pixel-grid emblem)
-    backend.drawCustom2D((ctx, width, height) => {
+    // 2. Grounded 2-tier pixel-stepped contact shadow directly beneath feet
+    const shadowRx = Math.max(pad.size * 0.27 * captureScale, liveVisibleW * 0.44);
+    const shadowRy = Math.max(px * 2.5, pad.size * 0.09 * captureScale);
+    drawPixelSteppedDisc(
+      ctx,
+      cx,
+      groundY + px,
+      shadowRx * 1.14,
+      shadowRy * 1.18,
+      px,
+      `rgba(6, 9, 22, ${(0.24 * captureAlpha).toFixed(3)})`,
+    );
+    drawPixelSteppedDisc(
+      ctx,
+      cx,
+      groundY + px,
+      shadowRx * 0.84,
+      shadowRy * 0.82,
+      px,
+      `rgba(5, 7, 18, ${(0.56 * captureAlpha).toFixed(3)})`,
+    );
+
+    // 3. Vertically-flipped soft planar reflection on reflective arenas
+    if (arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
+      if (liveFrame && typeof HTMLCanvasElement !== 'undefined' && liveFrame instanceof HTMLCanvasElement) {
+        const feetSrcY = opaqueBounds ? opaqueBounds.maxY + 1 : liveFrameH;
+        const reflScaleX = liveDrawW / liveFrameW;
+        const reflScaleY = liveDrawH / liveFrameH;
+        ctx.save();
+        ctx.globalAlpha = arena.reflectionAlpha * 0.22 * captureAlpha;
+        ctx.translate(liveDrawX + liveDrawW * 0.5, groundY + px);
+        ctx.scale(flipX ? -1 : 1, -0.32);
+        ctx.drawImage(
+          liveFrame,
+          0,
+          0,
+          liveFrameW,
+          feetSrcY,
+          -liveDrawW * 0.5,
+          -Math.round(feetSrcY * reflScaleY),
+          Math.round(liveFrameW * reflScaleX),
+          Math.round(feetSrcY * reflScaleY),
+        );
+        ctx.restore();
+      } else if (!liveFrame) {
+        const rig: OfflineRigDescriptor = {
+          speciesId: mon.speciesId,
+          name: mon.name,
+          primaryType: mon.type,
+          archetype: mon.archetype,
+          colorHex: mon.colorHex,
+          shiny: mon.isShiny,
+        };
+        ctx.save();
+        ctx.globalAlpha = arena.reflectionAlpha * 0.34 * captureAlpha;
+        ctx.translate(cx, groundY + drawSize * 0.22);
+        ctx.scale(1, -0.34);
+        this.rigSynth.renderRig(ctx, rig, {
+          cx: 0,
+          cy: 0,
+          size: drawSize,
+          time: state.elapsedSeconds,
+          facing,
+          reducedMotion: state.reducedMotion,
+        });
+        ctx.restore();
+      }
+    }
+
+    // 4. Offline Pixel Fallback Rig (rendered in the same world 2D pass when no live frame is active)
+    if (!liveFrame) {
       const rig: OfflineRigDescriptor = {
         speciesId: mon.speciesId,
         name: mon.name,
@@ -841,9 +869,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         shiny: mon.isShiny,
       };
       ctx.save();
-      ctx.imageSmoothingEnabled = false;
       ctx.globalAlpha = captureAlpha;
-      applyCameraToContext(ctx, width, height, camera);
       if (tilt !== 0) {
         ctx.translate(cx, cy);
         ctx.rotate(tilt);
@@ -860,7 +886,115 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         reducedMotion: state.reducedMotion,
       });
       ctx.restore();
-    }, 'world');
+    }
+  }
+
+  private emitLiveCombatantSprites(
+    backend: IRenderBackend,
+    state: BattleSceneState,
+    prep: PreparedCombatant,
+  ): void {
+    const {
+      visual,
+      depth,
+      captureAlpha,
+      tilt,
+      flipX,
+      liveFrame,
+      liveFrameW: fw,
+      liveFrameH: fh,
+      liveDrawW: dw,
+      liveDrawH: dh,
+      liveDrawX: dx,
+      liveDrawY: dy,
+    } = prep;
+    if (!liveFrame) return;
+
+    const mon = visual.mon;
+
+    // 1. Tight 1-texel crisp dark ink contour (NO chunky grey sticker halo!)
+    const contourCanvas = getSpriteSilhouetteContour(liveFrame);
+    if (contourCanvas) {
+      const padX = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dw) / fw));
+      const padY = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dh) / fh));
+      backend.drawSprite({
+        source: contourCanvas,
+        sx: 0,
+        sy: 0,
+        sw: contourCanvas.width,
+        sh: contourCanvas.height,
+        dx: dx - padX,
+        dy: dy - padY,
+        dw: dw + padX * 2,
+        dh: dh + padY * 2,
+        flipX,
+        rotation: tilt,
+        alpha: captureAlpha,
+        tint: [1, 1, 1, captureAlpha],
+        pixelCrisp: true,
+        depth: depth - 0.12,
+      });
+    }
+
+    const tint: [number, number, number, number] =
+      visual.hitFlash > 0.05
+        ? [1.0, 0.96, 0.78, captureAlpha]
+        : mon.isShiny
+          ? getShinyTint(state.elapsedSeconds, captureAlpha, state.reducedMotion)
+          : [1, 1, 1, captureAlpha];
+
+    // Subtle elemental rim glow during active combat states / elite encounters
+    const rimRgba: [number, number, number, number] | undefined =
+      visual.healFlash > 0.05
+        ? [0.35, 1.0, 0.62, visual.healFlash]
+        : visual.buffFlash > 0.05
+          ? [1.0, 0.88, 0.38, visual.buffFlash]
+          : mon.isElite || mon.encounterTrait === 'apex'
+            ? [1.0, 0.42, 0.45, 0.58]
+            : undefined;
+
+    // 2. Main crisp animated pixel sprite
+    backend.drawSprite({
+      source: liveFrame,
+      sx: 0,
+      sy: 0,
+      sw: fw,
+      sh: fh,
+      dx,
+      dy,
+      dw,
+      dh,
+      flipX,
+      rotation: tilt,
+      alpha: captureAlpha,
+      tint,
+      rimColor: rimRgba,
+      emissive: visual.hitFlash > 0.05 ? visual.hitFlash * 0.85 : mon.isShiny ? 0.22 : 0,
+      pixelCrisp: true,
+      depth,
+    });
+
+    // 3. Crisp pixel-accurate ivory hit-flash silhouette (pops vividly even on dark sprites!)
+    if (visual.hitFlash > 0.05) {
+      const flashMask = getSpriteHitFlashCanvas(liveFrame);
+      backend.drawSprite({
+        source: flashMask ?? liveFrame,
+        sx: 0,
+        sy: 0,
+        sw: fw,
+        sh: fh,
+        dx,
+        dy,
+        dw,
+        dh,
+        flipX,
+        rotation: tilt,
+        alpha: visual.hitFlash * (flashMask ? 0.86 : 0.82) * captureAlpha,
+        additive: !flashMask,
+        pixelCrisp: true,
+        depth: depth + 0.1,
+      });
+    }
   }
 
   private renderShutterOverlay(
@@ -901,19 +1035,23 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
           const fromLeft = i % 2 === 0;
           const barW = Math.round((w * cover) / px) * px;
           const x = fromLeft ? 0 : w - barW;
-          ctx.fillStyle = i % 2 === 0 ? '#111a3d' : '#1f326b';
+          ctx.fillStyle = i % 2 === 0 ? '#0d1536' : '#18285c';
           ctx.fillRect(x, i * barH, barW, barH);
-          ctx.fillStyle = '#ffe08a';
+          // Beveled brass-gold leading edge
+          ctx.fillStyle = '#ffd966';
           ctx.fillRect(fromLeft ? barW - px * 2 : x, i * barH, px * 2, barH);
+          ctx.fillStyle = '#fff9d6';
+          ctx.fillRect(fromLeft ? barW - px : x, i * barH, px, barH);
         }
         break;
       }
 
       case 'rare': {
-        ctx.fillStyle = `rgba(12, 16, 42, ${(cover * 0.85).toFixed(3)})`;
+        ctx.fillStyle = `rgba(9, 13, 36, ${(cover * 0.88).toFixed(3)})`;
         ctx.fillRect(0, 0, w, h);
         const radius = Math.hypot(w, h) * 0.52 * (1 - cover * 0.78);
         drawPixelCrossStar(ctx, w * 0.5, h * 0.5, radius, px * 2, '#7ef2ff', '#ffe566');
+        drawPixelCrossStar(ctx, w * 0.5, h * 0.5, radius * 0.55, px, '#ffffff', '#ffffff');
         break;
       }
 
@@ -923,12 +1061,14 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         ctx.rotate(-0.42);
         const span = Math.hypot(w, h);
         const halfH = Math.round((span * 0.5 * cover) / px) * px;
-        ctx.fillStyle = '#1b1636';
+        ctx.fillStyle = '#15102e';
         ctx.fillRect(-span, -span * 0.5, span * 2, halfH);
-        ctx.fillStyle = '#381838';
+        ctx.fillStyle = '#331233';
         ctx.fillRect(-span, span * 0.5 - halfH, span * 2, halfH);
-        ctx.fillStyle = `rgba(255, 110, 148, ${(cover * 0.92).toFixed(3)})`;
-        ctx.fillRect(-span, -px, span * 2, px * 2);
+        ctx.fillStyle = `rgba(255, 92, 138, ${(cover * 0.94).toFixed(3)})`;
+        ctx.fillRect(-span, -px * 2, span * 2, px * 4);
+        ctx.fillStyle = `rgba(255, 240, 210, ${(cover * 0.92).toFixed(3)})`;
+        ctx.fillRect(-span, -px * 0.5, span * 2, px);
         ctx.restore();
         break;
       }
@@ -939,11 +1079,13 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         const gateW = Math.round((w * 0.5 * cover) / px) * px;
         for (const side of [-1, 1] as const) {
           const gx = side < 0 ? 0 : w - gateW;
-          ctx.fillStyle = isTrial ? '#20184a' : '#1b224a';
+          ctx.fillStyle = isTrial ? '#1a123e' : '#141c42';
           ctx.fillRect(gx, 0, gateW, h);
           ctx.strokeStyle = isTrial ? '#c084fc' : '#ffd479';
           ctx.lineWidth = px;
           ctx.strokeRect(gx + px, px, Math.max(0, gateW - px * 2), h - px * 2);
+          ctx.strokeStyle = isTrial ? 'rgba(232, 121, 249, 0.45)' : 'rgba(255, 242, 194, 0.45)';
+          ctx.strokeRect(gx + px * 3, px * 3, Math.max(0, gateW - px * 6), h - px * 6);
         }
         if (cover > 0.35) {
           const sealR = Math.min(w, h) * 0.16 * cover;

@@ -100,6 +100,27 @@ function drawPixelShockwave(
   }
 }
 
+function drawPixelImpactRing(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  outerColor: string,
+  innerColor: string,
+  px: number,
+): void {
+  drawPixelShockwave(ctx, cx, cy, rx, ry, outerColor, px * 2, 24);
+  drawPixelShockwave(ctx, cx, cy, rx * 0.84, ry * 0.84, innerColor, px, 20);
+  // Crisp cardinal impact flare ticks
+  drawPixelRect(ctx, cx - rx - px * 2, cy - px * 0.5, px * 3, px, '#ffffff', px);
+  drawPixelRect(ctx, cx + rx - px, cy - px * 0.5, px * 3, px, '#ffffff', px);
+}
+
+// Reusable scratch vertex buffer for hexagons (zero per-frame array allocs)
+const HEX_VERTS_X = new Float64Array(6);
+const HEX_VERTS_Y = new Float64Array(6);
+
 function drawPixelHexagon(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -111,29 +132,36 @@ function drawPixelHexagon(
   px: number,
   edgeProgress = 6,
 ): void {
-  const verts: Array<[number, number]> = [];
   for (let i = 0; i < 6; i++) {
     const a = rotation + (i / 6) * Math.PI * 2;
-    verts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+    HEX_VERTS_X[i] = cx + Math.cos(a) * rx;
+    HEX_VERTS_Y[i] = cy + Math.sin(a) * ry;
   }
   for (let i = 0; i < 6; i++) {
     const k = clamp(edgeProgress - i, 0, 1);
     if (k <= 0.01) break;
-    const [x0, y0] = verts[i];
-    const [x1, y1] = verts[(i + 1) % 6];
+    const next = (i + 1) % 6;
+    const x0 = HEX_VERTS_X[i];
+    const y0 = HEX_VERTS_Y[i];
+    const x1 = HEX_VERTS_X[next];
+    const y1 = HEX_VERTS_Y[next];
     drawPixelLine(ctx, x0, y0, x0 + (x1 - x0) * k, y0 + (y1 - y0) * k, color, px);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(snap(x0, px), snap(y0, px), px, px);
   }
 }
 
-function drawPixelDiamond(
+/**
+ * Faceted pixel-art crystal shard with dark outline, split light/dark bevel faces, and white specular streak.
+ */
+function drawPixelCrystalShard(
   ctx: CanvasRenderingContext2D,
   cx: number,
   cy: number,
   radius: number,
-  fill: string,
-  rim: string,
+  lightColor: string,
+  midColor: string,
+  outlineColor: string,
   px: number,
 ): void {
   const steps = Math.max(2, Math.round(radius / px));
@@ -141,11 +169,183 @@ function drawPixelDiamond(
   const sy = snap(cy, px);
   for (let r = -steps; r <= steps; r++) {
     const w = Math.max(0, steps - Math.abs(r));
-    ctx.fillStyle = fill;
-    ctx.fillRect(sx - w * px, sy + r * px, (w * 2 + 1) * px, px);
-    ctx.fillStyle = rim;
-    ctx.fillRect(sx - w * px, sy + r * px, px, px);
-    ctx.fillRect(sx + w * px, sy + r * px, px, px);
+    // Outline wrap
+    ctx.fillStyle = outlineColor;
+    ctx.fillRect(sx - (w + 1) * px, sy + r * px, (w * 2 + 3) * px, px);
+    if (w > 0) {
+      // Left lit facet
+      ctx.fillStyle = lightColor;
+      ctx.fillRect(sx - w * px, sy + r * px, w * px, px);
+      // Right shaded facet
+      ctx.fillStyle = midColor;
+      ctx.fillRect(sx, sy + r * px, (w + 1) * px, px);
+    } else {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(sx, sy + r * px, px, px);
+    }
+  }
+  // Crisp top-left specular gleam
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(sx - Math.max(1, Math.floor(steps * 0.4)) * px, sy - Math.max(1, Math.floor(steps * 0.4)) * px, px, px * 2);
+}
+
+/**
+ * Handcrafted tapered pixel-art flame tongue (deep crimson outline -> orange body -> golden inner -> white core).
+ */
+function drawPixelFlameTongue(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  baseY: number,
+  width: number,
+  height: number,
+  flickerPhase: number,
+  outerHex: string,
+  midHex: string,
+  px: number,
+): void {
+  const rows = Math.max(4, Math.round(height / px));
+  const halfMax = Math.max(2, Math.round(width * 0.5 / px));
+  const sx = snap(cx, px);
+  const sby = snap(baseY, px);
+  for (let r = 0; r < rows; r++) {
+    const t = r / rows; // 0 = base, 1 = tip
+    const sway = Math.round(Math.sin(t * 4.5 + flickerPhase) * (t * 2.2)) * px;
+    const hw = Math.max(1, Math.round(halfMax * Math.sin(Math.pow(1 - t, 0.72) * Math.PI * 0.5)));
+    const py = sby - r * px;
+    // Deep crimson/dark ink rim
+    ctx.fillStyle = '#4a0d16';
+    ctx.fillRect(sx + sway - (hw + 1) * px, py, (hw * 2 + 2) * px, px);
+    // Outer blazing body
+    ctx.fillStyle = outerHex;
+    ctx.fillRect(sx + sway - hw * px, py, hw * 2 * px, px);
+    // Mid golden core
+    if (hw >= 2 && t < 0.76) {
+      const mhw = Math.max(1, hw - 1);
+      ctx.fillStyle = midHex;
+      ctx.fillRect(sx + sway - mhw * px, py, mhw * 2 * px, px);
+    }
+    // White-hot base core
+    if (hw >= 3 && t < 0.42) {
+      const chw = Math.max(1, hw - 2);
+      ctx.fillStyle = '#fffce0';
+      ctx.fillRect(sx + sway - chw * px, py, chw * 2 * px, px);
+    }
+  }
+}
+
+/**
+ * Handcrafted glossy pixel-art water droplet (teardrop silhouette with dark ocean rim + specular shine).
+ */
+function drawPixelWaterDroplet(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  scale: number,
+  bodyHex: string,
+  glowHex: string,
+  px: number,
+): void {
+  const u = Math.max(px, Math.round(px * scale));
+  const sx = snap(cx, u);
+  const sy = snap(cy, u);
+  ctx.fillStyle = '#0c2c52';
+  ctx.fillRect(sx - u, sy - u * 2, u * 2, u);
+  ctx.fillRect(sx - u * 2, sy - u, u * 4, u * 3);
+  ctx.fillRect(sx - u, sy + u * 2, u * 2, u);
+  ctx.fillStyle = bodyHex;
+  ctx.fillRect(sx - u, sy - u, u * 2, u * 3);
+  ctx.fillStyle = glowHex;
+  ctx.fillRect(sx - u, sy, u, u);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(sx - u, sy - u, u, u);
+}
+
+/**
+ * Handcrafted beveled rotating pixel razor leaf (dark emerald outline + emerald blade + bright center vein).
+ */
+function drawPixelRazorLeaf(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  angle: number,
+  scale: number,
+  primaryHex: string,
+  glowHex: string,
+  darkHex: string,
+  px: number,
+): void {
+  ctx.save();
+  ctx.translate(snap(cx, px), snap(cy, px));
+  ctx.rotate(angle);
+  const u = Math.max(px, Math.round(px * scale));
+  ctx.fillStyle = darkHex;
+  ctx.fillRect(-u * 3, -u, u * 6, u * 2);
+  ctx.fillRect(-u * 2, -u * 2, u * 4, u * 4);
+  ctx.fillStyle = primaryHex;
+  ctx.fillRect(-u * 2, -u, u * 4, u * 2);
+  ctx.fillStyle = glowHex;
+  ctx.fillRect(-u * 2, -u, u * 3, u);
+  ctx.fillStyle = '#eaffd6';
+  ctx.fillRect(-u, 0, u * 2, Math.max(1, Math.floor(u * 0.5)));
+  ctx.restore();
+}
+
+/**
+ * Handcrafted 3-tone faceted pixel boulder with outline and specular bevel.
+ */
+function drawPixelBoulder(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  size: number,
+  primaryHex: string,
+  shadowHex: string,
+  glowHex: string,
+  px: number,
+): void {
+  const half = Math.max(px * 2, snap(size * 0.5, px));
+  const sx = snap(cx, px);
+  const sy = snap(cy, px);
+  // Dark mineral ink silhouette (chamfered octagon)
+  ctx.fillStyle = '#191426';
+  ctx.fillRect(sx - half + px, sy - half - px, half * 2 - px * 2, half * 2 + px * 2);
+  ctx.fillRect(sx - half - px, sy - half + px, half * 2 + px * 2, half * 2 - px * 2);
+  // Shaded lower-right body
+  ctx.fillStyle = shadowHex;
+  ctx.fillRect(sx - half, sy - half + px, half * 2, half * 2 - px * 2);
+  ctx.fillRect(sx - half + px, sy - half, half * 2 - px * 2, half * 2);
+  // Mid-tone upper-left face
+  ctx.fillStyle = primaryHex;
+  ctx.fillRect(sx - half + px, sy - half, Math.max(px, half * 1.4), Math.max(px, half * 1.3));
+  // Crisp highlight bevel edge
+  ctx.fillStyle = glowHex;
+  ctx.fillRect(sx - half + px, sy - half, Math.max(px, half), px);
+  ctx.fillRect(sx - half + px, sy - half + px, px, Math.max(px, half * 0.6));
+}
+
+/**
+ * Crisp directional pixel speed-lines across impact zones (anime/arcade punch!).
+ */
+function drawPixelSpeedLines(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  angle: number,
+  length: number,
+  color: string,
+  px: number,
+  count = 5,
+): void {
+  const nx = -Math.sin(angle);
+  const ny = Math.cos(angle);
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  for (let i = 0; i < count; i++) {
+    const offset = (i - (count - 1) * 0.5) * px * 5;
+    const len = length * (i % 2 === 0 ? 1.0 : 0.68);
+    const sx = cx + nx * offset - dx * len * 0.5;
+    const sy = cy + ny * offset - dy * len * 0.5;
+    drawPixelLine(ctx, sx, sy, sx + dx * len, sy + dy * len, i % 2 === 0 ? '#ffffff' : color, px);
   }
 }
 
@@ -165,12 +365,16 @@ function drawPixelStarburst(
     const tx = cx + Math.cos(a) * radius;
     const ty = cy + Math.sin(a) * radius;
     drawPixelLine(ctx, cx, cy, tx, ty, outerColor, px);
-    const mx = cx + Math.cos(a) * radius * 0.48;
-    const my = cy + Math.sin(a) * radius * 0.48;
+    const mx = cx + Math.cos(a) * radius * 0.52;
+    const my = cy + Math.sin(a) * radius * 0.52;
     drawPixelLine(ctx, cx, cy, mx, my, coreColor, px);
   }
   drawPixelRect(ctx, cx - px, cy - px, px * 2, px * 2, '#ffffff', px);
 }
+
+// Preallocated lightning polyline scratch buffers (zero per-frame array allocs)
+const BOLT_X = new Float64Array(16);
+const BOLT_Y = new Float64Array(16);
 
 function drawPixelLightning(
   ctx: CanvasRenderingContext2D,
@@ -184,25 +388,55 @@ function drawPixelLightning(
   outerColor: string,
   coreColor: string,
   px: number,
+  withForks = false,
 ): void {
+  const segs = Math.min(14, Math.max(2, segments));
   const dx = x1 - x0;
   const dy = y1 - y0;
   const len = Math.max(1, Math.hypot(dx, dy));
   const nx = -dy / len;
   const ny = dx / len;
-  const pts: Array<[number, number]> = [[x0, y0]];
-  for (let i = 1; i < segments; i++) {
-    const t = i / segments;
+  BOLT_X[0] = x0;
+  BOLT_Y[0] = y0;
+  for (let i = 1; i < segs; i++) {
+    const t = i / segs;
     const jitter = Math.sin(seed * 17.3 + i * 9.7) * spread * (1 - Math.abs(t - 0.5) * 0.55);
-    pts.push([x0 + dx * t + nx * jitter, y0 + dy * t + ny * jitter]);
+    BOLT_X[i] = x0 + dx * t + nx * jitter;
+    BOLT_Y[i] = y0 + dy * t + ny * jitter;
   }
-  pts.push([x1, y1]);
+  BOLT_X[segs] = x1;
+  BOLT_Y[segs] = y1;
 
-  for (let i = 0; i < pts.length - 1; i++) {
-    drawPixelLine(ctx, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], outerColor, px * 2);
+  // Outer aura
+  for (let i = 0; i < segs; i++) {
+    drawPixelLine(ctx, BOLT_X[i], BOLT_Y[i], BOLT_X[i + 1], BOLT_Y[i + 1], outerColor, px * 2);
   }
-  for (let i = 0; i < pts.length - 1; i++) {
-    drawPixelLine(ctx, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], coreColor, px);
+  // Optional secondary jagged pixel forks branching off mid-bolt
+  if (withForks && segs >= 4) {
+    const f1 = Math.floor(segs * 0.35);
+    const f2 = Math.floor(segs * 0.65);
+    drawPixelLine(
+      ctx,
+      BOLT_X[f1],
+      BOLT_Y[f1],
+      BOLT_X[f1] + nx * spread * 1.1 + dx * 0.14,
+      BOLT_Y[f1] + ny * spread * 1.1 + dy * 0.14,
+      outerColor,
+      px,
+    );
+    drawPixelLine(
+      ctx,
+      BOLT_X[f2],
+      BOLT_Y[f2],
+      BOLT_X[f2] - nx * spread * 0.95 + dx * 0.12,
+      BOLT_Y[f2] - ny * spread * 0.95 + dy * 0.12,
+      outerColor,
+      px,
+    );
+  }
+  // White-hot inner core
+  for (let i = 0; i < segs; i++) {
+    drawPixelLine(ctx, BOLT_X[i], BOLT_Y[i], BOLT_X[i + 1], BOLT_Y[i + 1], coreColor, px);
   }
 }
 
@@ -215,11 +449,13 @@ function drawPixelBallSprite(
   rotation: number,
   openAmount: number,
 ): void {
-  const px = Math.max(2, Math.round(size / 10));
+  const px = Math.max(2, Math.round(size / 12));
   const topColor =
     kind === 'star' ? '#2c3d9e' : kind === 'great' ? '#2570d9' : '#e03e3e';
+  const topShade =
+    kind === 'star' ? '#1c2670' : kind === 'great' ? '#1a4da3' : '#a8232c';
   const topHighlight =
-    kind === 'star' ? '#7be8ff' : kind === 'great' ? '#66b8ff' : '#ff8c8c';
+    kind === 'star' ? '#7be8ff' : kind === 'great' ? '#75c4ff' : '#ff9999';
   const trimColor =
     kind === 'star' ? '#ffd954' : kind === 'great' ? '#e84855' : '#1b1d36';
 
@@ -228,47 +464,54 @@ function drawPixelBallSprite(
   ctx.translate(snap(cx, px), snap(cy, px));
   if (rotation !== 0) ctx.rotate(rotation);
 
-  const split = Math.round(openAmount * px * 2.5);
-  const rows = [3, 5, 5, 5, 5, 3];
+  const split = Math.round(openAmount * px * 3);
+  const rows = [3, 5, 6, 6, 6, 6, 5, 3];
 
-  // Upper cap
-  for (let r = 0; r < 3; r++) {
+  // Upper cap with 3-tone shading & curved glossy specular pixel
+  for (let r = 0; r < 4; r++) {
     const hw = rows[r];
-    ctx.fillStyle = '#171330';
-    ctx.fillRect(-(hw + 1) * px, (-3 + r) * px - split, (hw * 2 + 2) * px, px);
+    const y = (-4 + r) * px - split;
+    ctx.fillStyle = '#121026';
+    ctx.fillRect(-(hw + 1) * px, y, (hw * 2 + 2) * px, px);
     ctx.fillStyle = topColor;
-    ctx.fillRect(-hw * px, (-3 + r) * px - split, hw * 2 * px, px);
+    ctx.fillRect(-hw * px, y, hw * 2 * px, px);
+    ctx.fillStyle = topShade;
+    ctx.fillRect((hw - 2) * px, y, 2 * px, px);
   }
   ctx.fillStyle = topHighlight;
-  ctx.fillRect(-3 * px, -2 * px - split, px * 2, px);
+  ctx.fillRect(-4 * px, -3 * px - split, px * 2, px);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(-3 * px, -3 * px - split, px, px);
   if (kind === 'star') {
     ctx.fillStyle = '#ffe566';
-    ctx.fillRect(-px, -2 * px - split, px * 2, px);
+    ctx.fillRect(-px, -3 * px - split, px * 2, px);
+    ctx.fillRect(-px * 0.5, -2 * px - split, px, px);
   } else if (kind === 'great') {
     ctx.fillStyle = trimColor;
-    ctx.fillRect(-4 * px, -2 * px - split, px, px);
-    ctx.fillRect(3 * px, -2 * px - split, px, px);
+    ctx.fillRect(-5 * px, -2 * px - split, px * 2, px);
+    ctx.fillRect(3 * px, -2 * px - split, px * 2, px);
   }
 
-  // Lower cap
-  for (let r = 3; r < 6; r++) {
+  // Lower cap with cool silver under-shadow
+  for (let r = 4; r < 8; r++) {
     const hw = rows[r];
-    ctx.fillStyle = '#171330';
-    ctx.fillRect(-(hw + 1) * px, (-3 + r) * px + split, (hw * 2 + 2) * px, px);
-    ctx.fillStyle = r === 5 ? '#c8d6ed' : '#f4f8ff';
-    ctx.fillRect(-hw * px, (-3 + r) * px + split, hw * 2 * px, px);
+    const y = (-4 + r) * px + split;
+    ctx.fillStyle = '#121026';
+    ctx.fillRect(-(hw + 1) * px, y, (hw * 2 + 2) * px, px);
+    ctx.fillStyle = r >= 6 ? '#bccbe6' : '#f4f8ff';
+    ctx.fillRect(-hw * px, y, hw * 2 * px, px);
   }
 
   // Equatorial band & lock clasp
   if (openAmount < 0.35) {
-    ctx.fillStyle = '#171330';
-    ctx.fillRect(-5 * px, -px * 0.5, 10 * px, px);
+    ctx.fillStyle = '#121026';
+    ctx.fillRect(-6 * px, -px * 0.5, 12 * px, px);
     ctx.fillStyle = trimColor;
-    ctx.fillRect(-px, -px, px * 2, px * 2);
+    ctx.fillRect(-px * 1.5, -px * 1.5, px * 3, px * 3);
     ctx.fillStyle = kind === 'star' ? '#7be8ff' : '#ffffff';
     ctx.fillRect(-px * 0.5, -px * 0.5, px, px);
   } else {
-    drawPixelCrossStar(ctx, 0, 0, px * 2, px, '#7be8ff', '#ffffff');
+    drawPixelCrossStar(ctx, 0, 0, px * 3, px, '#7be8ff', '#ffffff');
   }
 
   ctx.restore();
@@ -318,6 +561,24 @@ function isCombatantHiddenOrFainted(state: BattleSceneState, vis: BattleCombatan
   return false;
 }
 
+function hasCombatantOverlayWork(state: BattleSceneState, vis: BattleCombatantVisual): boolean {
+  if (isCombatantHiddenOrFainted(state, vis)) return false;
+  const mon = vis.mon;
+  return (
+    mon.isElite ||
+    Boolean(mon.encounterTrait) ||
+    mon.shieldTurns > 0 ||
+    vis.bracedFlash > 0.02 ||
+    vis.healFlash > 0.04 ||
+    vis.buffFlash > 0.04 ||
+    mon.battleStages.atk !== 0 ||
+    mon.battleStages.def !== 0 ||
+    mon.battleStages.spd !== 0 ||
+    mon.isShiny ||
+    Boolean(vis.abilityBanner && vis.abilityBanner.elapsed < 2.4)
+  );
+}
+
 export class BattleVfxDirector {
   emitParticlesAndLights(
     backend: IRenderBackend,
@@ -329,7 +590,8 @@ export class BattleVfxDirector {
     const layout = computeBattleStageLayout(width, height);
     const motionScale = state.reducedMotion ? 0.35 : 1.0;
 
-    for (const evt of events) {
+    for (let eIdx = 0; eIdx < events.length; eIdx++) {
+      const evt = events[eIdx];
       const p = clamp(evt.elapsed / Math.max(0.08, evt.duration), 0, 1);
       const from = getSideAnchor(evt.fromSide, layout, state);
       const target = getSideAnchor(evt.targetSide, layout, state);
@@ -375,12 +637,13 @@ export class BattleVfxDirector {
       const beamX = from.x + (target.x - from.x) * travelP;
       const beamY = from.y + (target.y - from.y) * travelP;
 
-      const lightPos = p < 0.36 ? { x: beamX, y: beamY } : { x: target.x, y: target.y };
+      const lightX = p < 0.36 ? beamX : target.x;
+      const lightY = p < 0.36 ? beamY : target.y;
       const lightFade = p < 0.36 ? 1 : 1 - impactP * 0.82;
       backend.addPointLight({
         id: `vfx-light-${evt.id}`,
-        x: lightPos.x,
-        y: lightPos.y,
+        x: lightX,
+        y: lightY,
         radius: 195 * powerScale,
         color: pal.rgb,
         intensity: clamp(1.55 * lightFade * powerScale, 0, 2),
@@ -410,43 +673,11 @@ export class BattleVfxDirector {
       }
     }
 
-    // Combatant state lights & sparkles (Shiny / Elite / Braced / Shield)
-    for (const vis of [state.player, state.enemy]) {
-      if (isCombatantHiddenOrFainted(state, vis)) continue;
-      const anchor = getSideAnchor(vis.side, layout, state);
-      if (vis.bracedFlash > 0.05) {
-        backend.addPointLight({
-          id: `braced-light-${vis.side}`,
-          x: anchor.x,
-          y: anchor.y,
-          radius: 165,
-          color: [0.48, 0.94, 1.0],
-          intensity: clamp(vis.bracedFlash * 1.4, 0, 2),
-        });
-      }
-      if (vis.mon.isShiny) {
-        const count = state.reducedMotion ? 2 : 4;
-        for (let i = 0; i < count; i++) {
-          const a = state.elapsedSeconds * 2.6 * motionScale + (i / count) * Math.PI * 2;
-          const hue = ((state.elapsedSeconds * 0.6 + i * 0.25) % 1);
-          const col: [number, number, number, number] =
-            hue < 0.33
-              ? [1.0, 0.92, 0.46, 0.82]
-              : hue < 0.66
-                ? [0.48, 0.94, 1.0, 0.82]
-                : [1.0, 0.62, 0.92, 0.82];
-          backend.drawParticle({
-            x: anchor.x + Math.cos(a) * anchor.size * 0.45,
-            y: anchor.y + Math.sin(a * 1.3) * anchor.size * 0.32,
-            radius: 5,
-            color: col,
-            additive: true,
-          });
-        }
-      }
-    }
+    // Combatant state lights & sparkles (zero array alloc)
+    this.emitCombatantStateLights(backend, state, state.player, layout, motionScale);
+    this.emitCombatantStateLights(backend, state, state.enemy, layout, motionScale);
 
-    // Capture sequence particles & PointLight (also keep subtle resting glow once caught on victory/evolving screens)
+    // Capture sequence particles & PointLight
     const isCapturedResting =
       state.phase !== 'capturing' &&
       (Boolean(state.rewardSummary?.caught) || (state.enemy.captureProgress ?? 0) >= 0.99);
@@ -520,6 +751,47 @@ export class BattleVfxDirector {
     }
   }
 
+  private emitCombatantStateLights(
+    backend: IRenderBackend,
+    state: BattleSceneState,
+    vis: BattleCombatantVisual,
+    layout: BattleStageLayout,
+    motionScale: number,
+  ): void {
+    if (isCombatantHiddenOrFainted(state, vis)) return;
+    const anchor = getSideAnchor(vis.side, layout, state);
+    if (vis.bracedFlash > 0.05) {
+      backend.addPointLight({
+        id: `braced-light-${vis.side}`,
+        x: anchor.x,
+        y: anchor.y,
+        radius: 165,
+        color: [0.48, 0.94, 1.0],
+        intensity: clamp(vis.bracedFlash * 1.4, 0, 2),
+      });
+    }
+    if (vis.mon.isShiny) {
+      const count = state.reducedMotion ? 2 : 4;
+      for (let i = 0; i < count; i++) {
+        const a = state.elapsedSeconds * 2.6 * motionScale + (i / count) * Math.PI * 2;
+        const hue = (state.elapsedSeconds * 0.6 + i * 0.25) % 1;
+        const col: [number, number, number, number] =
+          hue < 0.33
+            ? [1.0, 0.92, 0.46, 0.82]
+            : hue < 0.66
+              ? [0.48, 0.94, 1.0, 0.82]
+              : [1.0, 0.62, 0.92, 0.82];
+        backend.drawParticle({
+          x: anchor.x + Math.cos(a) * anchor.size * 0.45,
+          y: anchor.y + Math.sin(a * 1.3) * anchor.size * 0.32,
+          radius: 5,
+          color: col,
+          additive: true,
+        });
+      }
+    }
+  }
+
   private emitElementalParticles(
     backend: IRenderBackend,
     evt: BattleVfxEvent,
@@ -537,7 +809,8 @@ export class BattleVfxDirector {
 
     if (p < 0.48) {
       const t = clamp(p / 0.42, 0, 1);
-      for (let i = 0; i < Math.max(4, Math.floor(count * 0.7)); i++) {
+      const trailCount = Math.max(4, Math.floor(count * 0.7));
+      for (let i = 0; i < trailCount; i++) {
         const trail = clamp(t - i * 0.06, 0, 1);
         const spread = Math.sin(i * 2.4 + p * 12) * 14 * motionScale;
         const px = from.x + (target.x - from.x) * trail - Math.sin(angle) * spread;
@@ -581,30 +854,46 @@ export class BattleVfxDirector {
     events: BattleVfxEvent[],
     camera: BattleCameraTransform,
   ): void {
+    const isCapturedResting =
+      state.phase !== 'capturing' &&
+      (Boolean(state.rewardSummary?.caught) || (state.enemy.captureProgress ?? 0) >= 0.99);
+    const hasFloating = Array.isArray(state.floatingTexts) && state.floatingTexts.length > 0;
+    const hasPlayerOv = hasCombatantOverlayWork(state, state.player);
+    const hasEnemyOv = hasCombatantOverlayWork(state, state.enemy);
+
+    if (
+      events.length === 0 &&
+      !hasFloating &&
+      !hasPlayerOv &&
+      !hasEnemyOv &&
+      state.phase !== 'capturing' &&
+      !isCapturedResting &&
+      state.phase !== 'evolving'
+    ) {
+      return;
+    }
+
     backend.drawCustom2D((ctx, width, height) => {
       const layout = computeBattleStageLayout(width, height);
-      const px = Math.max(2, Math.round(Math.min(width, height) / 160));
+      const px = Math.max(2, Math.round(Math.min(width, height) / 180));
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       applyCameraToContext(ctx, width, height, camera);
 
-      // 1. Per-combatant Shield prism dome, Composure BRACED! hex burst, Buff/Heal, Stat Chevrons, Shiny/Trait, Ability banner
-      if (!isCombatantHiddenOrFainted(state, state.player)) {
+      // 1. Per-combatant Shield prism dome, Composure BRACED! hex burst, Buff/Heal, Stat Chevrons, Shiny/Trait, Ability ring
+      if (hasPlayerOv) {
         this.drawCombatantOverlays(ctx, state.player, getSideAnchor('player', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
       }
-      if (!isCombatantHiddenOrFainted(state, state.enemy)) {
+      if (hasEnemyOv) {
         this.drawCombatantOverlays(ctx, state.enemy, getSideAnchor('enemy', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
       }
 
-      // 2. All 18-Type & Support VFX Choreographies
-      for (const evt of events) {
-        this.drawEventChoreography(ctx, state, evt, layout, px);
+      // 2. All 18-Type & Support Handcrafted Pixel VFX Choreographies
+      for (let i = 0; i < events.length; i++) {
+        this.drawEventChoreography(ctx, state, events[i], layout, px);
       }
 
       // 3. Poké / Great / Star Ball Capture Arc, Impact Flash, Wobble Shakes & Resting Caught Ball
-      const isCapturedResting =
-        state.phase !== 'capturing' &&
-        (Boolean(state.rewardSummary?.caught) || (state.enemy.captureProgress ?? 0) >= 0.99);
       if (state.phase === 'capturing') {
         this.drawCaptureSequence(ctx, state, layout, px);
       } else if (isCapturedResting) {
@@ -617,7 +906,7 @@ export class BattleVfxDirector {
       }
 
       // 5. Floating Damage Numbers & Tactical Combat Callouts (COMBAT-05)
-      if (Array.isArray(state.floatingTexts) && state.floatingTexts.length > 0) {
+      if (hasFloating) {
         this.drawFloatingTexts(ctx, state, layout);
       }
 
@@ -639,7 +928,7 @@ export class BattleVfxDirector {
     const t = time * motion;
     const pal = TYPE_PALETTES[mon.type] ?? TYPE_PALETTES.normal;
 
-    // Apex / Elite / Encounter Trait aura
+    // Apex / Elite / Encounter Trait rising pixel aura pillars
     if (mon.isElite || mon.encounterTrait) {
       const auraColor =
         mon.isElite || mon.encounterTrait === 'apex'
@@ -649,13 +938,15 @@ export class BattleVfxDirector {
             : mon.encounterTrait === 'spirited'
               ? '#66e0ff'
               : '#c084fc';
-      const pillarCount = reducedMotion ? 2 : 4;
+      const pillarCount = reducedMotion ? 2 : 5;
       for (let i = 0; i < pillarCount; i++) {
         const rise = (t * 0.9 + i / pillarCount) % 1;
-        const ox = (i - (pillarCount - 1) * 0.5) * anchor.size * 0.24;
-        const py = anchor.padY - rise * anchor.size * 0.9;
+        const ox = (i - (pillarCount - 1) * 0.5) * anchor.size * 0.22;
+        const py = anchor.padY - rise * anchor.size * 0.92;
         ctx.fillStyle = hexToRgba(auraColor, (1 - rise) * 0.72);
         ctx.fillRect(snap(anchor.x + ox, px), snap(py, px), px, px * 3);
+        ctx.fillStyle = hexToRgba('#ffffff', (1 - rise) * 0.65);
+        ctx.fillRect(snap(anchor.x + ox, px), snap(py, px), px, px);
       }
     }
 
@@ -684,9 +975,9 @@ export class BattleVfxDirector {
         'rgba(255, 224, 128, 0.52)',
         px,
       );
-      // Remaining shield turn pips above dome
-      for (let i = 0; i < Math.min(5, mon.shieldTurns); i++) {
-        const pipX = anchor.x + (i - (Math.min(5, mon.shieldTurns) - 1) * 0.5) * px * 4;
+      const pips = Math.min(5, mon.shieldTurns);
+      for (let i = 0; i < pips; i++) {
+        const pipX = anchor.x + (i - (pips - 1) * 0.5) * px * 4;
         drawPixelRect(ctx, pipX - px, anchor.y - ry - px * 3, px * 2, px * 2, '#7be8ff', px);
       }
     }
@@ -718,7 +1009,6 @@ export class BattleVfxDirector {
         px,
       );
 
-      // Pixel-framed BRACED! tag
       const tagW = 78;
       const tagH = 22;
       const tagX = snap(clamp(anchor.x - tagW * 0.5, 14, layout.width - tagW - 14), px);
@@ -747,10 +1037,10 @@ export class BattleVfxDirector {
     // Heal & Buff Pixel Flashes
     if (vis.healFlash > 0.04) {
       const hf = clamp(vis.healFlash, 0, 1);
-      for (let i = 0; i < 3; i++) {
-        const pxX = anchor.x + (i - 1) * anchor.size * 0.25;
-        const pxY = anchor.padY - (1 - hf) * anchor.size * 0.85 - i * 10;
-        drawPixelCrossStar(ctx, pxX, pxY, px * 2, px, `rgba(75, 212, 120, ${hf.toFixed(3)})`);
+      for (let i = 0; i < 4; i++) {
+        const pxX = anchor.x + (i - 1.5) * anchor.size * 0.22;
+        const pxY = anchor.padY - (1 - hf) * anchor.size * 0.9 - i * 8;
+        drawPixelCrossStar(ctx, pxX, pxY, px * 2, px, `rgba(75, 212, 120, ${hf.toFixed(3)})`, '#e8fff0');
       }
     }
     if (vis.buffFlash > 0.04) {
@@ -762,14 +1052,15 @@ export class BattleVfxDirector {
       }
     }
 
-    // Stat Stage Micro-Pills (atk / def / spd) cleanly offset away from sprite silhouette
-    const stages: Array<{ label: string; val: number }> = [
-      { label: 'ATK', val: mon.battleStages.atk },
-      { label: 'DEF', val: mon.battleStages.def },
-      { label: 'SPD', val: mon.battleStages.spd },
-    ].filter((s) => s.val !== 0);
+    // Stat Stage Micro-Pills (atk / def / spd)
+    const hasStages =
+      mon.battleStages.atk !== 0 || mon.battleStages.def !== 0 || mon.battleStages.spd !== 0;
+    if (hasStages) {
+      const stages: Array<{ label: string; val: number }> = [];
+      if (mon.battleStages.atk !== 0) stages.push({ label: 'ATK', val: mon.battleStages.atk });
+      if (mon.battleStages.def !== 0) stages.push({ label: 'DEF', val: mon.battleStages.def });
+      if (mon.battleStages.spd !== 0) stages.push({ label: 'SPD', val: mon.battleStages.spd });
 
-    if (stages.length > 0) {
       const pillW = 60;
       const pillH = 18;
       const rawX =
@@ -784,7 +1075,6 @@ export class BattleVfxDirector {
         const y = baseY + i * 22;
         const isUp = st.val > 0;
         const col = isUp ? '#78f4ff' : '#ff8a8a';
-        // Outer midnight ink frame + celestial glass dark backing
         ctx.fillStyle = 'rgba(6, 9, 24, 0.94)';
         ctx.fillRect(baseX - 2, y - 9 - 2, pillW + 4, pillH + 4);
         ctx.fillStyle = 'rgba(13, 21, 50, 0.94)';
@@ -820,7 +1110,7 @@ export class BattleVfxDirector {
       }
     }
 
-    // Ability Activation Subtle Pixel Aura Ring (R2-VIS-04: text banner is rendered by DOM brass ribbon to avoid duplicate boxes & floating damage collision)
+    // Ability Activation Subtle Pixel Aura Ring (R2-VIS-04: DOM owns text ribbon)
     if (vis.abilityBanner && vis.abilityBanner.elapsed < 2.4) {
       const ab = vis.abilityBanner;
       const fade = ab.elapsed < 0.2 ? ab.elapsed / 0.2 : ab.elapsed > 1.9 ? (2.4 - ab.elapsed) / 0.5 : 1;
@@ -856,57 +1146,42 @@ export class BattleVfxDirector {
     ctx.save();
     ctx.globalAlpha = alpha;
 
-    // Dedicated Heal / Buff / Shield choreographies
+    // Dedicated Heal / Buff / Shield pixel choreographies
     if (evt.category === 'heal') {
-      const count = 6;
+      const count = 8;
       for (let i = 0; i < count; i++) {
         const rise = (p * 1.35 + i / count) % 1;
-        const hx = target.x + Math.sin(i * 2.1 + p * 5) * target.size * 0.36;
-        const hy = target.padY - rise * target.size * 1.15;
-        drawPixelCrossStar(ctx, hx, hy, px * 2, px, i % 2 === 0 ? '#4bd478' : '#a9ffbf');
+        const hx = target.x + Math.sin(i * 2.1 + p * 5) * target.size * 0.38;
+        const hy = target.padY - rise * target.size * 1.2;
+        drawPixelCrossStar(ctx, hx, hy, px * 2, px, i % 2 === 0 ? '#34d399' : '#a7f3d0', '#ffffff');
       }
-      drawPixelShockwave(
-        ctx,
-        target.x,
-        target.padY - 4,
-        (22 + p * 46) * scale,
-        (9 + p * 16) * scale,
-        '#a9ffbf',
-        px,
-      );
+      drawPixelImpactRing(ctx, target.x, target.padY - 4, (22 + p * 52) * scale, (9 + p * 18) * scale, '#34d399', '#eafff3', px);
       ctx.restore();
       return;
     }
 
     if (evt.category === 'buff') {
-      for (let i = 0; i < 4; i++) {
-        const rise = (p * 1.4 + i * 0.25) % 1;
-        const bx = target.x + (i - 1.5) * target.size * 0.24;
-        const by = target.padY - rise * target.size * 1.1;
+      for (let i = 0; i < 5; i++) {
+        const rise = (p * 1.45 + i * 0.2) % 1;
+        const bx = target.x + (i - 2) * target.size * 0.20;
+        const by = target.padY - rise * target.size * 1.15;
         drawPixelChevronGlyph(ctx, bx, by, true, i % 2 === 0 ? '#ffd93d' : pal.glow, px);
       }
-      drawPixelShockwave(
-        ctx,
-        target.x,
-        target.y,
-        (26 + p * 44) * scale,
-        (16 + p * 26) * scale,
-        pal.glow,
-        px,
-      );
+      drawPixelImpactRing(ctx, target.x, target.y, (24 + p * 46) * scale, (14 + p * 26) * scale, pal.primary, '#fff3b0', px);
       ctx.restore();
       return;
     }
 
     if (evt.category === 'shield') {
-      const r = target.size * (0.64 - p * 0.08);
+      const r = target.size * (0.66 - p * 0.08);
       drawPixelHexagon(ctx, target.x, target.y, r, r * 0.85, -Math.PI * 0.5, '#7be8ff', px * 2);
-      drawPixelHexagon(ctx, target.x, target.y, r * 0.8, r * 0.68, Math.PI / 6, '#ffe566', px);
+      drawPixelHexagon(ctx, target.x, target.y, r * 0.82, r * 0.68, Math.PI / 6, '#ffe566', px);
+      drawPixelCrossStar(ctx, target.x, target.y - r * 0.85, px * 2, px, '#7be8ff', '#ffffff');
       ctx.restore();
       return;
     }
 
-    // Attack VFX across all 18 ElementalTypes
+    // All 18 ElementalTypes — Handcrafted HD-2D Pixel-Art Attack Choreographies
     const travelP = clamp(p / 0.42, 0, 1);
     const impactP = clamp((p - 0.30) / 0.70, 0, 1);
     const beamX = from.x + (target.x - from.x) * travelP;
@@ -915,47 +1190,53 @@ export class BattleVfxDirector {
 
     switch (evt.type) {
       case 'normal': {
-        // Stepped pixel dash trail + expanding twin shockwave rings + 4-pt star impact
-        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.glow, px * 2);
-        drawPixelStarburst(ctx, beamX, beamY, 20 * scale, 4, p * 4, pal.primary, '#ffffff', px);
+        // Kinetic anime-pixel speed-lines + twin expanding impact rings + 8-pt star flash
+        drawPixelSpeedLines(ctx, (from.x + beamX) * 0.5, (from.y + beamY) * 0.5, angle, Math.hypot(beamX - from.x, beamY - from.y) * 0.75, pal.glow, px, 5);
+        drawPixelStarburst(ctx, beamX, beamY, 22 * scale, 4, p * 5, pal.primary, '#ffffff', px);
         if (impactP > 0) {
-          drawPixelShockwave(ctx, target.x, target.y, (18 + impactP * 76) * scale, (11 + impactP * 48) * scale, pal.glow, px);
+          drawPixelImpactRing(ctx, target.x, target.y, (18 + impactP * 82) * scale, (11 + impactP * 52) * scale, pal.glow, '#ffffff', px);
+          drawPixelStarburst(ctx, target.x, target.y, (24 + impactP * 38) * scale, 8, p * 2, pal.primary, '#ffffff', px);
         }
         break;
       }
 
       case 'grass': {
-        // Swirling razor leaf pixel blades + emerald vine trail + petal burst
-        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.secondary, px);
-        for (let i = 0; i < 6; i++) {
-          const lp = clamp(p * 1.45 - i * 0.08, 0, 1);
+        // Coiling emerald pixel vine + spinning beveled pixel razor leaves + petal vortex burst
+        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.dark, px * 2);
+        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.primary, px);
+        for (let i = 0; i < 7; i++) {
+          const lp = clamp(p * 1.48 - i * 0.075, 0, 1);
           const lx = from.x + (target.x - from.x) * lp;
-          const ly = from.y + (target.y - from.y) * lp + Math.sin(lp * 9 + i) * 22;
-          drawPixelDiamond(ctx, lx, ly, 7 * scale, i % 2 === 0 ? pal.primary : pal.glow, pal.dark, px);
+          const ly = from.y + (target.y - from.y) * lp + Math.sin(lp * 10 + i * 1.3) * 24;
+          drawPixelRazorLeaf(ctx, lx, ly, angle + lp * 8 + i, scale * 0.9, pal.primary, pal.glow, pal.dark, px);
         }
         if (impactP > 0) {
-          drawPixelShockwave(ctx, target.x, target.padY, (22 + impactP * 68) * scale, (8 + impactP * 24) * scale, pal.glow, px);
+          drawPixelImpactRing(ctx, target.x, target.padY - 4, (22 + impactP * 72) * scale, (8 + impactP * 26) * scale, pal.primary, '#d9ffba', px);
+          for (let b = 0; b < 6; b++) {
+            const a = (b / 6) * Math.PI * 2 + impactP * 3;
+            const d = 14 + impactP * 56 * scale;
+            drawPixelRazorLeaf(ctx, target.x + Math.cos(a) * d, target.y + Math.sin(a) * d * 0.7, a, 0.75 * scale, pal.glow, '#eaffd6', pal.dark, px);
+          }
         }
         break;
       }
 
       case 'fire': {
-        // Blazing cinder stream + erupting layered pixel flame pillars around target
-        for (let i = 1; i <= 9; i++) {
-          const t = (i / 9) * travelP;
-          const fx = from.x + (target.x - from.x) * t + Math.sin(t * 14 + p * 10) * 14;
-          const fy = from.y + (target.y - from.y) * t - Math.cos(t * 14 + p * 10) * 10;
-          drawPixelRect(ctx, fx - px * 2, fy - px * 2, px * 4, px * 4, i % 2 === 0 ? pal.primary : pal.glow, px);
+        // Spiraling blazing pixel fireballs + 5 layered tapered pixel flame tongues erupting on target!
+        for (let i = 1; i <= 8; i++) {
+          const t = (i / 8) * travelP;
+          const fx = from.x + (target.x - from.x) * t + Math.sin(t * 14 + p * 11) * 14;
+          const fy = from.y + (target.y - from.y) * t - Math.cos(t * 14 + p * 11) * 10;
+          const sz = (12 + (i % 3) * 4) * scale;
+          drawPixelFlameTongue(ctx, fx, fy + sz * 0.4, sz, sz * 1.2, p * 14 + i, pal.primary, '#ffd166', px);
         }
         if (impactP > 0) {
-          // 3 erupting pixel flame pillars
-          for (let f = -1; f <= 1; f++) {
-            const fx = target.x + f * 26 * scale;
-            const pillarH = Math.sin(clamp(impactP * 1.35, 0, 1) * Math.PI) * (72 - Math.abs(f) * 16) * scale;
-            if (pillarH > px) {
-              drawPixelRect(ctx, fx - px * 3, target.padY - pillarH, px * 6, pillarH, pal.primary, px);
-              drawPixelRect(ctx, fx - px * 1.5, target.padY - pillarH * 0.78, px * 3, pillarH * 0.78, '#ffd166', px);
-              drawPixelRect(ctx, fx - px * 0.5, target.padY - pillarH * 0.45, px, pillarH * 0.45, '#ffffff', px);
+          drawPixelImpactRing(ctx, target.x, target.padY, (20 + impactP * 64) * scale, (8 + impactP * 22) * scale, '#ff5722', '#ffd166', px);
+          for (let f = -2; f <= 2; f++) {
+            const fx = target.x + f * 20 * scale;
+            const pillarH = Math.sin(clamp(impactP * 1.35, 0, 1) * Math.PI) * (82 - Math.abs(f) * 14) * scale;
+            if (pillarH > px * 4) {
+              drawPixelFlameTongue(ctx, fx, target.padY, (22 - Math.abs(f) * 2) * scale, pillarH, p * 16 + f * 1.7, pal.primary, '#ffd166', px);
             }
           }
         }
@@ -963,26 +1244,27 @@ export class BattleVfxDirector {
       }
 
       case 'water': {
-        // Surging pixel tidal wave crest + foaming splash droplets
-        const waveSteps = 10;
-        for (let i = 0; i <= waveSteps; i++) {
-          const t = (i / waveSteps) * travelP;
+        // Foaming crescent pixel tidal wave + glossy pixel water droplets + concentric ripple rings
+        for (let i = 0; i <= 10; i++) {
+          const t = (i / 10) * travelP;
           const wx = from.x + (target.x - from.x) * t;
-          const wy = from.y + (target.y - from.y) * t - Math.sin(t * Math.PI) * 44;
-          drawPixelRect(ctx, wx - px * 2, wy - px * 2, px * 5, px * 4, i % 2 === 0 ? pal.primary : pal.glow, px);
+          const wy = from.y + (target.y - from.y) * t - Math.sin(t * Math.PI) * 46;
+          drawPixelRect(ctx, wx - px * 3, wy - px * 2, px * 6, px * 5, '#0f4c8a', px);
+          drawPixelRect(ctx, wx - px * 2, wy - px * 2, px * 5, px * 4, pal.primary, px);
+          drawPixelRect(ctx, wx - px, wy - px * 3, px * 3, px * 2, '#e6fcff', px);
         }
         if (impactP > 0) {
-          drawPixelShockwave(ctx, target.x, target.padY - 4, (24 + impactP * 76) * scale, (10 + impactP * 26) * scale, pal.glow, px * 2);
-          for (let s = 0; s < 6; s++) {
-            const ang = -Math.PI * (0.15 + (s / 5) * 0.7);
-            const dist = 16 + impactP * 68 * scale;
-            drawPixelRect(
+          drawPixelImpactRing(ctx, target.x, target.padY - 4, (24 + impactP * 82) * scale, (10 + impactP * 28) * scale, pal.primary, '#e6fcff', px);
+          for (let s = 0; s < 8; s++) {
+            const ang = -Math.PI * (0.12 + (s / 7) * 0.76);
+            const dist = 16 + impactP * 76 * scale;
+            drawPixelWaterDroplet(
               ctx,
               target.x + Math.cos(ang) * dist,
-              target.padY + Math.sin(ang) * dist * 0.9,
-              px * 2,
-              px * 2,
-              s % 2 === 0 ? '#ffffff' : pal.glow,
+              target.padY + Math.sin(ang) * dist * 0.92 + impactP * impactP * 24,
+              0.9 * scale,
+              pal.primary,
+              pal.glow,
               px,
             );
           }
@@ -991,198 +1273,252 @@ export class BattleVfxDirector {
       }
 
       case 'electric': {
-        // Sky-to-target main forked lightning bolt + horizontal surge bolt + square sparks
-        const seed = Math.floor(p * (state.reducedMotion ? 3 : 12)) + evt.id.length;
-        drawPixelLightning(ctx, target.x - 24, 12, target.x, target.y, seed, 8, 26, pal.primary, '#ffffff', px);
-        drawPixelLightning(ctx, target.x - 16, 18, target.x + 28, target.y + 8, seed + 5, 6, 18, pal.glow, '#ffffff', px);
-        drawPixelLightning(ctx, from.x, from.y, beamX, beamY, seed + 9, 6, 16, pal.primary, pal.glow, px);
-        break;
-      }
-
-      case 'ice': {
-        // Crystalline pixel ice lance + 6 erupting faceted ice shards
-        drawPixelDiamond(ctx, beamX, beamY, 14 * scale, pal.glow, pal.secondary, px);
-        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.primary, px);
+        // Sky-strike forked thunderbolts + horizontal arc surge + crackling ground spark ring
+        const seed = Math.floor(p * (state.reducedMotion ? 3 : 14)) + evt.id.length;
+        drawPixelLightning(ctx, target.x - 26, 8, target.x, target.y, seed, 9, 28, pal.primary, '#ffffff', px, true);
+        drawPixelLightning(ctx, target.x + 22, 16, target.x + 12, target.y + 10, seed + 5, 7, 20, '#7be8ff', '#ffffff', px, true);
+        drawPixelLightning(ctx, from.x, from.y, beamX, beamY, seed + 9, 7, 18, pal.primary, '#fff9c4', px, false);
         if (impactP > 0) {
-          for (let c = 0; c < 6; c++) {
-            const a = (c / 6) * Math.PI * 2;
-            const d = 14 + impactP * 58 * scale;
-            drawPixelDiamond(ctx, target.x + Math.cos(a) * d, target.y + Math.sin(a) * d * 0.76, 9 * scale, pal.glow, pal.secondary, px);
+          drawPixelImpactRing(ctx, target.x, target.padY, (20 + impactP * 68) * scale, (9 + impactP * 24) * scale, pal.primary, '#ffffff', px);
+          for (let s = 0; s < 4; s++) {
+            const a = (s / 4) * Math.PI * 2 + seed;
+            drawPixelCrossStar(ctx, target.x + Math.cos(a) * 44 * impactP * scale, target.y + Math.sin(a) * 32 * impactP * scale, px * 2, px, '#ffe566', '#ffffff');
           }
         }
         break;
       }
 
-      case 'fighting': {
-        // High-impact dash burst & radial crimson-gold strike cones
-        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.primary, px * 2);
+      case 'ice': {
+        // Faceted ice crystal lance + 6 erupting beveled frost crystals + 8-point snowflake starburst
+        drawPixelLine(ctx, from.x, from.y, beamX, beamY, '#b8f2ff', px * 2);
+        drawPixelCrystalShard(ctx, beamX, beamY, 15 * scale, '#e8fbff', pal.primary, '#1c446e', px);
         if (impactP > 0) {
-          drawPixelStarburst(ctx, target.x, target.y, (32 + impactP * 56) * scale, 8, p * 2, pal.primary, '#ffe599', px * 2);
-          drawPixelShockwave(ctx, target.x, target.y, (20 + impactP * 68) * scale, (14 + impactP * 44) * scale, '#ffffff', px);
+          drawPixelHexagon(ctx, target.x, target.padY - 2, (24 + impactP * 54) * scale, (10 + impactP * 20) * scale, 0, '#c8f6ff', px);
+          for (let c = 0; c < 6; c++) {
+            const a = (c / 6) * Math.PI * 2;
+            const d = 16 + impactP * 62 * scale;
+            drawPixelCrystalShard(ctx, target.x + Math.cos(a) * d, target.y + Math.sin(a) * d * 0.76, 11 * scale, '#e8fbff', pal.primary, '#1c446e', px);
+          }
+          drawPixelStarburst(ctx, target.x, target.y, (18 + impactP * 32) * scale, 6, impactP * 1.5, '#9be8ff', '#ffffff', px);
+        }
+        break;
+      }
+
+      case 'fighting': {
+        // Blazing crimson-gold speed-lines + heavy radial comic-pixel strike burst + dual shockwaves
+        drawPixelSpeedLines(ctx, (from.x + beamX) * 0.5, (from.y + beamY) * 0.5, angle, 96 * scale, pal.primary, px * 2, 5);
+        if (impactP > 0) {
+          drawPixelStarburst(ctx, target.x, target.y, (34 + impactP * 62) * scale, 10, p * 2.4, pal.primary, '#ffe599', px * 2);
+          drawPixelImpactRing(ctx, target.x, target.y, (22 + impactP * 76) * scale, (14 + impactP * 48) * scale, '#ff8a5b', '#ffffff', px);
         }
         break;
       }
 
       case 'poison': {
-        // Arched toxic lumina venom squares & rising corrosive bubbles
+        // Bubbling multi-tone toxic globules + splattering corrosive pixel pool & rising bubbles
         for (let i = 0; i < 6; i++) {
           const t = clamp(travelP - i * 0.08, 0, 1);
           const vx = from.x + (target.x - from.x) * t;
-          const vy = from.y + (target.y - from.y) * t - Math.sin(t * Math.PI) * 34 + (i % 2) * 10;
-          drawPixelRect(ctx, vx - px * 2, vy - px * 2, px * 4, px * 4, i % 2 === 0 ? pal.primary : pal.glow, px);
+          const vy = from.y + (target.y - from.y) * t - Math.sin(t * Math.PI) * 38 + (i % 2) * 10;
+          drawPixelRect(ctx, vx - px * 3, vy - px * 3, px * 6, px * 6, '#2e104d', px);
+          drawPixelRect(ctx, vx - px * 2, vy - px * 2, px * 4, px * 4, i % 2 === 0 ? pal.primary : '#c084fc', px);
+          drawPixelRect(ctx, vx - px, vy - px, px, px, '#b8ff7a', px);
         }
         if (impactP > 0) {
           drawPixelSteppedDisc(
             ctx,
             target.x,
             target.padY,
-            (18 + impactP * 44) * scale,
-            (7 + impactP * 14) * scale,
+            (20 + impactP * 48) * scale,
+            (8 + impactP * 16) * scale,
             px,
-            hexToRgba(pal.secondary, (1 - impactP) * 0.55),
-            hexToRgba(pal.glow, (1 - impactP) * 0.85),
+            hexToRgba(pal.secondary, (1 - impactP) * 0.62),
+            hexToRgba('#b8ff7a', (1 - impactP) * 0.9),
           );
-          drawPixelShockwave(ctx, target.x, target.padY, (20 + impactP * 58) * scale, (8 + impactP * 20) * scale, pal.primary, px * 2);
+          for (let b = 0; b < 5; b++) {
+            const bx = target.x + (b - 2) * 16 * scale;
+            const by = target.padY - impactP * (40 + (b % 3) * 18) * scale;
+            drawPixelRect(ctx, bx - px * 2, by - px * 2, px * 4, px * 4, pal.primary, px);
+            drawPixelRect(ctx, bx - px, by - px, px, px, '#d9ff9e', px);
+          }
         }
         break;
       }
 
       case 'ground': {
-        // Erupting stepped tectonic pixel earth pillars under target
+        // Jagged beveled tectonic crags + seismic floor fissure + flying rock debris
         for (let i = 0; i < 5; i++) {
-          const gx = target.x + (i - 2) * 20 * scale;
-          const gh = Math.sin(clamp(impactP * 1.4, 0, 1) * Math.PI) * (58 - Math.abs(i - 2) * 9) * scale;
-          if (gh <= px) continue;
-          drawPixelRect(ctx, gx - px * 3, target.padY - gh, px * 6, gh, pal.secondary, px);
-          drawPixelRect(ctx, gx - px * 2, target.padY - gh - px * 2, px * 4, px * 4, pal.primary, px);
-          drawPixelRect(ctx, gx - px, target.padY - gh - px * 3, px * 2, px * 2, pal.glow, px);
+          const gx = target.x + (i - 2) * 22 * scale;
+          const gh = Math.sin(clamp(impactP * 1.4, 0, 1) * Math.PI) * (66 - Math.abs(i - 2) * 10) * scale;
+          if (gh <= px * 2) continue;
+          // Dark rock outline + left lit / right shaded faces
+          drawPixelRect(ctx, gx - px * 4, target.padY - gh, px * 8, gh, '#261810', px);
+          drawPixelRect(ctx, gx - px * 3, target.padY - gh + px, px * 3, gh - px, pal.primary, px);
+          drawPixelRect(ctx, gx, target.padY - gh + px, px * 3, gh - px, pal.secondary, px);
+          drawPixelRect(ctx, gx - px * 2, target.padY - gh - px * 2, px * 4, px * 3, pal.glow, px);
+        }
+        if (impactP > 0) {
+          drawPixelImpactRing(ctx, target.x, target.padY, (24 + impactP * 76) * scale, (8 + impactP * 24) * scale, pal.primary, pal.glow, px);
         }
         break;
       }
 
       case 'flying': {
-        // Twin sweeping gale crescent slash arcs across arena
+        // Twin razor gale ribbons + dramatic crisp diagonal crescent air-slash
         for (const w of [-1, 1] as const) {
-          for (let i = 0; i <= 10; i++) {
-            const t = (i / 10) * travelP;
+          for (let i = 0; i <= 11; i++) {
+            const t = (i / 11) * travelP;
             const wx = from.x + (target.x - from.x) * t;
-            const wy = from.y + (target.y - from.y) * t + Math.sin(t * Math.PI * 2 + w) * 26;
-            drawPixelRect(ctx, wx - px, wy - px, px * 3, px * 2, i % 2 === 0 ? pal.glow : pal.primary, px);
+            const wy = from.y + (target.y - from.y) * t + Math.sin(t * Math.PI * 2 + w) * 28;
+            drawPixelRect(ctx, wx - px * 2, wy - px, px * 5, px * 2, i % 2 === 0 ? '#ffffff' : pal.glow, px);
+            drawPixelRect(ctx, wx - px, wy + px, px * 3, px, pal.primary, px);
           }
         }
         if (impactP > 0) {
-          drawPixelLine(ctx, target.x - 42 * scale, target.y + 28 * scale, target.x + 42 * scale, target.y - 28 * scale, '#ffffff', px * 2);
+          drawPixelSpeedLines(ctx, target.x, target.y, -0.62, 110 * scale, pal.glow, px * 2, 4);
+          drawPixelImpactRing(ctx, target.x, target.y, (20 + impactP * 64) * scale, (14 + impactP * 40) * scale, pal.glow, '#ffffff', px);
         }
         break;
       }
 
       case 'psychic': {
-        // Rotating hypnotic psychic prism diamond rings & astral beam
-        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.glow, px * 2);
+        // Warped astral beam + 3 rotating concentric telekinetic hex/crystal prism rings
+        drawPixelLine(ctx, from.x, from.y, beamX, beamY, pal.primary, px * 3);
+        drawPixelLine(ctx, from.x, from.y, beamX, beamY, '#ffffff', px);
         for (let ring = 0; ring < 3; ring++) {
-          const r = (18 + ring * 16 + impactP * 38) * scale;
-          drawPixelDiamond(ctx, target.x, target.y, r, 'rgba(255, 92, 168, 0.14)', ring % 2 === 0 ? pal.primary : pal.glow, px);
+          const r = (18 + ring * 17 + impactP * 42) * scale;
+          drawPixelHexagon(
+            ctx,
+            target.x,
+            target.y,
+            r,
+            r * 0.72,
+            p * (ring % 2 === 0 ? 3.5 : -2.8) + ring,
+            ring % 2 === 0 ? pal.primary : '#7be8ff',
+            px,
+          );
+        }
+        if (impactP > 0) {
+          drawPixelCrystalShard(ctx, target.x, target.y, 16 * (1 - impactP * 0.5) * scale, '#ffd6f5', pal.primary, '#42124a', px);
         }
         break;
       }
 
       case 'bug': {
-        // Coordinated lantern-swarm pixel darts weaving toward target
-        for (let i = 0; i < 8; i++) {
-          const t = clamp(p * 1.38 - i * 0.04, 0, 1);
+        // Luminous winged pixel darts weaving in swarm formation + golden pollen starburst
+        for (let i = 0; i < 9; i++) {
+          const t = clamp(p * 1.4 - i * 0.04, 0, 1);
           const bx = from.x + (target.x - from.x) * t;
-          const by = from.y + (target.y - from.y) * t + Math.sin(t * Math.PI * 3 + i * 1.4) * 26;
+          const by = from.y + (target.y - from.y) * t + Math.sin(t * Math.PI * 3.5 + i * 1.4) * 28;
+          drawPixelRect(ctx, bx - px * 2, by - px, px * 4, px * 2, pal.dark, px);
           drawPixelRect(ctx, bx - px, by - px, px * 3, px * 2, i % 2 === 0 ? pal.glow : pal.primary, px);
+          // Tiny flickering pixel wings
+          drawPixelRect(ctx, bx - px, by - px * 2, px * 2, px, '#f6ffba', px);
+        }
+        if (impactP > 0) {
+          drawPixelStarburst(ctx, target.x, target.y, (20 + impactP * 44) * scale, 6, p * 4, pal.primary, '#f6ffba', px);
         }
         break;
       }
 
       case 'rock': {
-        // Crashing pixel boulder meteors from above onto target
+        // Faceted 3-tone plunging pixel boulders with speed trails + shattering rubble chips
         for (let i = 0; i < 4; i++) {
-          const rp = clamp((p - i * 0.08) / 0.55, 0, 1);
+          const rp = clamp((p - i * 0.08) / 0.54, 0, 1);
           if (rp <= 0) continue;
-          const rx = target.x + (i - 1.5) * 22;
-          const ry = target.y - 140 * (1 - rp) + (i % 2) * 14;
-          const size = (14 - i * 1.5) * scale;
-          drawPixelRect(ctx, rx - size * 0.5, ry - size * 0.5, size, size, pal.secondary, px);
-          drawPixelRect(ctx, rx - size * 0.35, ry - size * 0.35, size * 0.7, size * 0.7, pal.primary, px);
-          drawPixelRect(ctx, rx - px, ry - size * 0.35, px * 2, px, pal.glow, px);
+          const rx = target.x + (i - 1.5) * 24;
+          const ry = target.y - 148 * (1 - rp) + (i % 2) * 14;
+          const size = (18 - i * 1.8) * scale;
+          drawPixelLine(ctx, rx, ry - 32, rx, ry, pal.glow, px);
+          drawPixelBoulder(ctx, rx, ry, size, pal.primary, pal.secondary, pal.glow, px);
+        }
+        if (impactP > 0) {
+          drawPixelImpactRing(ctx, target.x, target.padY, (22 + impactP * 68) * scale, (8 + impactP * 24) * scale, pal.secondary, pal.glow, px);
         }
         break;
       }
 
       case 'ghost': {
-        // Orbiting spectral wisps & shadow rings
-        for (let i = 0; i < 4; i++) {
-          const a = p * 7 + (i / 4) * Math.PI * 2;
-          const rad = 22 + Math.sin(p * Math.PI) * 38 * scale;
+        // Swirling tapered spectral wisps with eerie glowing eyes + phantom vortex rings
+        for (let i = 0; i < 5; i++) {
+          const a = p * 7.2 + (i / 5) * Math.PI * 2;
+          const rad = 22 + Math.sin(p * Math.PI) * 44 * scale;
           const wx = target.x + Math.cos(a) * rad;
           const wy = target.y + Math.sin(a) * rad * 0.72;
-          drawPixelRect(ctx, wx - px * 2, wy - px * 2, px * 4, px * 4, pal.primary, px);
-          drawPixelRect(ctx, wx - px, wy - px, px * 2, px * 2, pal.glow, px);
+          drawPixelFlameTongue(ctx, wx, wy + px * 3, 14 * scale, 22 * scale, p * 12 + i, pal.primary, '#c4b5fd', px);
+        }
+        if (impactP > 0) {
+          drawPixelImpactRing(ctx, target.x, target.y, (20 + impactP * 68) * scale, (14 + impactP * 44) * scale, '#7c3aed', '#e9d5ff', px);
         }
         break;
       }
 
       case 'dragon': {
-        // Twin intertwined Celestial Wyrm pixel star-streams + claw burst
+        // Twin braided celestial wyrm comet streams + cosmic claw slash starburst
         for (const sign of [-1, 1] as const) {
           const color = sign > 0 ? pal.primary : '#ffd479';
+          const core = sign > 0 ? '#7be8ff' : '#ffffff';
           for (let i = 1; i <= 12; i++) {
             const t = (i / 12) * travelP;
-            const wave = Math.sin(t * Math.PI * 3.5 + p * 8) * 22 * sign;
+            const wave = Math.sin(t * Math.PI * 3.5 + p * 8) * 24 * sign;
             const sx = from.x + (target.x - from.x) * t - Math.sin(angle) * wave;
             const sy = from.y + (target.y - from.y) * t + Math.cos(angle) * wave;
-            drawPixelRect(ctx, sx - px, sy - px, px * 3, px * 3, color, px);
+            drawPixelRect(ctx, sx - px * 2, sy - px * 2, px * 4, px * 4, color, px);
+            drawPixelRect(ctx, sx - px, sy - px, px * 2, px * 2, core, px);
           }
         }
         if (impactP > 0) {
-          drawPixelStarburst(ctx, target.x, target.y, (36 + impactP * 38) * scale, 6, p * 4, pal.primary, pal.glow, px * 2);
+          drawPixelStarburst(ctx, target.x, target.y, (38 + impactP * 44) * scale, 8, p * 4, pal.primary, '#ffe58f', px * 2);
+          drawPixelImpactRing(ctx, target.x, target.y, (24 + impactP * 72) * scale, (16 + impactP * 46) * scale, '#7be8ff', '#ffd479', px);
         }
         break;
       }
 
       case 'dark': {
-        // Intersecting X umbral cleave slashes + dark void sparks
-        const span = Math.sin(clamp(p * 1.4, 0, 1) * Math.PI) * 52 * scale;
+        // Dramatic razor umbral X-cleave blades with dark-matter outer aura + magenta highlight core
+        const span = Math.sin(clamp(p * 1.4, 0, 1) * Math.PI) * 58 * scale;
         if (span > 4) {
+          drawPixelLine(ctx, target.x - span, target.y - span * 0.75, target.x + span, target.y + span * 0.75, '#120822', px * 4);
           drawPixelLine(ctx, target.x - span, target.y - span * 0.75, target.x + span, target.y + span * 0.75, pal.glow, px * 2);
-          drawPixelLine(ctx, target.x - span, target.y + span * 0.75, target.x + span, target.y - span * 0.75, pal.dark, px * 2);
+          drawPixelLine(ctx, target.x - span, target.y + span * 0.75, target.x + span, target.y - span * 0.75, '#120822', px * 4);
+          drawPixelLine(ctx, target.x - span, target.y + span * 0.75, target.x + span, target.y - span * 0.75, '#e879f9', px * 2);
+          drawPixelShockwave(ctx, target.x, target.y, span * 0.9, span * 0.65, '#4c1d95', px * 2, 20);
         }
         break;
       }
 
       case 'steel': {
-        // Volley of 3 gleaming forged pixel lances + clang starburst
+        // Volley of 3 forged chrome pixel lances with bevel highlights + diamond clang-flash
         for (let i = -1; i <= 1; i++) {
           const lp = clamp(p * 1.38 - Math.abs(i) * 0.08, 0, 1);
           const lx = from.x + (target.x - from.x) * lp;
           const ly = from.y + (target.y - from.y) * lp + i * 24 * (1 - lp);
-          drawPixelLine(ctx, lx - Math.cos(angle) * 24, ly - Math.sin(angle) * 24, lx, ly, '#e8f4ff', px * 2);
-          drawPixelRect(ctx, lx - px, ly - px, px * 2, px * 2, pal.secondary, px);
+          drawPixelLine(ctx, lx - Math.cos(angle) * 32, ly - Math.sin(angle) * 32, lx, ly, '#475569', px * 3);
+          drawPixelLine(ctx, lx - Math.cos(angle) * 28, ly - Math.sin(angle) * 28, lx, ly, '#f1f8ff', px);
+          drawPixelCrystalShard(ctx, lx, ly, 7 * scale, '#ffffff', '#94a3b8', '#1e293b', px);
         }
         if (impactP > 0) {
-          drawPixelStarburst(ctx, target.x, target.y, 28 * scale, 4, Math.PI * 0.25, '#e0f0fc', '#ffffff', px);
+          drawPixelStarburst(ctx, target.x, target.y, (28 + impactP * 28) * scale, 4, Math.PI * 0.25, '#cbd5e1', '#ffffff', px * 2);
+          drawPixelImpactRing(ctx, target.x, target.y, (18 + impactP * 58) * scale, (12 + impactP * 38) * scale, '#e2e8f0', '#ffffff', px);
         }
         break;
       }
 
       case 'fairy': {
-        // Moonbloom petal halo & shimmering starlight sigil
-        for (let i = 0; i < 7; i++) {
-          const a = p * 5 + (i / 7) * Math.PI * 2;
-          const rad = (24 + Math.sin(p * Math.PI) * 42) * scale;
+        // Swirling moonbloom starlight halo + sparkling pastel cross-stars + radiant double ring
+        for (let i = 0; i < 8; i++) {
+          const a = p * 5.2 + (i / 8) * Math.PI * 2;
+          const rad = (24 + Math.sin(p * Math.PI) * 46) * scale;
           const fx = target.x + Math.cos(a) * rad;
           const fy = target.y + Math.sin(a) * rad * 0.72;
-          drawPixelCrossStar(ctx, fx, fy, px, px, i % 2 === 0 ? pal.primary : pal.glow);
+          drawPixelCrossStar(ctx, fx, fy, px * 2, px, i % 2 === 0 ? pal.primary : '#ffe58f', '#ffffff');
         }
-        drawPixelShockwave(ctx, target.x, target.y, 38 * scale, 26 * scale, pal.glow, px);
+        drawPixelImpactRing(ctx, target.x, target.y, (30 + impactP * 44) * scale, (20 + impactP * 30) * scale, pal.glow, '#fff0f9', px);
         break;
       }
     }
 
-    // Super-Effective / Critical Hit Starburst Overlay
+    // Super-Effective / Critical Hit Cosmic Starburst Overlay
     if ((evt.effectiveness >= 1.5 || evt.isCrit) && impactP > 0.02) {
       const burstFade = clamp(1 - impactP, 0, 1);
       ctx.save();
@@ -1191,7 +1527,7 @@ export class BattleVfxDirector {
         ctx,
         target.x,
         target.y,
-        (42 + impactP * 54) * scale,
+        (44 + impactP * 58) * scale,
         8,
         p * 3,
         evt.isCrit ? '#ffe566' : pal.glow,
@@ -1227,10 +1563,10 @@ export class BattleVfxDirector {
       const by = to.y - layout.height * 0.08;
       const beamColor =
         kind === 'star'
-          ? 'rgba(130, 238, 255, 0.72)'
+          ? 'rgba(130, 238, 255, 0.68)'
           : kind === 'great'
-            ? 'rgba(102, 184, 255, 0.72)'
-            : 'rgba(255, 160, 140, 0.72)';
+            ? 'rgba(102, 184, 255, 0.68)'
+            : 'rgba(255, 160, 140, 0.68)';
       ctx.fillStyle = beamColor;
       ctx.beginPath();
       ctx.moveTo(bx, by);
@@ -1238,6 +1574,13 @@ export class BattleVfxDirector {
       ctx.lineTo(to.x + to.size * 0.42 * (1 - t * 0.5), to.padY);
       ctx.closePath();
       ctx.fill();
+      // Pixel scanline absorption rings inside tractor beam
+      for (let r = 0; r < 3; r++) {
+        const rf = (t * 2 + r / 3) % 1;
+        const ry = to.padY - rf * (to.padY - by);
+        const rw = to.size * 0.38 * (1 - rf * 0.8);
+        drawPixelRect(ctx, to.x - rw, ry, rw * 2, px, '#ffffff', px);
+      }
       drawPixelBallSprite(ctx, bx, by, ballSize, kind, 0, Math.sin(t * Math.PI) * 0.9);
     } else {
       const bx = to.x;
@@ -1301,6 +1644,9 @@ export class BattleVfxDirector {
         const sx = anchor.x + Math.cos(ang) * rx;
         const sy = anchor.padY - f * anchor.size * 1.35;
         drawPixelRect(ctx, sx - px, sy - px, px * 2, px * 2, col, px);
+        if (i % 4 === 0) {
+          drawPixelRect(ctx, sx, sy, px, px, '#ffffff', px);
+        }
       }
     }
     drawPixelHexagon(ctx, anchor.x, anchor.padY - 4, anchor.size * 0.56, anchor.size * 0.22, t * 0.9, '#ffe599', px);
@@ -1313,7 +1659,8 @@ export class BattleVfxDirector {
     layout: BattleStageLayout,
   ): void {
     const scaleFactor = clamp(Math.min(layout.width / 960, layout.height / 540), 0.72, 1.35);
-    for (const ft of state.floatingTexts) {
+    for (let i = 0; i < state.floatingTexts.length; i++) {
+      const ft = state.floatingTexts[i];
       const localTime = ft.elapsed - ft.delay;
       if (localTime < 0) continue;
       const progress = clamp(localTime / Math.max(0.25, ft.duration), 0, 1);

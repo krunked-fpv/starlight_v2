@@ -1,6 +1,6 @@
 import type { AtlasRegion, DecodedSpriteFrames } from '../../contracts';
 
-export const SILHOUETTE_CONTOUR_PAD = 2;
+export const SILHOUETTE_CONTOUR_PAD = 1;
 
 export interface SpriteOpaqueBounds {
   minX: number;
@@ -16,8 +16,14 @@ export interface SpriteOpaqueBounds {
 const opaqueBoundsByFrames = new WeakMap<DecodedSpriteFrames, SpriteOpaqueBounds | null>();
 const opaqueBoundsByCanvas = new WeakMap<object, SpriteOpaqueBounds | null>();
 const contourCanvasCache = new WeakMap<object, HTMLCanvasElement | null>();
+const hitFlashCanvasCache = new WeakMap<object, HTMLCanvasElement | null>();
 const atlasContourCache = new WeakMap<object, Map<string, HTMLCanvasElement | null>>();
 const atlasTintedCache = new WeakMap<object, Map<string, HTMLCanvasElement | null>>();
+
+function markCanvasImmutable(canvas: HTMLCanvasElement): HTMLCanvasElement {
+  (canvas as HTMLCanvasElement & { __starlightImmutable?: boolean }).__starlightImmutable = true;
+  return canvas;
+}
 
 function parseHexRgb255(hex: string): [number, number, number] {
   const clean = hex.replace('#', '').trim();
@@ -146,12 +152,12 @@ export function measureSpriteOpaqueBounds(
 }
 
 /**
- * Synthesizes a dual-contrast pixel-art silhouette backing from RGBA pixel data:
- * - Inner 1-texel 8-neighbor ring: deep midnight ink (#090c1e) so light sprites pop off bright snow/lava/sand.
- * - Outer 1-texel 8-neighbor ring: subtle cool starlight rim-halo (#eef6ff) so dark sprites pop off dark forests/caves/rifts.
- * - Solid interior under alpha >= 196 filled with ink to eliminate subpixel gaps under lunge rotation.
+ * Synthesizes a tight, authentic HD-2D 1-texel pixel-art silhouette backing from RGBA pixel data:
+ * - Cardinal 1-texel deep midnight-indigo ink outline (#090d1f) with subtle upper-edge warmth so
+ *   both bright and dark sprites integrate naturally into every arena WITHOUT chunky grey sticker halos.
+ * - Solid interior under alpha >= 196 sealed with deep ink to prevent subpixel gaps during lunge rotation.
  */
-function buildDualContrastContourFromPixels(
+function buildCrispInkContourFromPixels(
   srcData: Uint8ClampedArray,
   sw: number,
   sh: number,
@@ -169,46 +175,30 @@ function buildDualContrastContourFromPixels(
 
     const solid = new Uint8Array(cw * ch);
     const opaqueInterior = new Uint8Array(cw * ch);
+    let edgeLumSum = 0;
+    let edgeCount = 0;
+
     for (let y = 0; y < sh; y++) {
       const srcRow = y * sw * 4;
       const dstRow = (y + pad) * cw + pad;
       for (let x = 0; x < sw; x++) {
-        const a = srcData[srcRow + x * 4 + 3];
-        if (a >= 36) {
+        const p = srcRow + x * 4;
+        const a = srcData[p + 3];
+        if (a >= 40) {
           solid[dstRow + x] = 1;
           if (a >= 196) {
             opaqueInterior[dstRow + x] = 1;
           }
+          edgeLumSum += 0.299 * srcData[p] + 0.587 * srcData[p + 1] + 0.114 * srcData[p + 2];
+          edgeCount += 1;
         }
       }
     }
 
-    // Pass 1: 1-texel dark ink dilation around solid mask (cardinal = 2, diagonal = 1)
-    const inkMask = new Uint8Array(cw * ch);
-    for (let y = 1; y < ch - 1; y++) {
-      const row = y * cw;
-      for (let x = 1; x < cw - 1; x++) {
-        const idx = row + x;
-        if (solid[idx]) continue;
-        if (
-          solid[idx - 1] ||
-          solid[idx + 1] ||
-          solid[idx - cw] ||
-          solid[idx + cw]
-        ) {
-          inkMask[idx] = 2;
-        } else if (
-          solid[idx - cw - 1] ||
-          solid[idx - cw + 1] ||
-          solid[idx + cw - 1] ||
-          solid[idx + cw + 1]
-        ) {
-          inkMask[idx] = 1;
-        }
-      }
-    }
+    // Detect very dark sprites (e.g., Umbreon, Darkrai) so their top silhouette catches an ultra-subtle moonlit rim
+    const avgLum = edgeCount > 0 ? edgeLumSum / (edgeCount * 255) : 0.5;
+    const isDarkSprite = avgLum < 0.28;
 
-    // Pass 2: 1-texel luminous starlight rim-halo outside the dark ink silhouette
     const imgData = outCtx.createImageData(cw, ch);
     const out = imgData.data;
 
@@ -219,11 +209,11 @@ function buildDualContrastContourFromPixels(
         const p = idx * 4;
 
         if (opaqueInterior[idx]) {
-          // Solid ink fill strictly beneath opaque sprite body to seal rotation seams
+          // Seal interior beneath opaque sprite pixels so rotation never leaks background seams
           out[p] = 9;
           out[p + 1] = 12;
-          out[p + 2] = 30;
-          out[p + 3] = 248;
+          out[p + 2] = 28;
+          out[p + 3] = 235;
           continue;
         }
 
@@ -232,55 +222,52 @@ function buildDualContrastContourFromPixels(
           continue;
         }
 
-        const ink = inkMask[idx];
-        if (ink > 0) {
-          out[p] = 9;
-          out[p + 1] = 12;
+        // Strict 1-texel cardinal contour ONLY (no thick blocky grey outer ring!)
+        const belowSolid = y < ch - 1 && solid[idx + cw] === 1;
+        const aboveSolid = y > 0 && solid[idx - cw] === 1;
+        const leftSolid = x > 0 && solid[idx - 1] === 1;
+        const rightSolid = x < cw - 1 && solid[idx + 1] === 1;
+
+        if (belowSolid || aboveSolid || leftSolid || rightSolid) {
+          if (isDarkSprite && belowSolid && !aboveSolid) {
+            // Subtle cool starlight crown catch strictly along top contour of very dark sprites
+            out[p] = 165;
+            out[p + 1] = 192;
+            out[p + 2] = 235;
+            out[p + 3] = 115;
+          } else {
+            out[p] = 10;
+            out[p + 1] = 13;
+            out[p + 2] = 30;
+            out[p + 3] = 210;
+          }
+          continue;
+        }
+
+        // Gentle corner softening pixel strictly where two adjacent cardinals meet (rounded pixel corners)
+        const diagTL = x > 0 && y > 0 && solid[idx - cw - 1] === 1;
+        const diagTR = x < cw - 1 && y > 0 && solid[idx - cw + 1] === 1;
+        const diagBL = x > 0 && y < ch - 1 && solid[idx + cw - 1] === 1;
+        const diagBR = x < cw - 1 && y < ch - 1 && solid[idx + cw + 1] === 1;
+        if (diagTL || diagTR || diagBL || diagBR) {
+          out[p] = 10;
+          out[p + 1] = 13;
           out[p + 2] = 30;
-          out[p + 3] = ink === 2 ? 248 : 220;
-          continue;
-        }
-
-        // Check if bordering the dark ink ring to emit crisp luminous outer rim-halo
-        const hasCardinalInk =
-          (x > 0 && inkMask[idx - 1] > 0) ||
-          (x < cw - 1 && inkMask[idx + 1] > 0) ||
-          (y > 0 && inkMask[idx - cw] > 0) ||
-          (y < ch - 1 && inkMask[idx + cw] > 0);
-
-        if (hasCardinalInk) {
-          out[p] = 228;
-          out[p + 1] = 240;
-          out[p + 2] = 255;
-          out[p + 3] = 116;
-          continue;
-        }
-
-        const hasDiagInk =
-          (x > 0 && y > 0 && inkMask[idx - cw - 1] === 2) ||
-          (x < cw - 1 && y > 0 && inkMask[idx - cw + 1] === 2) ||
-          (x > 0 && y < ch - 1 && inkMask[idx + cw - 1] === 2) ||
-          (x < cw - 1 && y < ch - 1 && inkMask[idx + cw + 1] === 2);
-
-        if (hasDiagInk) {
-          out[p] = 224;
-          out[p + 1] = 236;
-          out[p + 2] = 255;
-          out[p + 3] = 56;
+          out[p + 3] = 92;
         }
       }
     }
 
     outCtx.putImageData(imgData, 0, 0);
-    return outCanvas;
+    return markCanvasImmutable(outCanvas);
   } catch {
     return null;
   }
 }
 
 /**
- * Returns a cached (fw + 4) x (fh + 4) pixel-art dual-contrast contour canvas for a live frame.
- * Gracefully returns null in pure Node unit tests where mock frames lack getContext().
+ * Returns a cached (fw + 2) x (fh + 2) tight 1-texel pixel-art contour canvas for a live frame.
+ * Tagged immutable for one-time WebGL2 VRAM upload; gracefully returns null in pure Node tests.
  */
 export function getSpriteSilhouetteContour(
   frame: HTMLCanvasElement | null | undefined,
@@ -296,7 +283,7 @@ export function getSpriteSilhouetteContour(
       return null;
     }
     const pixels = ctx.getImageData(0, 0, frame.width, frame.height);
-    const contour = buildDualContrastContourFromPixels(pixels.data, frame.width, frame.height);
+    const contour = buildCrispInkContourFromPixels(pixels.data, frame.width, frame.height);
     contourCanvasCache.set(frame, contour);
     return contour;
   } catch {
@@ -306,7 +293,59 @@ export function getSpriteSilhouetteContour(
 }
 
 /**
- * Returns a cached (region.w + 4) x (region.h + 4) dual-contrast contour canvas for an atlas region
+ * Returns a cached crisp ivory-white pixel hit-flash mask matching the live frame's opaque silhouette.
+ * Ensures even dark Pokémon (Umbreon, Gengar, Darkrai) produce an unmistakable arcade hit-flash.
+ * WeakMap-cached per frame canvas and tagged immutable for one-time WebGL2 upload.
+ */
+export function getSpriteHitFlashCanvas(
+  frame: HTMLCanvasElement | null | undefined,
+): HTMLCanvasElement | null {
+  if (!canReadCanvasPixels(frame)) return null;
+  const cached = hitFlashCanvasCache.get(frame);
+  if (cached !== undefined) return cached;
+
+  try {
+    const ctx = frame.getContext('2d', { willReadFrequently: true }) ?? frame.getContext('2d');
+    if (!ctx || typeof ctx.getImageData !== 'function') {
+      hitFlashCanvasCache.set(frame, null);
+      return null;
+    }
+    const w = frame.width;
+    const h = frame.height;
+    const src = ctx.getImageData(0, 0, w, h).data;
+    const outCanvas = createOffscreenCanvas(w, h);
+    if (!outCanvas) {
+      hitFlashCanvasCache.set(frame, null);
+      return null;
+    }
+    const outCtx =
+      outCanvas.getContext('2d', { willReadFrequently: true }) ?? outCanvas.getContext('2d');
+    if (!outCtx || typeof outCtx.createImageData !== 'function') {
+      hitFlashCanvasCache.set(frame, null);
+      return null;
+    }
+    const imgData = outCtx.createImageData(w, h);
+    const out = imgData.data;
+    for (let i = 0; i < src.length; i += 4) {
+      const a = src[i + 3];
+      if (a < 28) continue;
+      out[i] = 255;
+      out[i + 1] = 249;
+      out[i + 2] = 216;
+      out[i + 3] = a;
+    }
+    outCtx.putImageData(imgData, 0, 0);
+    markCanvasImmutable(outCanvas);
+    hitFlashCanvasCache.set(frame, outCanvas);
+    return outCanvas;
+  } catch {
+    hitFlashCanvasCache.set(frame, null);
+    return null;
+  }
+}
+
+/**
+ * Returns a cached (region.w + 2) x (region.h + 2) tight ink contour canvas for an atlas region
  * (used by OfflineSpriteRigSynthesizer so offline pixel rigs have identical figure-ground contrast).
  */
 export function getAtlasRegionSilhouetteContour(
@@ -331,7 +370,7 @@ export function getAtlasRegionSilhouetteContour(
     sCtx.clearRect(0, 0, region.w, region.h);
     sCtx.drawImage(sheet, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
     const pixels = sCtx.getImageData(0, 0, region.w, region.h);
-    const contour = buildDualContrastContourFromPixels(pixels.data, region.w, region.h);
+    const contour = buildCrispInkContourFromPixels(pixels.data, region.w, region.h);
     if (!byKey) {
       byKey = new Map();
       atlasContourCache.set(sheet, byKey);
@@ -350,7 +389,8 @@ export function getAtlasRegionSilhouetteContour(
 
 /**
  * Palette-remaps an archetype fallback atlas region toward a specific Pokemon's primary/accent colors
- * while preserving crisp dark pixel outlines, eye whites, and 16-bit shading luminance ramps.
+ * using hue-shifted 16-bit SNES/GBA shading ramps (cooler shadows, warm specular highlights) while
+ * preserving crisp dark pixel outlines and pure white eye glints.
  * Returns null gracefully in pure Node unit tests where getImageData() is unavailable.
  */
 export function getPaletteTintedAtlasRegion(
@@ -395,26 +435,38 @@ export function getPaletteTintedAtlasRegion(
       const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
 
       // Preserve crisp dark ink outlines & pupils, plus pure white eye speculars
-      if (lum < 0.18 || maxC < 52) continue;
-      if (lum > 0.90 && sat < 0.15) continue;
+      if (lum < 0.17 || maxC < 50) continue;
+      if (lum > 0.91 && sat < 0.15) continue;
 
       // Map bright highlight / secondary belly patches toward accentHex; main body toward primaryHex
-      const useAccent = lum > 0.72 || sat < 0.24;
+      const useAccent = lum > 0.74 || sat < 0.23;
       const tr = useAccent ? ar : pr;
       const tg = useAccent ? ag : pg;
       const tb = useAccent ? ab : pb;
 
-      // Preserve hand-pixelled 16-bit light-to-shadow shading curve
-      const shade = 0.34 + lum * 0.92;
-      const mixAmt = useAccent ? 0.62 : 0.78;
+      // Hue-shifted 16-bit shading curve: cool deep indigo shadows, warm sunlit specular highlights
+      const shade = 0.30 + lum * 0.96;
+      const mixAmt = useAccent ? 0.64 : 0.80;
       let nr = r * (1 - mixAmt) + tr * shade * mixAmt;
       let ng = g * (1 - mixAmt) + tg * shade * mixAmt;
       let nb = b * (1 - mixAmt) + tb * shade * mixAmt;
 
-      if (shiny && lum > 0.58) {
-        nr = nr * 0.82 + 255 * 0.18;
-        ng = ng * 0.84 + 236 * 0.16;
-        nb = nb * 0.88 + 148 * 0.12;
+      if (lum < 0.44) {
+        const cool = (0.44 - lum) * 0.42;
+        nr *= 1 - cool * 0.45;
+        ng *= 1 - cool * 0.25;
+        nb = nb + (72 - nb) * cool * 0.35;
+      } else if (lum > 0.72) {
+        const warm = (lum - 0.72) * 0.68;
+        nr = nr + (255 - nr) * warm * 0.45;
+        ng = ng + (248 - ng) * warm * 0.36;
+        nb = nb + (224 - nb) * warm * 0.20;
+      }
+
+      if (shiny && lum > 0.54) {
+        nr = nr * 0.78 + 255 * 0.22;
+        ng = ng * 0.82 + 238 * 0.18;
+        nb = nb * 0.86 + 150 * 0.14;
       }
 
       data[i] = Math.max(0, Math.min(255, Math.round(nr)));
@@ -423,6 +475,7 @@ export function getPaletteTintedAtlasRegion(
     }
 
     ctx.putImageData(imgData, 0, 0);
+    markCanvasImmutable(outCanvas);
     if (!byKey) {
       byKey = new Map();
       atlasTintedCache.set(sheet, byKey);

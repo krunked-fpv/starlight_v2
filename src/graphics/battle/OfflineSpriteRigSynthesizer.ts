@@ -27,213 +27,416 @@ const FALLBACK_ARCHETYPE_ORDER: readonly BodyArchetype[] = [
   'aquatic',
 ];
 
+const GRID_SIZE = 24;
+
+/**
+ * High-density 24x24 pixel-art creature grids with 11-tone shading tokens:
+ * O = dark midnight ink outline | D = deep hue-shifted shadow | S = mid shadow
+ * P = primary body | L = lit midtone | H = warm specular highlight
+ * A = accent primary | B = accent bright highlight | K = accent shadow
+ * E = eye pupil ink | W = eye specular white | . = transparent
+ */
 const PIXEL_GRIDS: Record<BodyArchetype, readonly string[]> = {
   quadruped: [
-    '..OO......OO....',
-    '.OHPO....OPHO...',
-    '.OPSPO..OPPSO...',
-    '..OPOOOOOPPSO...',
-    '.OHPPPPPPPPO....',
-    '.OPEWPPPEWPO..OO',
-    '.OPEEPPPEEPO.OAO',
-    '.OPPPPPPPPPOOAHO',
-    '..OAAAAAAAO.OAPO',
-    '..OPPPPPPPPOOPO.',
-    '..OPPPPPPPPPPO..',
-    '..OSSPPPPPPSSO..',
-    '..OPO.OPO.OPO...',
-    '..OPO.OPO.OPO...',
-    '..OSO.OSO.OSO...',
-    '..OOO.OOO.OOO...',
+    '....OO........OO........',
+    '...OBAO......OBAO.......',
+    '..OBAKO.....OBAKO.......',
+    '..OBPKO.....OBPKO.......',
+    '...OPPKOOOOOOPPKO.......',
+    '...OHLLLLLLLLLLPO.......',
+    '..OHLLPPPPPPPPLPO.......',
+    '..OLPEWPPPPPEWPSO....OO.',
+    '..OLPEEPPPPPEEPSO...OBBO',
+    '..OPPPPPPPPPPPPPO..OBAAO',
+    '...OPPSPPPPPPSPO..OBAAKO',
+    '...OOOBBBBBBBBOO.OBAPKO.',
+    '..OOBBAAAAAAAABBOOPPKO..',
+    '..OBAAKKKKKKKAAABPPPO...',
+    '...OOKKPPPPPPPKKPPPO....',
+    '...OLPPPPPPPPPPPPPSO....',
+    '...OPPPPPPPPPPPPSSO.....',
+    '...OSSPPPPPPPPSSDO......',
+    '...ODDOODDDDOODDO.......',
+    '...OPPO.OPPO.OPPO.......',
+    '...OPSO.OPSO.OPSO.......',
+    '...OSSO.OSSO.OSSO.......',
+    '..OADDOOADDOOADDO.......',
+    '..OOOO..OOOO.OOOO.......',
   ],
   biped: [
-    '......OOO.......',
-    '.....OAAAO......',
-    '....OOHPHPO.....',
-    '...OHPPPPPSO....',
-    '..OPEWPPPEWPO...',
-    '..OPEEPPPEEPO...',
-    '...OPPPPPPSO....',
-    '..OOOPAAAPOOO...',
-    '.OPOHAAAAAHOPO..',
-    '.OSOPAAAAAPOSO..',
-    '..O.OPPPPPPO.OO.',
-    '....OPSSSSPO.OAO',
-    '....OPO..OPOOAO.',
-    '....OPO..OPOOO..',
-    '...OSSO..OSSO...',
-    '...OOOO..OOOO...',
+    '........................',
+    '........OOOO............',
+    '.......OBAAAO...........',
+    '......OBHLLHPO..........',
+    '.....OHLLPPPPSO.........',
+    '....OLPPPPPPPPSO........',
+    '....OLPEWPPPEWPO........',
+    '....OPPEEPPPEEPO........',
+    '....OPPPPPPPPPPO........',
+    '.....OPPSPPPSPO.........',
+    '...OOOOPBBBBPOOO........',
+    '..OLPOOBAAAABOPSO....OO.',
+    '..OPSOOBAAAABOPDO...OBBO',
+    '..OSSOOBKKKKBOPO...OBAAO',
+    '...OO.OPPPPPPPPO..OBAKO.',
+    '......OLPPPPPPPO.OOKPO..',
+    '......OPPPSSPPPPOOPSO...',
+    '......OSSDDDDSSPPSSO....',
+    '......OPSO..OPSOOOO.....',
+    '......OPSO..OPSO........',
+    '......OSSO..OSSO........',
+    '.....OADDO..OADDO.......',
+    '.....OOOOO..OOOOO.......',
+    '........................',
   ],
   winged: [
-    '.....OOOO.......',
-    '....OHAAHO......',
-    '...OHPPPPPO...OO',
-    '..OPEWPPPEPO.OAO',
-    '.OAAPPEEPPPOOHPO',
-    '..OOOPPPPPOOHPPO',
-    '....OHPPPOOHPPSO',
-    '...OOHPPPPPPPSO.',
-    '..OHPAAAAAAAPSO.',
-    '..OSPPPPPPPPPSO.',
-    '...OSSPPPPPPSSO.',
-    '....OOSPPPSSOO..',
-    '.....OPO..OPO...',
-    '....OAO....OAO..',
-    '....OOO....OOO..',
-    '................',
+    '........................',
+    '........................',
+    '.......OOOOOO...........',
+    '......OBHAAHBO..........',
+    '.....OHLLPPPLHO......OO.',
+    '....OLPPPPPPPPO.....OBBO',
+    '....OLPEWPPPEPO....OBAAO',
+    '...OBBPEEPPPEPO...OBAPLO',
+    '...OAAOPPPPPPPO..OBAPLPO',
+    '....OOOHLLLLPPO.OBAPLPSO',
+    '......OLPPPPPPOOBAPPPPSO',
+    '.....OLPBBBBBPPBAPPPSSDO',
+    '....OLPBAAAAABPPPPPPSSO.',
+    '....OPPBAAAAABPPPPPSSDO.',
+    '....OSPPKKKKKPPPPPSSDO..',
+    '.....OSSPPPPPPPPPSSDO...',
+    '......OODSSPPPPSSDOO....',
+    '.......OOODDDDDDOO......',
+    '........OAO...OAO.......',
+    '.......OBAO..OBAO.......',
+    '.......OOOO..OOOO.......',
+    '........................',
+    '........................',
+    '........................',
   ],
   serpentine: [
-    '...OOOO.........',
-    '..OAAAAO........',
-    '.OHPPPPPO.......',
-    '.OPEWPEWPO......',
-    '.OPEEPEEPO......',
-    '..OPPPPPPO......',
-    '...OAAAAPO......',
-    '....OPPPPO..OOO.',
-    '...OHPPPPO.OAAHO',
-    '..OHPPPPPOOPPPPO',
-    '..OPPPSSPPPPSSO.',
-    '..OPSO..OSSSSO..',
-    '..OPPPPO........',
-    '...OPPPPPPPO....',
-    '....OSSSSSSO....',
-    '.....OOOOOO.....',
+    '........................',
+    '.....OOOOO..............',
+    '....OBAAAAO.............',
+    '...OBHLLPPPO............',
+    '..OHLPEWPEWPO...........',
+    '..OLPPEEPEEPO...........',
+    '..OPPPPPPPPPO...........',
+    '...OOBBAAAAPO...........',
+    '....OOKKPPPPO......OOO..',
+    '.....OHLPPPPO.....OBBBO.',
+    '....OHLLPPPPO....OBAAAO.',
+    '...OHLPPPPPPPO..OBAPPPPO',
+    '...OLPPBBPPPPPOOBAPPPPSO',
+    '...OPPBAAAPPPPPPPPPSSDO.',
+    '...OSSPKKKPPSSSSPPSSDO..',
+    '....OOSPPPPDOOOODDDDO...',
+    '...OHLPPPPPO............',
+    '...OLPPBBPPPPOOO........',
+    '...OPPBAAAPPPPPPO.......',
+    '....OSSKKKPPPPSSDO......',
+    '.....OOSSSSSSSDDO.......',
+    '.......OOOOOOOOO........',
+    '........................',
+    '........................',
   ],
   aquatic: [
-    '......OOOO......',
-    '....OOHAAHOO....',
-    '..OOOHPPPPPO....',
-    '.OAOOHPEWPEWO...',
-    '.OAOOOPPEEPPO.OO',
-    '..OOOPPPPPPPOOAO',
-    '....OHPPPPPPPHPO',
-    '...OHPAAAAAAAPPO',
-    '...OPPPPPPPPPSO.',
-    '....OSSPPPPSSOO.',
-    '.....OOSPPPO....',
-    '......OPOPO.....',
-    '.....OAO.OAO....',
-    '.....OOO.OOO....',
-    '................',
-    '................',
+    '........................',
+    '........OOOOO...........',
+    '......OOBBAAHOO.........',
+    '.....OBBHLLLPPHO........',
+    '...OOOBHLPPPPPPPO.......',
+    '..OBAOOHLPEWPEWPO.......',
+    '..OAKOOLPPEEPEEPO....OO.',
+    '...OOOOPPPPPPPPPPO..OBBO',
+    '......OHLPPPPPPPLPOOBAAO',
+    '.....OHLPBBBBBBBPPPOBAKO',
+    '....OHLPBAAAAAAABPPPPSO.',
+    '....OLPPBAAAAAAABPPPSSO.',
+    '....OPPPPKKKKKKKPPPSSDO.',
+    '.....OSSPPPPPPPPPPSSDO..',
+    '......OODSSPPPPPPSSDO...',
+    '........OOOSSPPPSSO.....',
+    '..........OPPPPO........',
+    '.........OBAAABBO.......',
+    '........OBAAKOABBO......',
+    '........OOKO..OOKO......',
+    '........OOO....OOO......',
+    '........................',
+    '........................',
+    '........................',
   ],
   insectoid: [
-    '..OO......OO....',
-    '...O......O.....',
-    '....OOOOOO...OOO',
-    '...OHPPPPSO.OAAO',
-    '..OPEWPEWPO.OAHO',
-    '..OPEEPEEPOOOAPO',
-    '...OPPPPPOOHPPSO',
-    '..OOHAAHOOHPPPO.',
-    '.OPOHPPPPPPPSO..',
-    '.O.OOPSSSSSSO...',
-    '..O.OPO..OPO....',
-    '.O..OPO..OPO....',
-    '....OSO..OSO....',
-    '....OOO..OOO....',
-    '................',
-    '................',
+    '........................',
+    '........................',
+    '....OO........OO........',
+    '....OBO......OBO........',
+    '.....OO......OO.....OOO.',
+    '......OOOOOOOO.....OBBBO',
+    '.....OHLLPPPPSO...OBAAAO',
+    '....OLPEWPPPEWPO.OBAPPLO',
+    '....OPPEEPPPEEPOOBAPPPPO',
+    '.....OPPPPPPPPOOBAPPPPSO',
+    '....OOBBAAAAABBOOPPPSSDO',
+    '...OLPOBKKKKBOPPPPPSSDO.',
+    '..OLPSOPPPPPPPPPPSSDO...',
+    '..O.OOOPPPSSPPPPSDOO....',
+    '.....O.OSSDDSSSDDO......',
+    '....O..OPSO..OPSO.......',
+    '...O...OPSO..OPSO.......',
+    '.......OSSO..OSSO.......',
+    '.......OOOO..OOOO.......',
+    '........................',
+    '........................',
+    '........................',
+    '........................',
+    '........................',
   ],
   draconic: [
-    '..OO....OO......',
-    '..OAO..OAO..OOO.',
-    '..OHPOOHPO.OAAHO',
-    '.OOOHPPPPO.OHPPO',
-    'OHPPPEWPEWPO.OPO',
-    'OPPPPEEPEEPO.OPO',
-    '.OOOPPPPPPOOOOPO',
-    '...OHPAAAPPPPHPO',
-    '..OOPPAAAPPPPPO.',
-    '.OPPOPAAAPPPPO..',
-    '.O.O.OPSSSSSO...',
-    '.....OPO..OPO...',
-    '....OSSO..OSSO..',
-    '....OOOO..OOOO..',
-    '................',
-    '................',
+    '........................',
+    '........................',
+    '...OO......OO...........',
+    '..OBAO....OBAO.....OOO..',
+    '..OBKO....OBKO....OBBBO.',
+    '...OHPOOOOHPO....OBAAAO.',
+    '..OOHLLPPPPPO...OBAPLPO.',
+    '.OHLLPEWPPPEWO..OBAPPPSO',
+    '.OLPPPEEPPPEEO..OAPPPSSO',
+    '..OOOPPPPPPPPPOOOOPPPDDO',
+    '....OHLPBBBPPPPPPPPPSSO.',
+    '...OHLPBAAAPPPPPPPPSSDO.',
+    '..OLPPPBAAAPPPPPPPSSDO..',
+    '..OPO.OPKKKPPPPPPSSDO...',
+    '..OO..OPPPSSPPPPSSDO....',
+    '......OSSDDDDDDSSDO.....',
+    '......OPSO....OPSO......',
+    '......OPSO....OPSO......',
+    '.....OADDO...OADDO......',
+    '.....OOOOO...OOOOO......',
+    '........................',
+    '........................',
+    '........................',
+    '........................',
   ],
   construct: [
-    '....OOOOOOOO....',
-    '...OHHHHHHHHO...',
-    '...OHPPPPPPPO...',
-    '..OOHPEAAAEPO...',
-    '..OPOPPPPPPOPO..',
-    '.OHPOPPAAAPPOPO.',
-    '.OPPOPPAAAPPOPO.',
-    '.OSPOPPPPPPOPSO.',
-    '.O.O.OPPPPO.O.O.',
-    '.....OPSSPO.....',
-    '....OPO..OPO....',
-    '....OPO..OPO....',
-    '...OSSO..OSSO...',
-    '...OOOO..OOOO...',
-    '................',
-    '................',
+    '........................',
+    '........................',
+    '......OOOOOOOOOO........',
+    '.....OHHHHHHHHHHO.......',
+    '....OHLLPPPPPPPLHO......',
+    '....OLPPPPPPPPPPPO......',
+    '...OOHPPEBWWBEPPPOO.....',
+    '..OHPOOPPEAAEEPPOPHO....',
+    '..OLPOOPPPPPPPPPOPSO....',
+    '.OHLPOOPPPBBPPPOPPPSO...',
+    '.OLPPOOPPBAAABPOPPPSO...',
+    '.OPPSOOPPBAAABPOPSSDO...',
+    '.OSSDOOPPPKKKPPOPSSDO...',
+    '..OODOOPPPPPPPPOPDDO....',
+    '...OO..OPSSSSPO..OO.....',
+    '.......OODDDDOO.........',
+    '......OPSO..OPSO........',
+    '......OPSO..OPSO........',
+    '......OSSO..OSSO........',
+    '.....OADDO..OADDO.......',
+    '.....OOOOO..OOOOO.......',
+    '........................',
+    '........................',
+    '........................',
   ],
   amorphous: [
-    '......OOOO......',
-    '.....OAAAAO.....',
-    '....OHPPPPHO....',
-    '...OHPPPPPPPO...',
-    '..OHPPPPPPPPPO..',
-    '..OPEWPPPEWPPO..',
-    '..OPEEPPPEEPPO..',
-    '..OPPPPPPPPPPO..',
-    '..OPPPAAAAPPPO..',
-    '.OHPPPPPPPPPPHO.',
-    '.OSPPPPPPPPPPSO.',
-    '..OSSPPPPPPSSO..',
-    '...OOSSSSSSOO...',
-    '.....OOOOOO.....',
-    '..OO........OO..',
-    '.OAO........OAO.',
+    '........................',
+    '........................',
+    '.........OOOOO..........',
+    '........OBAAAAO.........',
+    '.......OBHLLPPPO........',
+    '......OHLLPPPPPPO.......',
+    '.....OHLPPPPPPPPPO......',
+    '....OHLPPPPPPPPPPPO.....',
+    '....OLPEWPPPPPEWPPO.....',
+    '....OLPEEPPPPPEEPPO.....',
+    '....OPPPPPPPPPPPPPO.....',
+    '...OHLPPPBBBBBPPPLHO....',
+    '...OLPPPBAAAAABPPPSO....',
+    '...OPPPPPKKKKKPPPPSO....',
+    '...OSSPPPPPPPPPPPSSO....',
+    '....OSSPPPPPPPPPSSDO....',
+    '.....OODSSPPPPSSDDO.....',
+    '.......OODDDDDDDOO......',
+    '...OO....OOOOOOO....OO..',
+    '..OBAO.............OBAO.',
+    '...OO...............OO..',
+    '........................',
+    '........................',
+    '........................',
   ],
   flora: [
-    '..OOOO....OOOO..',
-    '.OAAAAO..OAAAAO.',
-    '..OAAHO..OHAAO..',
-    '....OHO..OHO....',
-    '.....OOOOOO.....',
-    '...OOHPPPPPHO...',
-    '..OHPPPPPPPPPO..',
-    '..OPEWPPPEWPPO..',
-    '..OPEEPPPEEPPO..',
-    '..OAAAAAAAAAO...',
-    '...OPPPPPPPPO...',
-    '...OSSPPPPSSO...',
-    '..OHO.OPO.OHO...',
-    '..OOO.OSO.OOO...',
-    '......OOO.......',
-    '................',
+    '........................',
+    '...OOOOO......OOOOO.....',
+    '..OBAAAAO....OBAAAAO....',
+    '.OBBAAAABO..OBBAAAABO...',
+    '..OBKKAAHO..OHAAKKBO....',
+    '....OOOHHO..OHHOOO......',
+    '.......OOOOOOOO.........',
+    '.....OOHLLPPPPLHOO......',
+    '....OHLPPPPPPPPPLHO.....',
+    '....OLPEWPPPPPEWPPO.....',
+    '....OLPEEPPPPPEEPPO.....',
+    '....OPPPPPPPPPPPPPO.....',
+    '...OOBBAAAAAAAAABBOO....',
+    '..OBAKKPPPPPPPPPKKABO...',
+    '...OO.OLPPPPPPPPO.OO....',
+    '......OPPPPPPPPSO.......',
+    '......OSSPPPPPSSO.......',
+    '.....OHO.OSSDDO.OHO.....',
+    '....OHOO.OPSO...OHOO....',
+    '....OOO..OSSO....OOO....',
+    '.........OOOO...........',
+    '........................',
+    '........................',
+    '........................',
   ],
   crystalline: [
-    '.......OO.......',
-    '......OAAO......',
-    '..OO..OHHO..OO..',
-    '.OAO.OHPPHO.OAO.',
-    '..OOOHPPPPHO.OO.',
-    '...OHPAAAAPHO...',
-    '..OHPPEWPEWPHO..',
-    '..OPPPEEPEEPPO..',
-    '..OPPPAAAAPPPO..',
-    '...OPPPPPPPPO...',
-    '...OSPPPPPPPO...',
-    '....OSPPPPSO....',
-    '..OO.OSSSSO.OO..',
-    '.OAO..OSSO..OAO.',
-    '..OO...OO....OO.',
-    '................',
+    '........................',
+    '..........OOO...........',
+    '.........OBBBO..........',
+    '........OBAAABO.........',
+    '...OO..OHHLLLHHO..OO....',
+    '..OBAO.OHLLPPPSO.OBAO...',
+    '..OAKOOHLLPPPPPSO.OKO...',
+    '...OOOHLPBBBBPPPSO.OO...',
+    '.....OHLPBAAABPPPSO.....',
+    '....OHLPPEWPEWPPPSO.....',
+    '....OLPPPEEPEEPPPSO.....',
+    '....OLPPPBBBBBPPPSO.....',
+    '....OPPPPBKKKBPPPSO.....',
+    '.....OPPPPPPPPPPSSO.....',
+    '.....OSSPPPPPPPSSDO.....',
+    '......OSSPPPPPSSDO......',
+    '...OO..OSSPPPSSDO..OO...',
+    '..OBAO..OSSPSSDO..OBAO..',
+    '..OAKO...OSSDDO...OAKO..',
+    '...OO.....ODDO.....OO...',
+    '...........OO...........',
+    '........................',
+    '........................',
+    '........................',
   ],
 };
 
+interface PixelRun {
+  row: number;
+  col: number;
+  len: number;
+  code: string;
+}
+
+interface CompiledArchetypeGrid {
+  runs: PixelRun[];
+  rimRuns: Array<{ row: number; col: number; len: number }>;
+  crestAnchor: { col: number; row: number };
+}
+
+/**
+ * Precompiles horizontal pixel runs and exterior rim-halo runs once at module load
+ * so offline rig rendering performs zero neighbor scans per frame.
+ */
+function compileArchetypeGrids(): Record<BodyArchetype, CompiledArchetypeGrid> {
+  const out = {} as Record<BodyArchetype, CompiledArchetypeGrid>;
+  for (const arch of FALLBACK_ARCHETYPE_ORDER) {
+    const grid = PIXEL_GRIDS[arch];
+    const rows = grid.length;
+    const cols = grid[0]?.length ?? GRID_SIZE;
+    const runs: PixelRun[] = [];
+    const rimRuns: Array<{ row: number; col: number; len: number }> = [];
+    let topBodyRow = rows;
+    let topBodyColSum = 0;
+    let topBodyCount = 0;
+
+    for (let r = 0; r < rows; r++) {
+      const line = grid[r];
+      let c = 0;
+      while (c < cols) {
+        const ch = line[c] ?? '.';
+        if (ch === '.') {
+          c += 1;
+          continue;
+        }
+        if (r < topBodyRow && ch !== 'O') {
+          topBodyRow = r;
+        }
+        if (r === topBodyRow && ch !== 'O') {
+          topBodyColSum += c;
+          topBodyCount += 1;
+        }
+        let end = c + 1;
+        while (end < cols && line[end] === ch) {
+          end += 1;
+        }
+        runs.push({ row: r, col: c, len: end - c, code: ch });
+        c = end;
+      }
+    }
+
+    // Precompute merged horizontal runs for the 1-cell luminous exterior rim halo
+    for (let r = -1; r <= rows; r++) {
+      let c = -1;
+      while (c <= cols) {
+        const cur = r >= 0 && r < rows && c >= 0 && c < cols ? grid[r][c] : '.';
+        const touchesBody =
+          cur === '.' &&
+          ((r > 0 && c >= 0 && c < cols && grid[r - 1][c] !== '.') ||
+            (r + 1 < rows && c >= 0 && c < cols && grid[r + 1][c] !== '.') ||
+            (c > 0 && r >= 0 && r < rows && grid[r][c - 1] !== '.') ||
+            (c + 1 < cols && r >= 0 && r < rows && grid[r][c + 1] !== '.'));
+        if (!touchesBody) {
+          c += 1;
+          continue;
+        }
+        const start = c;
+        c += 1;
+        while (c <= cols) {
+          const nextCur = r >= 0 && r < rows && c >= 0 && c < cols ? grid[r][c] : '.';
+          const nextTouches =
+            nextCur === '.' &&
+            ((r > 0 && c >= 0 && c < cols && grid[r - 1][c] !== '.') ||
+              (r + 1 < rows && c >= 0 && c < cols && grid[r + 1][c] !== '.') ||
+              (c > 0 && r >= 0 && r < rows && grid[r][c - 1] !== '.') ||
+              (c + 1 < cols && r >= 0 && r < rows && grid[r][c + 1] !== '.'));
+          if (!nextTouches) break;
+          c += 1;
+        }
+        rimRuns.push({ row: r, col: start, len: c - start });
+      }
+    }
+
+    const crestCol =
+      topBodyCount > 0 ? Math.round(topBodyColSum / topBodyCount) : Math.floor(cols * 0.42);
+    out[arch] = {
+      runs,
+      rimRuns,
+      crestAnchor: {
+        col: clamp(crestCol, 3, cols - 4),
+        row: clamp(topBodyRow + 1, 2, rows - 5),
+      },
+    };
+  }
+  return out;
+}
+
+const COMPILED_GRIDS = compileArchetypeGrids();
+
 interface ResolvedPixelPalette {
   outline: string;
-  primary: string;
-  highlight: string;
+  deepShadow: string;
   shadow: string;
+  primary: string;
+  light: string;
+  highlight: string;
   accent: string;
+  accentBright: string;
+  accentShadow: string;
   eye: string;
   eyeWhite: string;
 }
@@ -250,19 +453,58 @@ function resolvePixelPalette(rig: OfflineRigDescriptor): ResolvedPixelPalette {
   const basePrimary = rig.colorHex || legacyPalette?.[0] || typePal.primary;
   const primary = rig.shiny ? mixHex(basePrimary, '#ffe678', 0.34) : basePrimary;
   const accent = rig.shiny ? '#82f5ff' : typePal.glow;
-  const shadow = mixHex(primary, typePal.dark, 0.52);
-  const highlight = mixHex(primary, '#ffffff', 0.42);
-  const outline = mixHex(typePal.dark, '#171330', 0.65);
+  // Authentic 16-bit hue-shifted shading: cool indigo shadows, warm cream highlights
+  const shadow = mixHex(primary, mixHex(typePal.dark, '#26235c', 0.35), 0.46);
+  const deepShadow = mixHex(shadow, '#141238', 0.52);
+  const light = mixHex(primary, '#fff8e8', 0.28);
+  const highlight = mixHex(primary, '#fffdf4', 0.58);
+  const accentBright = mixHex(accent, '#ffffff', 0.48);
+  const accentShadow = mixHex(accent, mixHex(typePal.dark, '#1e1a44', 0.45), 0.46);
+  const outline = mixHex(typePal.dark, '#0f0c24', 0.72);
 
   return {
     outline,
-    primary,
-    highlight,
+    deepShadow,
     shadow,
+    primary,
+    light,
+    highlight,
     accent,
-    eye: '#171330',
+    accentBright,
+    accentShadow,
+    eye: '#141128',
     eyeWhite: '#ffffff',
   };
+}
+
+function resolveCodeColor(code: string, pal: ResolvedPixelPalette, isHitFlash: boolean): string {
+  if (isHitFlash) return code === 'O' ? '#fff4b8' : '#ffffff';
+  switch (code) {
+    case 'O':
+      return pal.outline;
+    case 'D':
+      return pal.deepShadow;
+    case 'S':
+      return pal.shadow;
+    case 'P':
+      return pal.primary;
+    case 'L':
+      return pal.light;
+    case 'H':
+      return pal.highlight;
+    case 'A':
+      return pal.accent;
+    case 'B':
+      return pal.accentBright;
+    case 'K':
+      return pal.accentShadow;
+    case 'E':
+      return pal.eye;
+    case 'W':
+      return pal.eyeWhite;
+    default:
+      return pal.primary;
+  }
 }
 
 function isDrawableSheet(
@@ -301,9 +543,9 @@ function drawPixelStarSparkle(
 }
 
 /**
- * Pixel-Art Offline Companion Synthesizer.
- * Renders crisp 48x48 sprites from `fallbacks-atlas.png` when attached, and
- * falls back to bespoke 16x16 pixel-grid creature emblems (ZERO ovals/bean-dogs!)
+ * High-Craft Pixel-Art Offline Companion Synthesizer.
+ * Renders crisp 48x48 palette-remapped sprites from `fallbacks-atlas.png` when attached,
+ * and falls back to bespoke 24x24 multi-tone pixel-grid creatures (ZERO ovals/curves!)
  * in headless or pre-manifest environments.
  */
 export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer {
@@ -387,84 +629,50 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
     pal: ResolvedPixelPalette,
     isHitFlash: boolean,
   ): void {
-    const archetype: BodyArchetype = PIXEL_GRIDS[rig.archetype] ? rig.archetype : 'biped';
-    const grid = PIXEL_GRIDS[archetype];
-    const px = Math.max(2, Math.floor(drawSize / 16));
-    const totalW = px * 16;
+    const archetype: BodyArchetype = COMPILED_GRIDS[rig.archetype] ? rig.archetype : 'biped';
+    const compiled = COMPILED_GRIDS[archetype];
+    const px = Math.max(2, Math.floor(drawSize / GRID_SIZE));
+    const totalW = px * GRID_SIZE;
     const ox = -Math.round(totalW * 0.5);
     const oy = -Math.round(totalW * 0.5);
 
-    const colorForCode = (code: string): string | null => {
-      if (code === '.') return null;
-      if (isHitFlash) return code === 'O' ? '#fff4b8' : '#ffffff';
-      switch (code) {
-        case 'O':
-          return pal.outline;
-        case 'P':
-          return pal.primary;
-        case 'H':
-          return pal.highlight;
-        case 'S':
-          return pal.shadow;
-        case 'A':
-          return pal.accent;
-        case 'E':
-          return pal.eye;
-        case 'W':
-          return pal.eyeWhite;
-        default:
-          return pal.primary;
-      }
-    };
-
-    // Subtle exterior luminous rim-halo around dark outline cells (pure fillRect, zero ovals)
+    // Precompiled exterior luminous starlight rim-halo (pure fillRect, zero ovals, zero neighbor loops)
     if (!isHitFlash && ctx.globalAlpha >= 0.5) {
-      ctx.fillStyle = 'rgba(236, 245, 255, 0.52)';
-      const rows = grid.length;
-      const cols = grid[0]?.length ?? 16;
-      for (let r = -1; r <= rows; r++) {
-        for (let c = -1; c <= cols; c++) {
-          const cur = r >= 0 && r < rows && c >= 0 && c < cols ? grid[r][c] : '.';
-          if (cur !== '.') continue;
-          const touchesBody =
-            (r > 0 && c >= 0 && c < cols && grid[r - 1][c] !== '.') ||
-            (r + 1 < rows && c >= 0 && c < cols && grid[r + 1][c] !== '.') ||
-            (c > 0 && r >= 0 && r < rows && grid[r][c - 1] !== '.') ||
-            (c + 1 < cols && r >= 0 && r < rows && grid[r][c + 1] !== '.');
-          if (touchesBody) {
-            ctx.fillRect(ox + c * px, oy + r * px, px, px);
-          }
-        }
+      ctx.fillStyle = 'rgba(232, 244, 255, 0.46)';
+      const rimRuns = compiled.rimRuns;
+      for (let i = 0; i < rimRuns.length; i++) {
+        const rr = rimRuns[i];
+        ctx.fillRect(ox + rr.col * px, oy + rr.row * px, rr.len * px, px);
       }
     }
 
-    for (let row = 0; row < grid.length; row++) {
-      const line = grid[row];
-      let col = 0;
-      while (col < line.length) {
-        const ch = line[col];
-        const color = colorForCode(ch);
-        if (!color) {
-          col += 1;
-          continue;
-        }
-        // Merge horizontal pixel runs of identical color for crisp edge alignment & fewer draw calls
-        let runEnd = col + 1;
-        while (runEnd < line.length && line[runEnd] === ch) {
-          runEnd += 1;
-        }
+    const runs = compiled.runs;
+    let lastColor = '';
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i];
+      const color = resolveCodeColor(run.code, pal, isHitFlash);
+      if (color !== lastColor) {
         ctx.fillStyle = color;
-        ctx.fillRect(ox + col * px, oy + row * px, (runEnd - col) * px, px);
-        col = runEnd;
+        lastColor = color;
       }
+      ctx.fillRect(ox + run.col * px, oy + run.row * px, run.len * px, px);
     }
 
-    // Subtle species-seeded pixel cheek / forehead mark
+    // Species-seeded pixel crest / cheek gem accents so species within the same archetype stay distinctive
     if (!isHitFlash) {
       const h = hashSpecies(rig.speciesId);
-      if ((h & 1) === 1) {
+      const { col, row } = compiled.crestAnchor;
+      if ((h & 3) === 1) {
+        ctx.fillStyle = pal.accentBright;
+        ctx.fillRect(ox + col * px, oy + row * px, px * 2, px);
+      } else if ((h & 3) === 2) {
         ctx.fillStyle = pal.accent;
-        ctx.fillRect(ox + 6 * px, oy + 7 * px, px, px);
+        ctx.fillRect(ox + (col - 1) * px, oy + (row + 1) * px, px, px);
+        ctx.fillStyle = pal.accentBright;
+        ctx.fillRect(ox + col * px, oy + row * px, px, px);
+      } else if ((h & 3) === 3) {
+        ctx.fillStyle = pal.highlight;
+        ctx.fillRect(ox + col * px, oy + (row + 1) * px, px, px);
       }
     }
   }
@@ -592,7 +800,7 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
         }
       }
     } else {
-      const drawSize = Math.max(32, Math.round(size));
+      const drawSize = Math.max(48, Math.round(size));
       this.renderPixelGridEmblem(ctx, rig, drawSize, pal, false);
       if (hitFlash > 0.04) {
         ctx.save();
@@ -654,34 +862,17 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
       }
     }
 
-    // Crisp 16x16 pixel-art SVG data URL fallback
+    // Crisp 24x24 pixel-art SVG data URL fallback (run-length merged for compact SVGs)
     const pal = resolvePixelPalette(rig);
-    const archetype: BodyArchetype = PIXEL_GRIDS[rig.archetype] ? rig.archetype : 'biped';
-    const grid = PIXEL_GRIDS[archetype];
+    const archetype: BodyArchetype = COMPILED_GRIDS[rig.archetype] ? rig.archetype : 'biped';
+    const runs = COMPILED_GRIDS[archetype].runs;
     const rects: string[] = [];
-    for (let y = 0; y < 16; y++) {
-      const row = grid[y];
-      for (let x = 0; x < 16; x++) {
-        const ch = row[x];
-        if (ch === '.') continue;
-        const fill =
-          ch === 'O'
-            ? pal.outline
-            : ch === 'P'
-              ? pal.primary
-              : ch === 'H'
-                ? pal.highlight
-                : ch === 'S'
-                  ? pal.shadow
-                  : ch === 'A'
-                    ? pal.accent
-                    : ch === 'E'
-                      ? pal.eye
-                      : pal.eyeWhite;
-        rects.push(`<rect x="${x}" y="${y}" width="1" height="1" fill="${fill}"/>`);
-      }
+    for (let i = 0; i < runs.length; i++) {
+      const run = runs[i];
+      const fill = resolveCodeColor(run.code, pal, false);
+      rects.push(`<rect x="${run.col}" y="${run.row}" width="${run.len}" height="1" fill="${fill}"/>`);
     }
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${safeSize}" height="${safeSize}" viewBox="0 0 16 16" shape-rendering="crispEdges">${rects.join('')}</svg>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${safeSize}" height="${safeSize}" viewBox="0 0 ${GRID_SIZE} ${GRID_SIZE}" shape-rendering="crispEdges">${rects.join('')}</svg>`;
     return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
 }
