@@ -10,7 +10,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          catalog: ['./src/core/catalog/speciesCatalog.ts'],
+          catalog: ['./src/core/dojo/catalog.ts'],
           engine: ['./src/graphics/engine/RenderEngine.ts'],
         },
       },

@@ -1,87 +1,123 @@
 import type {
   BiomeId,
+  DecodedSpriteFrames,
   Direction,
   ElementalType,
-  StyleLoadout,
+  ReadinessTier,
+  ResolvedTrainerLook,
+  TrainerId,
 } from './types';
-import type { IRenderBackend, AtlasManifest } from './render';
+import type { AtlasManifest, IRenderBackend } from './render';
 
-export type OverworldTileKind =
-  | 'deep-water'
-  | 'shallow-water'
-  | 'sand'
-  | 'ground'
-  | 'tall-grass'
-  | 'cobble'
-  | 'cliff'
-  | 'bridge'
-  | 'plaza'
-  | 'flowerbed';
-
-export type OverworldLandmarkKind =
-  | 'cottage'
-  | 'shrine'
-  | 'chest'
-  | 'fountain'
-  | 'signpost'
-  | 'starfall'
-  | 'studio'
-  | 'observatory'
-  | 'dock';
-
-export interface OverworldLandmark {
-  id: string;
-  kind: OverworldLandmarkKind;
-  biomeId: BiomeId;
-  tileX: number;
-  tileY: number;
-  widthTiles: number;
-  heightTiles: number;
-  label: string;
-  subtitle?: string;
-  elementalType?: ElementalType;
-  activated?: boolean;
-  emissiveHex: string;
-  lightRadius: number;
-}
-
-export interface OverworldProp {
+export interface OverworldShrineNode {
   id: string;
   biomeId: BiomeId;
-  kind:
-    | 'crystal'
-    | 'ember-vent'
-    | 'spore-lantern'
-    | 'coral'
-    | 'ruin-pillar'
-    | 'bamboo'
-    | 'pine'
-    | 'blossom-tree'
-    | 'lantern-post'
-    | 'boulder'
-    | 'cloud-stone'
-    | 'gear-spire';
-  tileX: number;
-  tileY: number;
-  scale: number;
-  swayPhase: number;
-  glowHex?: string;
-}
-
-export interface OverworldActor {
-  id: string;
-  role: 'player' | 'follower' | 'npc' | 'rival';
+  x: number;
+  y: number;
   name: string;
-  x: number; // world tile coordinates (float)
+  guardianId: number;
+  guardianName: string;
+  elementalType: ElementalType;
+  level: number;
+  cleared: boolean;
+  readinessTier: ReadinessTier;
+}
+
+export interface OverworldChestNode {
+  id: string;
+  biomeId: BiomeId;
+  x: number;
+  y: number;
+  label: string;
+  opened: boolean;
+}
+
+export interface OverworldNpcNode {
+  id: string;
+  x: number;
+  y: number;
+  name: string;
+  role: 'professor' | 'villager' | 'quest' | 'guide';
+  accentHex: string;
+  talked: boolean;
+  hasAvailableQuest: boolean;
+  questCompleted: boolean;
+}
+
+export interface OverworldRivalNode {
+  id: string;
+  biomeId: BiomeId;
+  x: number;
+  y: number;
+  name: string;
+  title: string;
+  accentHex: string;
+  defeated: boolean;
+  rematchCount: number;
+  readinessTier: ReadinessTier;
+}
+
+export interface OverworldLandmarkNode {
+  id: string;
+  biomeId: BiomeId;
+  x: number;
+  y: number;
+  name: string;
+  kind: 'cottage' | 'lab' | 'observatory' | 'obelisk' | 'fountain' | 'shrine-arch' | 'monument';
+  accentHex: string;
+}
+
+export interface OverworldSignpostNode {
+  id: string;
+  x: number;
+  y: number;
+  title: string;
+  text: string;
+}
+
+export interface OverworldDiscoveryNode {
+  id: string;
+  x: number;
+  y: number;
+  kind: 'starShard' | 'potion' | 'greatBall' | 'berry';
+  biomeId: BiomeId;
+  accentHex: string;
+  spawnedAt: number;
+}
+
+export interface OverworldInteractable {
+  kind: 'npc' | 'shrine' | 'chest' | 'rival' | 'signpost' | 'fountain' | 'discovery' | 'secret-arcade' | 'landmark';
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  actionVerb: string;
+}
+
+export interface OverworldPlayerState {
+  trainerId: TrainerId;
+  displayName: string;
+  x: number; // float tile coords in 0..99
+  y: number; // float tile coords in 0..83
+  tileX: number;
+  tileY: number;
+  facing: Direction;
+  moving: boolean;
+  walkCycle: number;
+  look: ResolvedTrainerLook;
+}
+
+export interface OverworldFollowerState {
+  speciesId: number;
+  name: string;
+  type: ElementalType;
+  isShiny: boolean;
+  x: number;
   y: number;
   facing: Direction;
   moving: boolean;
   walkCycle: number;
-  speciesId?: number;
-  primaryType?: ElementalType;
-  style?: StyleLoadout;
-  accentHex?: string;
-  dialoguePrompt?: string;
+  frames: DecodedSpriteFrames | null;
 }
 
 export interface GrassDisplacement {
@@ -89,7 +125,7 @@ export interface GrassDisplacement {
   tileY: number;
   bendX: number;
   bendY: number;
-  intensity: number; // 0..1 decays smoothly
+  intensity: number;
 }
 
 export interface FootstepEffect {
@@ -101,56 +137,41 @@ export interface FootstepEffect {
   colorHex: string;
 }
 
-export interface OverworldBiomeDescriptor {
-  id: BiomeId;
-  name: string;
-  subtitle: string;
-  elementalType: ElementalType;
-  gridCol: number;
-  gridRow: number;
-  guardianSpeciesId: number;
-  guardianName: string;
-  wildSpeciesIds: number[];
-  groundHex: string;
-  grassHex: string;
-  waterShallowHex: string;
-  waterDeepHex: string;
-  cliffHex: string;
-  accentHex: string;
-  propKind: OverworldProp['kind'];
-  ambientTag: string;
-}
-
-export interface OverworldMapData {
+export interface CompassTarget {
+  x: number;
+  y: number;
+  label: string;
   biomeId: BiomeId;
-  width: number;
-  height: number;
-  tileSize: number;
-  tiles: OverworldTileKind[]; // row-major width * height
-  autotileMasks: Uint8Array; // 47-tile blob bitmask index per tile
-  landmarks: OverworldLandmark[];
-  props: OverworldProp[];
-  spawnX: number;
-  spawnY: number;
-  neighbors: Partial<Record<Direction, BiomeId>>;
+  kind: 'shrine' | 'quest' | 'rival' | 'chest' | 'fountain' | 'explore';
+  distanceTiles: number;
+  angleRad: number;
 }
 
 export interface OverworldSceneState {
-  biome: OverworldBiomeDescriptor;
-  map: OverworldMapData;
-  player: OverworldActor;
-  follower: OverworldActor;
-  npcs: OverworldActor[];
-  timeOfDay: number; // 0..1 (0.5 noon, 0.8 twilight starlight)
+  cols: number; // 100
+  rows: number; // 84
+  tileSize: number; // 32
+  worldMap: number[][]; // 84 x 100 TILE IDs (0..60)
+  currentBiomeId: BiomeId;
+  currentBiomeName: string;
+  biomeBannerTimer: number;
+  player: OverworldPlayerState;
+  follower: OverworldFollowerState | null;
+  shrines: OverworldShrineNode[];
+  chests: OverworldChestNode[];
+  npcs: OverworldNpcNode[];
+  rivals: OverworldRivalNode[];
+  landmarks: OverworldLandmarkNode[];
+  signposts: OverworldSignpostNode[];
+  discoveryNodes: OverworldDiscoveryNode[];
+  bfsPath: Array<{ x: number; y: number }>;
+  secretArcadeSpot: { x: number; y: number; unlocked: boolean; knocks: number };
+  nearbyInteraction: OverworldInteractable | null;
+  compassTarget: CompassTarget | null;
+  timeOfDay: number;
   elapsedSeconds: number;
   reducedMotion: boolean;
-  activeWayfindingTarget: {
-    x: number;
-    y: number;
-    label: string;
-    kind: OverworldLandmarkKind;
-  } | null;
-  nearbyInteraction: OverworldLandmark | OverworldActor | null;
+  stepsTotal: number;
 }
 
 export interface IOverworldRenderer {

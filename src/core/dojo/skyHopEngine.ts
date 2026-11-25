@@ -1,0 +1,662 @@
+import type { ElementalType, SkyHopEntity, SkyHopState } from '../../contracts';
+import { EVOLUTION_ITEMS } from './raw/config.js';
+import { ARCADE_SHARD_BUYIN_COST, MAX_ARCADE_CHARGES } from './raw/storage.js';
+import type { StarlightStorageBridge } from '../save/saveHydrator';
+import type { SpriteAssetLoader } from './spriteLoader';
+import { getSpeciesEntry } from './catalog';
+import { stripEmojis } from './emojiSanitizer';
+
+export const SKYHOP_LOGICAL_W = 760;
+export const SKYHOP_LOGICAL_H = 420;
+export const SKYHOP_PLAYER_X = 132;
+export const MIN_ARCADE_REWARD_SCORE = 80;
+export const MAX_ARCADE_SHARDS = 4;
+const MAX_HEARTS = 3;
+
+const BASE_GEM_POOL = ['leaf_gem', 'fire_gem', 'water_gem', 'thunder_gem', 'moon_gem', 'sun_gem'];
+const MID_GEM_POOL = ['ice_gem', 'dusk_gem', 'astral_gem'];
+const ENDGAME_GEM_POOL = ['prism_gem', 'chrono_gem', 'nebula_gem', 'pixie_gem', 'alola_gem', 'crown_gem', 'tera_gem'];
+
+export function getUnlockedArcadeGemPool(badgeCount: number): string[] {
+  const pool = [...BASE_GEM_POOL];
+  if (badgeCount >= 3) pool.push(...MID_GEM_POOL);
+  if (badgeCount >= 8) pool.push(...ENDGAME_GEM_POOL);
+  return pool.filter((id) => Boolean(EVOLUTION_ITEMS[id]));
+}
+
+export interface SkyHopWaveSpec {
+  id: string;
+  name: string;
+  items: Array<{ delay: number; kind: SkyHopEntity['kind']; yFrac: number; speedMult?: number }>;
+}
+
+export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
+  {
+    id: 'rising_arc',
+    name: 'Rising Starlight Arc',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.78 },
+      { delay: 0.25, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.35, kind: 'star', yFrac: 0.66 },
+      { delay: 0.7, kind: 'star', yFrac: 0.54 },
+      { delay: 0.78, kind: 'cloud', yFrac: 0.32 },
+      { delay: 1.05, kind: 'bigstar', yFrac: 0.42 },
+      { delay: 1.25, kind: 'storm_orb', yFrac: 0.56 },
+      { delay: 1.4, kind: 'star', yFrac: 0.3 },
+      { delay: 1.75, kind: 'star', yFrac: 0.2 },
+      { delay: 1.75, kind: 'cloud', yFrac: 0.76 },
+    ],
+  },
+  {
+    id: 'falling_cascade',
+    name: 'Starfall Cascade',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.2 },
+      { delay: 0.28, kind: 'cloud', yFrac: 0.48 },
+      { delay: 0.35, kind: 'star', yFrac: 0.32 },
+      { delay: 0.7, kind: 'star', yFrac: 0.46 },
+      { delay: 0.85, kind: 'cloud', yFrac: 0.22 },
+      { delay: 1.05, kind: 'bigstar', yFrac: 0.6 },
+      { delay: 1.22, kind: 'storm_orb', yFrac: 0.46 },
+      { delay: 1.4, kind: 'star', yFrac: 0.74 },
+      { delay: 1.75, kind: 'star', yFrac: 0.82 },
+    ],
+  },
+  {
+    id: 'sine_ribbon',
+    name: 'Celestial Ribbon',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.5 },
+      { delay: 0.32, kind: 'star', yFrac: 0.34 },
+      { delay: 0.42, kind: 'cloud', yFrac: 0.54 },
+      { delay: 0.64, kind: 'star', yFrac: 0.24 },
+      { delay: 0.96, kind: 'star', yFrac: 0.36 },
+      { delay: 1.15, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.28, kind: 'star', yFrac: 0.56 },
+      { delay: 1.6, kind: 'bigstar', yFrac: 0.72 },
+    ],
+  },
+  {
+    id: 'twin_lanes',
+    name: 'Twin Sky Lanes',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.25 },
+      { delay: 0.0, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.0, kind: 'star', yFrac: 0.75 },
+      { delay: 0.45, kind: 'star', yFrac: 0.25 },
+      { delay: 0.45, kind: 'star', yFrac: 0.75 },
+      { delay: 0.9, kind: 'cloud', yFrac: 0.5 },
+      { delay: 1.3, kind: 'bigstar', yFrac: 0.25 },
+      { delay: 1.3, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.3, kind: 'bigstar', yFrac: 0.75 },
+    ],
+  },
+  {
+    id: 'diamond_constellation',
+    name: 'Diamond Constellation',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.5 },
+      { delay: 0.35, kind: 'star', yFrac: 0.34 },
+      { delay: 0.35, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.35, kind: 'star', yFrac: 0.66 },
+      { delay: 0.7, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 1.05, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.4, kind: 'star', yFrac: 0.5 },
+    ],
+  },
+  {
+    id: 'comet_chase',
+    name: 'Rainbow Comet Chase',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.48 },
+      { delay: 0.45, kind: 'cloud', yFrac: 0.3 },
+      { delay: 0.58, kind: 'comet', yFrac: 0.48, speedMult: 1.25 },
+      { delay: 0.92, kind: 'storm_orb', yFrac: 0.52 },
+      { delay: 1.05, kind: 'cloud', yFrac: 0.24 },
+      { delay: 1.05, kind: 'cloud', yFrac: 0.74 },
+      { delay: 1.8, kind: 'comet', yFrac: 0.35, speedMult: 1.25 },
+    ],
+  },
+  {
+    id: 'orbit_halo',
+    name: 'Astral Orbit Halo',
+    items: [
+      { delay: 0.1, kind: 'star', yFrac: 0.35 },
+      { delay: 0.1, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.1, kind: 'star', yFrac: 0.65 },
+      { delay: 0.45, kind: 'comet', yFrac: 0.5 },
+      { delay: 0.8, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.3, kind: 'void_meteor', yFrac: 0.3 },
+      { delay: 1.45, kind: 'cloud', yFrac: 0.48 },
+    ],
+  },
+  {
+    id: 'supernova_ring',
+    name: 'Supernova Star Ring',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.5 },
+      { delay: 0.28, kind: 'star', yFrac: 0.28 },
+      { delay: 0.28, kind: 'star', yFrac: 0.72 },
+      { delay: 0.56, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.65, kind: 'bigstar', yFrac: 0.22 },
+      { delay: 0.65, kind: 'bigstar', yFrac: 0.78 },
+      { delay: 1.0, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.68, kind: 'cloud', yFrac: 0.24 },
+      { delay: 1.68, kind: 'cloud', yFrac: 0.76 },
+    ],
+  },
+];
+
+export const SKYHOP_PALETTES = [
+  { name: 'Starlight Village Dusk', top: '#0f172a', mid: '#312e81', bottom: '#4c1d95', accent: '#c084fc' },
+  { name: 'Whispering Canopy', top: '#064e3b', mid: '#0f766e', bottom: '#1e3a8a', accent: '#4ade80' },
+  { name: 'Crystal Cavern Glow', top: '#1e1b4b', mid: '#6d28d9', bottom: '#0f172a', accent: '#e879f9' },
+  { name: 'Sapphire Horizon', top: '#0c4a6e', mid: '#0284c7', bottom: '#1e1b4b', accent: '#38bdf8' },
+  { name: 'Ember Sunset', top: '#431407', mid: '#c2410c', bottom: '#7c2d12', accent: '#fb923c' },
+  { name: 'Starfall Aurora', top: '#1e1b4b', mid: '#0f766e', bottom: '#3b0764', accent: '#67e8f9' },
+  { name: 'Celestial Blossom', top: '#500724', mid: '#9d174d', bottom: '#312e81', accent: '#f9a8d4' },
+  { name: 'Sunstone Mirage', top: '#451a03', mid: '#b45309', bottom: '#1e293b', accent: '#fde047' },
+  { name: 'Mythic Rift Nebula', top: '#3b0764', mid: '#a21caf', bottom: '#0f172a', accent: '#f0abfc' },
+];
+
+export interface SkyHopTickEvents {
+  collectedStar?: boolean;
+  hitHazard?: boolean;
+  healedHeart?: boolean;
+  dashActivated?: boolean;
+  runEnded?: boolean;
+}
+
+export class DojoSkyHopController {
+  private readonly storage: StarlightStorageBridge;
+  private readonly sprites: SpriteAssetLoader;
+  private state: SkyHopState;
+  private pendingSpawns: Array<{ delay: number; kind: SkyHopEntity['kind']; yFrac: number; speedMult?: number; spawned: boolean }> = [];
+  private waveElapsed = 0;
+  private entitySeq = 1;
+  private pointerTargetY: number | null = null;
+  private keysHeld = new Set<'up' | 'down'>();
+
+  constructor(storage: StarlightStorageBridge, sprites: SpriteAssetLoader) {
+    this.storage = storage;
+    this.sprites = sprites;
+    this.state = this.createInitialState();
+  }
+
+  private createInitialState(): SkyHopState {
+    const profile = this.storage.getActiveProfileJSON();
+    const lead = profile?.team?.[0];
+    const sp = getSpeciesEntry(lead?.speciesId ?? profile?.starterId ?? 25);
+    const arcade = this.storage.manager.getArcadeState();
+
+    return {
+      active: false,
+      running: false,
+      paused: false,
+      gameOver: false,
+      outOfCharges: false,
+      partnerSpeciesId: sp.id,
+      partnerName: stripEmojis(lead?.nickname || sp.name),
+      partnerType: sp.type as ElementalType,
+      partnerShiny: Boolean(lead?.isShiny),
+      partnerFrames: null,
+      playerX: SKYHOP_PLAYER_X,
+      playerY: SKYHOP_LOGICAL_H * 0.5,
+      playerVy: 0,
+      bankAngle: 0,
+      dashTimer: 0,
+      dashCooldown: 0,
+      magnetTimer: 0,
+      hitInvulnTimer: 0,
+      shakeTimer: 0,
+      wave: 1,
+      waveName: SKYHOP_WAVE_TEMPLATES[0].name,
+      waveBannerTimer: 0,
+      skyIndex: 0,
+      score: 0,
+      combo: 1,
+      comboStreak: 0,
+      starsCollected: 0,
+      highScore: arcade?.highScore ?? 0,
+      bestWave: arcade?.bestWave ?? 0,
+      hearts: MAX_HEARTS,
+      maxHearts: MAX_HEARTS,
+      charges: arcade?.charges ?? MAX_ARCADE_CHARGES,
+      maxCharges: MAX_ARCADE_CHARGES,
+      starShards: arcade?.starShards ?? 0,
+      canBuyWithShards: Boolean(arcade?.canBuyWithShards),
+      shardBuyInCost: ARCADE_SHARD_BUYIN_COST,
+      elapsedSeconds: 0,
+      reducedMotion: this.storage.getSettings().reducedMotion,
+      entities: [],
+      particles: [],
+      lastRunRewards: null,
+    };
+  }
+
+  getState(): SkyHopState {
+    return this.state;
+  }
+
+  open(): SkyHopState {
+    // Ensure arcade unlocked if invoked from observatory/arcade menu or already unlocked
+    if (!this.storage.manager.isArcadeUnlocked()) {
+      this.storage.manager.unlockArcade(true);
+    }
+    this.syncPartnerAndArcade();
+    this.state.active = true;
+    this.state.running = false;
+    this.state.gameOver = false;
+    this.state.paused = false;
+    return this.state;
+  }
+
+  close(): void {
+    this.state.active = false;
+    this.state.running = false;
+    this.state.paused = false;
+    this.keysHeld.clear();
+    this.pointerTargetY = null;
+  }
+
+  private syncPartnerAndArcade(): void {
+    const profile = this.storage.getActiveProfileJSON();
+    const lead = profile?.team?.[0];
+    const sp = getSpeciesEntry(lead?.speciesId ?? profile?.starterId ?? 25);
+    const arcade = this.storage.manager.getArcadeState();
+
+    this.state.partnerSpeciesId = sp.id;
+    this.state.partnerName = stripEmojis(lead?.nickname || sp.name);
+    this.state.partnerType = sp.type;
+    this.state.partnerShiny = Boolean(lead?.isShiny);
+    this.state.highScore = arcade?.highScore ?? 0;
+    this.state.bestWave = arcade?.bestWave ?? 0;
+    this.state.charges = arcade?.charges ?? 0;
+    this.state.starShards = arcade?.starShards ?? 0;
+    this.state.canBuyWithShards = Boolean(arcade?.canBuyWithShards);
+    this.state.reducedMotion = this.storage.getSettings().reducedMotion;
+
+    const cached = this.sprites.getCached(sp.id, { back: false, shiny: this.state.partnerShiny });
+    if (cached) this.state.partnerFrames = cached;
+    void this.sprites.loadSpeciesSprite(sp.id, { back: false, shiny: this.state.partnerShiny }).then((f) => {
+      this.state.partnerFrames = f;
+    });
+  }
+
+  buyChargeWithShards(): boolean {
+    const res = this.storage.manager.buyArcadeChargeWithShards(true);
+    this.syncPartnerAndArcade();
+    if (res.purchased) {
+      this.state.outOfCharges = false;
+    }
+    return Boolean(res.purchased);
+  }
+
+  startNewRun(): boolean {
+    this.syncPartnerAndArcade();
+    const consume = this.storage.manager.consumeArcadeCharge(true);
+    this.syncPartnerAndArcade();
+    if (!consume.consumed) {
+      this.state.outOfCharges = true;
+      this.state.running = false;
+      this.state.gameOver = true;
+      return false;
+    }
+
+    this.state.active = true;
+    this.state.running = true;
+    this.state.paused = false;
+    this.state.gameOver = false;
+    this.state.outOfCharges = false;
+    this.state.lastRunRewards = null;
+    this.state.score = 0;
+    this.state.combo = 1;
+    this.state.comboStreak = 0;
+    this.state.starsCollected = 0;
+    this.state.hearts = MAX_HEARTS;
+    this.state.playerY = SKYHOP_LOGICAL_H * 0.5;
+    this.state.playerVy = 0;
+    this.state.bankAngle = 0;
+    this.state.dashTimer = 0;
+    this.state.dashCooldown = 0;
+    this.state.magnetTimer = 0;
+    this.state.hitInvulnTimer = 0;
+    this.state.shakeTimer = 0;
+    this.state.entities = [];
+    this.state.particles = [];
+    this.beginWave(1);
+    return true;
+  }
+
+  togglePause(): void {
+    if (!this.state.running || this.state.gameOver) return;
+    this.state.paused = !this.state.paused;
+  }
+
+  setPointerNormY(normY: number | null): void {
+    if (normY === null) {
+      this.pointerTargetY = null;
+      return;
+    }
+    this.pointerTargetY = Math.max(40, Math.min(SKYHOP_LOGICAL_H - 40, normY * SKYHOP_LOGICAL_H));
+  }
+
+  setKeyDir(dir: 'up' | 'down', held: boolean): void {
+    if (held) {
+      this.keysHeld.add(dir);
+      this.pointerTargetY = null;
+    } else {
+      this.keysHeld.delete(dir);
+    }
+  }
+
+  activateDash(): boolean {
+    if (!this.state.running || this.state.paused || this.state.gameOver) return false;
+    if (this.state.dashCooldown > 0 || this.state.dashTimer > 0) return false;
+    this.state.dashTimer = 1.15;
+    this.state.dashCooldown = 4.6;
+    this.state.magnetTimer = Math.max(this.state.magnetTimer, 1.15);
+    this.state.particles.push({
+      x: SKYHOP_PLAYER_X,
+      y: this.state.playerY,
+      vx: 0,
+      vy: 0,
+      life: 0,
+      maxLife: 0.45,
+      size: 24,
+      maxSize: 82,
+      color: '#fde047',
+      shape: 'ring',
+    });
+    return true;
+  }
+
+  private beginWave(waveNum: number): void {
+    this.state.wave = waveNum;
+    const tpl = SKYHOP_WAVE_TEMPLATES[(waveNum - 1) % SKYHOP_WAVE_TEMPLATES.length];
+    this.state.waveName = tpl.name;
+    this.state.skyIndex = (waveNum - 1) % SKYHOP_PALETTES.length;
+    this.state.waveBannerTimer = 1.8;
+    this.waveElapsed = 0;
+
+    const flip = waveNum % 2 === 0;
+    const delayScale = Math.max(0.58, 1 - (waveNum - 1) * 0.045);
+    this.pendingSpawns = tpl.items.map((item) => ({
+      ...item,
+      delay: Number((item.delay * delayScale).toFixed(3)),
+      yFrac: flip ? Math.max(0.16, Math.min(0.84, 1 - item.yFrac)) : item.yFrac,
+      spawned: false,
+    }));
+
+    if (waveNum >= 3) {
+      this.pendingSpawns.push({
+        delay: Number((0.6 * delayScale).toFixed(3)),
+        kind: 'void_meteor',
+        yFrac: 0.25 + ((waveNum % 3) * 0.22),
+        spawned: false,
+      });
+    }
+    if (waveNum >= 5 && waveNum % 5 === 0 && this.state.hearts < MAX_HEARTS) {
+      this.pendingSpawns.push({
+        delay: Number((1.4 * delayScale).toFixed(3)),
+        kind: 'heart',
+        yFrac: 0.5,
+        spawned: false,
+      });
+    }
+  }
+
+  private spawnEntity(spec: { kind: SkyHopEntity['kind']; yFrac: number; speedMult?: number }): void {
+    const waveBoost = Math.min(265, (this.state.wave - 1) * 24);
+    const kind = spec.kind;
+    const speedMult = spec.speedMult ?? (kind === 'void_meteor' ? 1.34 : kind === 'storm_orb' ? 1.16 : 1);
+    const speed = (255 + waveBoost) * speedMult;
+    const y = Math.max(36, Math.min(SKYHOP_LOGICAL_H - 36, spec.yFrac * SKYHOP_LOGICAL_H));
+    const radius = kind === 'cloud' ? 22 : kind === 'void_meteor' ? 21 : kind === 'storm_orb' || kind === 'bigstar' ? 20 : 16;
+
+    this.state.entities.push({
+      id: `sh-${this.entitySeq++}`,
+      kind,
+      x: kind === 'void_meteor' ? SKYHOP_LOGICAL_W + 96 : SKYHOP_LOGICAL_W + 34,
+      y,
+      baseY: y,
+      vy: kind === 'void_meteor' ? (y > SKYHOP_LOGICAL_H * 0.5 ? -56 : 56) : 0,
+      radius,
+      speed,
+      age: 0,
+      bobAmp: kind === 'storm_orb' ? 46 : kind === 'comet' ? 26 : kind === 'void_meteor' ? 0 : 10,
+      bobFreq: kind === 'storm_orb' ? 3.8 : kind === 'comet' ? 4.4 : 2.6,
+    });
+  }
+
+  static computeRewards(score: number, wave: number, badgeCount: number, gemCooldown: number) {
+    const safeScore = Math.max(0, Math.floor(score));
+    const safeWave = Math.max(1, Math.floor(wave));
+    if (safeScore < MIN_ARCADE_REWARD_SCORE) {
+      return {
+        tierLabel: 'Flight Warm-Up',
+        nextHint: `Reach ${MIN_ARCADE_REWARD_SCORE}+ pts to earn Star Shards and Potions!`,
+        starShards: 0,
+        potions: 0,
+        greatBalls: 0,
+        starBalls: 0,
+        cheerCharges: 0,
+        gems: {} as Record<string, number>,
+      };
+    }
+
+    let starShards = 1;
+    let potions = 1;
+    let greatBalls = 0;
+    let starBalls = 0;
+    let cheerCharges = 0;
+    let tierLabel = 'Tier 1: Sky Rookie';
+    let nextHint = 'Next Tier: 180+ pts & Wave 2 for +2 Star Shards & +1 Cheer!';
+    const gems: Record<string, number> = {};
+
+    if (safeScore >= 180 && safeWave >= 2) {
+      starShards = 2;
+      cheerCharges = 1;
+      tierLabel = 'Tier 2: Starlight Flyer';
+      nextHint = 'Next Tier: 300+ pts & Wave 3 for +1 Great Ball!';
+    }
+    if (safeScore >= 300 && safeWave >= 3) {
+      greatBalls = 1;
+      tierLabel = 'Tier 3: Nebula Glider';
+      nextHint = 'Next Tier: 450+ pts & Wave 5 for +3 Star Shards & +2 Potions!';
+    }
+    if (safeScore >= 450 && safeWave >= 5) {
+      starShards = 3;
+      potions = 2;
+      tierLabel = 'Tier 4: Comet Vanguard';
+      nextHint = 'Next Tier: 650+ pts & Wave 6 for +4 Star Shards & +1 Star Ball!';
+    }
+    if (safeScore >= 650 && safeWave >= 6) {
+      starShards = Math.min(MAX_ARCADE_SHARDS, 4);
+      greatBalls = 2;
+      starBalls = 1;
+      tierLabel = 'Tier 5: Starlight Ace';
+      nextHint = 'Next Tier: 900+ pts & Wave 8 for an Evolution Gem!';
+    }
+    if (safeScore >= 900 && safeWave >= 8) {
+      tierLabel = 'Tier 6: Astral Legend';
+      nextHint = 'Max Reward Tier Reached!';
+      if (gemCooldown <= 0) {
+        const pool = getUnlockedArcadeGemPool(badgeCount);
+        if (pool.length > 0) {
+          const picked = pool[safeScore % pool.length];
+          gems[picked] = 1;
+        }
+      } else {
+        starBalls += 1;
+      }
+    }
+
+    return {
+      tierLabel,
+      nextHint,
+      starShards: Math.min(MAX_ARCADE_SHARDS, starShards),
+      potions,
+      greatBalls,
+      starBalls,
+      cheerCharges,
+      gems,
+    };
+  }
+
+  private finishRun(): void {
+    this.state.running = false;
+    this.state.gameOver = true;
+    const profile = this.storage.getActiveProfileJSON();
+    const badgeCount = profile?.badges?.length ?? 0;
+    const gemCooldown = profile?.arcade?.gemCooldown ?? 0;
+    const rewards = DojoSkyHopController.computeRewards(this.state.score, this.state.wave, badgeCount, gemCooldown);
+    const rec = this.storage.manager.recordArcadeRun({
+      score: this.state.score,
+      wave: this.state.wave,
+      stars: this.state.starsCollected,
+      rewards,
+    });
+    this.syncPartnerAndArcade();
+    this.state.lastRunRewards = {
+      ...rewards,
+      isNewBest: Boolean(rec?.isNewBest),
+    };
+  }
+
+  update(dtSeconds: number): SkyHopTickEvents {
+    const events: SkyHopTickEvents = {};
+    if (!this.state.active || !this.state.running || this.state.paused || this.state.gameOver) {
+      return events;
+    }
+
+    const dt = Math.min(0.05, Math.max(0.001, dtSeconds));
+    this.state.elapsedSeconds += dt;
+    if (this.state.dashTimer > 0) this.state.dashTimer = Math.max(0, this.state.dashTimer - dt);
+    else if (this.state.dashCooldown > 0) this.state.dashCooldown = Math.max(0, this.state.dashCooldown - dt);
+    if (this.state.magnetTimer > 0) this.state.magnetTimer = Math.max(0, this.state.magnetTimer - dt);
+    if (this.state.hitInvulnTimer > 0) this.state.hitInvulnTimer = Math.max(0, this.state.hitInvulnTimer - dt);
+    if (this.state.shakeTimer > 0) this.state.shakeTimer = Math.max(0, this.state.shakeTimer - dt);
+    if (this.state.waveBannerTimer > 0) this.state.waveBannerTimer = Math.max(0, this.state.waveBannerTimer - dt);
+
+    const speedMult = this.state.dashTimer > 0 ? 1.25 : 1.0;
+    if (this.keysHeld.has('up') || this.keysHeld.has('down')) {
+      const dir = (this.keysHeld.has('down') ? 1 : 0) - (this.keysHeld.has('up') ? 1 : 0);
+      this.state.playerVy = dir * 355 * speedMult;
+      this.state.playerY += this.state.playerVy * dt;
+    } else if (this.pointerTargetY !== null) {
+      const diff = this.pointerTargetY - this.state.playerY;
+      this.state.playerVy = Math.max(-520, Math.min(520, diff * 13));
+      this.state.playerY += this.state.playerVy * dt;
+    } else {
+      this.state.playerVy *= Math.pow(0.02, dt);
+    }
+
+    this.state.playerY = Math.max(40, Math.min(SKYHOP_LOGICAL_H - 40, this.state.playerY));
+    this.state.bankAngle = Math.max(-0.35, Math.min(0.35, this.state.playerVy / 900));
+
+    this.waveElapsed += dt;
+    let maxDelay = 0;
+    for (const sp of this.pendingSpawns) {
+      if (sp.delay > maxDelay) maxDelay = sp.delay;
+      if (!sp.spawned && this.waveElapsed >= sp.delay) {
+        sp.spawned = true;
+        this.spawnEntity(sp);
+      }
+    }
+
+    const scrollBoost = this.state.dashTimer > 0 ? 1.45 : 1.0;
+    for (let i = this.state.entities.length - 1; i >= 0; i--) {
+      const ent = this.state.entities[i];
+      ent.age += dt;
+      ent.x -= ent.speed * scrollBoost * dt;
+      if (ent.kind === 'void_meteor') {
+        ent.baseY += ent.vy * dt;
+        if (ent.baseY < 42 || ent.baseY > SKYHOP_LOGICAL_H - 42) ent.vy = -ent.vy;
+        ent.y = ent.baseY;
+      } else {
+        ent.y = Math.max(28, Math.min(SKYHOP_LOGICAL_H - 28, ent.baseY + Math.sin(ent.age * ent.bobFreq) * ent.bobAmp));
+      }
+
+      const isHazard = ent.kind === 'cloud' || ent.kind === 'storm_orb' || ent.kind === 'void_meteor';
+      if (!isHazard && (this.state.dashTimer > 0 || this.state.magnetTimer > 0)) {
+        const dx = SKYHOP_PLAYER_X - ent.x;
+        const dy = this.state.playerY - ent.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 1 && d < 130) {
+          ent.x += (dx / d) * 280 * dt;
+          ent.baseY += (dy / d) * 280 * dt;
+          ent.y = ent.baseY;
+        }
+      }
+
+      const dist = Math.hypot(ent.x - SKYHOP_PLAYER_X, ent.y - this.state.playerY);
+      if (dist <= 29) {
+        if (isHazard) {
+          if (this.state.dashTimer > 0) {
+            if (ent.kind === 'void_meteor') {
+              this.state.dashTimer = 0;
+              this.state.hitInvulnTimer = 0.55;
+            } else {
+              this.state.score += ent.kind === 'storm_orb' ? 8 : 5;
+            }
+            events.collectedStar = true;
+            this.state.entities.splice(i, 1);
+            continue;
+          }
+          if (this.state.hitInvulnTimer <= 0) {
+            this.state.hearts = Math.max(0, this.state.hearts - 1);
+            this.state.combo = 1;
+            this.state.comboStreak = 0;
+            this.state.hitInvulnTimer = 1.0;
+            this.state.shakeTimer = 0.28;
+            events.hitHazard = true;
+            this.state.entities.splice(i, 1);
+            if (this.state.hearts <= 0) {
+              this.finishRun();
+              events.runEnded = true;
+              return events;
+            }
+            continue;
+          }
+        } else if (ent.kind === 'heart') {
+          this.state.hearts = Math.min(MAX_HEARTS, this.state.hearts + 1);
+          this.state.score += 15;
+          events.healedHeart = true;
+          this.state.entities.splice(i, 1);
+          continue;
+        } else {
+          this.state.starsCollected += 1;
+          this.state.comboStreak += ent.kind === 'bigstar' ? 2 : 1;
+          this.state.combo = Math.min(5, 1 + Math.floor(this.state.comboStreak / 5));
+          const pts = ent.kind === 'bigstar' ? 20 : ent.kind === 'comet' ? 16 : 8;
+          this.state.score += pts * this.state.combo;
+          if (ent.kind === 'comet') this.state.magnetTimer = Math.max(this.state.magnetTimer, 0.85);
+          events.collectedStar = true;
+          this.state.entities.splice(i, 1);
+          continue;
+        }
+      }
+
+      if (ent.x < -40) {
+        this.state.entities.splice(i, 1);
+      }
+    }
+
+    for (let i = this.state.particles.length - 1; i >= 0; i--) {
+      const p = this.state.particles[i];
+      p.life += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.life >= p.maxLife) this.state.particles.splice(i, 1);
+    }
+
+    const allSpawned = this.pendingSpawns.every((sp) => sp.spawned);
+    if (allSpawned && (this.state.entities.length === 0 || this.waveElapsed >= maxDelay + 3.0)) {
+      this.state.score += 12 + Math.min(28, this.state.wave * 4);
+      this.beginWave(this.state.wave + 1);
+    }
+
+    return events;
+  }
+}

@@ -99,6 +99,7 @@ export interface AtlasSheetDescriptor {
   width: number;
   height: number;
   tileSize: number;
+  pixelCrisp?: boolean;
   regions: Record<string, AtlasRegion>;
 }
 
@@ -107,7 +108,9 @@ export interface AtlasManifest {
   seed: number;
   generatedBy: string;
   sheets: Record<string, AtlasSheetDescriptor>;
-  biomeTileRowMap: Record<BiomeId, number>;
+  arenas: Record<BiomeId | 'skyhop', string>;
+  tileRegions: Record<string, string>;
+  biomeTileRowMap?: Partial<Record<BiomeId, number>>;
   iconIds: string[];
   totalBytes: number;
 }
@@ -127,6 +130,8 @@ export interface SpriteDrawCmd {
   rotation?: number;
   alpha?: number;
   flipX?: boolean;
+  pixelCrisp?: boolean;
+  useNormalMap?: boolean;
   tint?: [number, number, number, number]; // RGBA 0..1
   rimColor?: [number, number, number, number];
   emissive?: number;
@@ -174,7 +179,12 @@ export interface IRenderBackend {
     crtMode?: boolean;
   }): Promise<void>;
   resize(cssWidth: number, cssHeight: number, dpr?: number): void;
-  registerAtlas(sheetId: string, albedo: HTMLImageElement | HTMLCanvasElement, normal?: HTMLImageElement | HTMLCanvasElement, emissive?: HTMLImageElement | HTMLCanvasElement): void;
+  registerAtlas(
+    sheetId: string,
+    albedo: HTMLImageElement | HTMLCanvasElement,
+    normal?: HTMLImageElement | HTMLCanvasElement,
+    emissive?: HTMLImageElement | HTMLCanvasElement,
+  ): void;
   setCamera(camera: Partial<CameraState>): void;
   setColorGrade(grade: BiomeColorGrade): void;
   setCanopyConfig(config: CanopyShadowConfig): void;
@@ -186,8 +196,10 @@ export interface IRenderBackend {
   drawWaterQuad(x: number, y: number, w: number, h: number, depthFactor: number, foamMask: number): void;
   addPointLight(light: PointLight): void;
   drawParticle(cmd: ParticleDrawCmd): void;
-  /** Escape-hatch vector/layered custom draw for intricate procedural overlays & offline rigs */
-  drawCustom2D(drawFn: (ctx: CanvasRenderingContext2D, width: number, height: number, dpr: number) => void, layer?: 'world' | 'post-light' | 'screen'): void;
+  drawCustom2D(
+    drawFn: (ctx: CanvasRenderingContext2D, width: number, height: number, dpr: number) => void,
+    layer?: 'world' | 'post-light' | 'screen',
+  ): void;
   endFrame(): FrameStats;
   getCanvas2DContext(): CanvasRenderingContext2D | null;
   getStats(): FrameStats;
@@ -204,6 +216,8 @@ export interface IRenderEngine {
   }): Promise<RendererCapabilities>;
   loadManifest(manifestUrl: string): Promise<AtlasManifest>;
   getManifest(): AtlasManifest | null;
+  getSheetImage(sheetId: string): HTMLImageElement | null;
+  getArenaImage(biomeId: BiomeId | 'skyhop'): HTMLImageElement | null;
   switchBackend(mode: RendererMode, reason?: string): Promise<BackendKind>;
   onContextEvent(listener: ContextLossListener): () => void;
   simulateContextLoss(): boolean;

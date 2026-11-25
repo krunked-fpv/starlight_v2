@@ -1,24 +1,25 @@
-import {
-  BIOME_IDS,
-  type AuraId,
-  type BiomeId,
-  type CapeId,
-  type Direction,
-  type GameSettings,
-  type HeadgearId,
-  type OutfitId,
-  type PartyMember,
-  type PokedexEntryState,
-  type RendererMode,
-  type SaveHydrationResult,
-  type StarlightSaveState,
-  type TrainerProfile,
+import type {
+  BattlePace,
+  DojoProfileState,
+  GameSettings,
+  RendererMode,
+  SaveHydrationResult,
+  StarlightSaveState,
+  TouchPadMode,
+  TrainerId,
 } from '../../contracts';
-import { BADGE_BY_ID } from '../data/badges';
-import { createPartyMember, TOTAL_SPECIES_COUNT } from '../catalog/speciesCatalog';
+import {
+  STORAGE_KEY as DOJO_V1_STORAGE_KEY,
+  StorageManager,
+  createStorageManager,
+  validateAndRepairProfile,
+} from '../dojo/raw/storage.js';
+import { Pokemon } from '../dojo/raw/pokemon.js';
 
 export const V2_STORAGE_KEY = 'starlight_v2_save';
+export const DOJO_STORAGE_KEY = DOJO_V1_STORAGE_KEY; // 'starlight_pokemon_save_v1'
 export const V1_LEGACY_KEYS = [
+  'starlight_pokemon_save_v1',
   'starlight_island_save',
   'starlight_save_v1',
   'pokemon_starlight_v1',
@@ -29,160 +30,13 @@ const IDB_V2_NAME = 'starlight_v2_db';
 const IDB_V1_NAME = 'starlight_island_db';
 const IDB_STORE = 'saves';
 
-const VALID_BIOMES = new Set<string>(BIOME_IDS);
-const VALID_OUTFITS = new Set<OutfitId>(['voyager', 'astral-robe', 'ranger-coat', 'solstice-tunic', 'aegis-jacket']);
-const VALID_CAPES = new Set<CapeId>(['none', 'starweave', 'zephyr-mantle', 'cinder-cloak', 'prism-shawl']);
-const VALID_HEADGEAR = new Set<HeadgearId>(['none', 'star-beret', 'sky-goggles', 'lunar-circlet', 'shrine-visor']);
-const VALID_AURAS = new Set<AuraId>(['none', 'starlight', 'sky-thunder', 'aurora', 'ember-crown']);
-const VALID_DIRS = new Set<Direction>(['down', 'up', 'left', 'right']);
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+}
 
-export function createDefaultProfile(slotId: 'slot0' | 'slot1'): TrainerProfile {
-  const now = Date.now();
-  if (slotId === 'slot0') {
-    const party: PartyMember[] = [
-      createPartyMember(25, 28, { uid: 'lyra-pikachu', bond: 100, starRank: 5, composure: 100 }),
-      createPartyMember(282, 32, { uid: 'lyra-gardevoir', bond: 94, starRank: 4, composure: 100 }),
-      createPartyMember(448, 30, { uid: 'lyra-lucario', bond: 88, starRank: 4, composure: 100 }),
-      createPartyMember(445, 34, { uid: 'lyra-garchomp', bond: 85, starRank: 4, composure: 100 }),
-    ];
-    const pokedex: Record<number, PokedexEntryState> = {
-      1: { seen: true, caught: true, starRank: 3, bond: 72, timesEncountered: 3 },
-      4: { seen: true, caught: true, starRank: 3, bond: 76, timesEncountered: 2 },
-      6: { seen: true, caught: true, starRank: 4, bond: 85, timesEncountered: 2 },
-      7: { seen: true, caught: true, starRank: 3, bond: 70, timesEncountered: 2 },
-      25: { seen: true, caught: true, starRank: 5, bond: 100, shiny: false, timesEncountered: 8 },
-      131: { seen: true, caught: true, starRank: 4, bond: 82, timesEncountered: 2 },
-      133: { seen: true, caught: true, starRank: 5, bond: 96, timesEncountered: 5 },
-      151: { seen: true, caught: true, starRank: 5, bond: 100, shiny: true, timesEncountered: 1 },
-      197: { seen: true, caught: true, starRank: 4, bond: 90, timesEncountered: 3 },
-      249: { seen: true, caught: false, starRank: 2, bond: 30, timesEncountered: 1 },
-      282: { seen: true, caught: true, starRank: 4, bond: 94, timesEncountered: 4 },
-      384: { seen: true, caught: false, starRank: 2, bond: 25, timesEncountered: 1 },
-      445: { seen: true, caught: true, starRank: 4, bond: 85, timesEncountered: 3 },
-      448: { seen: true, caught: true, starRank: 4, bond: 88, timesEncountered: 4 },
-      471: { seen: true, caught: true, starRank: 4, bond: 84, timesEncountered: 2 },
-      658: { seen: true, caught: true, starRank: 4, bond: 86, timesEncountered: 2 },
-      887: { seen: true, caught: true, starRank: 4, bond: 80, timesEncountered: 2 },
-      1008: { seen: true, caught: false, starRank: 3, bond: 40, timesEncountered: 1 },
-      1024: { seen: true, caught: true, starRank: 5, bond: 100, shiny: true, timesEncountered: 1 },
-      1025: { seen: true, caught: true, starRank: 4, bond: 78, timesEncountered: 1 },
-    };
-    return {
-      slotId: 'slot0',
-      name: 'Lyra',
-      title: 'Starlight Navigator',
-      createdAt: now,
-      updatedAt: now,
-      playtimeSeconds: 5420,
-      biomeId: 'starlight-village',
-      x: 13.5,
-      y: 11.4,
-      facing: 'down',
-      party,
-      pokedex,
-      badges: [
-        'badge-normal',
-        'badge-grass',
-        'badge-water',
-        'badge-electric',
-        'badge-fairy',
-        'badge-pioneer',
-        'badge-bond',
-        'badge-composure',
-        'badge-stylist',
-      ],
-      openedChests: [],
-      clearedShrines: ['meadow-shrine', 'verdant-canopy-shrine', 'sapphire-lagoon-shrine', 'volt-highlands-shrine', 'starbloom-glade-shrine'],
-      inventory: {
-        pokeBalls: 14,
-        starBalls: 8,
-        potions: 10,
-        superPotions: 5,
-        starShards: 120,
-      },
-      style: {
-        outfit: 'voyager',
-        cape: 'starweave',
-        headgear: 'star-beret',
-        aura: 'starlight',
-        primaryAccent: '#5882ff',
-        secondaryAccent: '#ffd479',
-      },
-      unlocks: {
-        outfits: ['voyager', 'astral-robe', 'ranger-coat', 'solstice-tunic', 'aegis-jacket'],
-        capes: ['none', 'starweave', 'zephyr-mantle', 'cinder-cloak', 'prism-shawl'],
-        headgear: ['none', 'star-beret', 'sky-goggles', 'lunar-circlet', 'shrine-visor'],
-        auras: ['none', 'starlight', 'sky-thunder', 'aurora', 'ember-crown'],
-      },
-      skyHopHighScore: 680,
-      skyHopBestCombo: 14,
-      rivalsDefeated: 2,
-    };
-  }
-
-  const party: PartyMember[] = [
-    createPartyMember(133, 26, { uid: 'orion-eevee', bond: 95, starRank: 5, composure: 100 }),
-    createPartyMember(6, 34, { uid: 'orion-charizard', bond: 92, starRank: 4, composure: 100 }),
-    createPartyMember(658, 33, { uid: 'orion-greninja', bond: 86, starRank: 4, composure: 100 }),
-    createPartyMember(887, 35, { uid: 'orion-dragapult', bond: 84, starRank: 4, composure: 100 }),
-  ];
-  const pokedex: Record<number, PokedexEntryState> = {
-    6: { seen: true, caught: true, starRank: 4, bond: 92, timesEncountered: 3 },
-    25: { seen: true, caught: true, starRank: 4, bond: 84, timesEncountered: 4 },
-    133: { seen: true, caught: true, starRank: 5, bond: 95, timesEncountered: 6 },
-    149: { seen: true, caught: true, starRank: 4, bond: 82, timesEncountered: 2 },
-    658: { seen: true, caught: true, starRank: 4, bond: 86, timesEncountered: 3 },
-    887: { seen: true, caught: true, starRank: 4, bond: 84, timesEncountered: 2 },
-    1007: { seen: true, caught: true, starRank: 5, bond: 98, timesEncountered: 1 },
-  };
-  return {
-    slotId: 'slot1',
-    name: 'Orion',
-    title: 'Aurora Sky-Runner',
-    createdAt: now,
-    updatedAt: now,
-    playtimeSeconds: 3890,
-    biomeId: 'sapphire-lagoon',
-    x: 13.5,
-    y: 11.4,
-    facing: 'down',
-    party,
-    pokedex,
-    badges: [
-      'badge-fire',
-      'badge-water',
-      'badge-flying',
-      'badge-dragon',
-      'badge-pioneer',
-      'badge-skyhop',
-    ],
-    openedChests: [],
-    clearedShrines: ['ember-caldera-shrine', 'sapphire-lagoon-shrine', 'zephyr-peaks-shrine'],
-    inventory: {
-      pokeBalls: 12,
-      starBalls: 6,
-      potions: 8,
-      superPotions: 4,
-      starShards: 95,
-    },
-    style: {
-      outfit: 'solstice-tunic',
-      cape: 'zephyr-mantle',
-      headgear: 'sky-goggles',
-      aura: 'sky-thunder',
-      primaryAccent: '#ff7b47',
-      secondaryAccent: '#66e0ff',
-    },
-    unlocks: {
-      outfits: ['voyager', 'astral-robe', 'ranger-coat', 'solstice-tunic', 'aegis-jacket'],
-      capes: ['none', 'starweave', 'zephyr-mantle', 'cinder-cloak', 'prism-shawl'],
-      headgear: ['none', 'star-beret', 'sky-goggles', 'lunar-circlet', 'shrine-visor'],
-      auras: ['none', 'starlight', 'sky-thunder', 'aurora', 'ember-crown'],
-    },
-    skyHopHighScore: 940,
-    skyHopBestCombo: 19,
-    rivalsDefeated: 1,
-  };
+function clamp(n: unknown, min: number, max: number, fallback: number): number {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
 }
 
 export function createDefaultSettings(): GameSettings {
@@ -197,216 +51,16 @@ export function createDefaultSettings(): GameSettings {
     rendererOverride: 'auto',
     audioMuted: false,
     masterVolume: 0.65,
-    showTouchControls: false,
+    showTouchPad: 'auto',
+    battlePace: 'cinema',
   };
-}
-
-export function createDefaultSaveState(): StarlightSaveState {
-  return {
-    schemaVersion: 2,
-    activeSlot: 'slot0',
-    profiles: {
-      slot0: createDefaultProfile('slot0'),
-      slot1: createDefaultProfile('slot1'),
-    },
-    settings: createDefaultSettings(),
-  };
-}
-
-function asRecord(val: unknown): Record<string, unknown> | null {
-  return val && typeof val === 'object' && !Array.isArray(val) ? (val as Record<string, unknown>) : null;
-}
-
-function clampNum(val: unknown, min: number, max: number, fallback: number): number {
-  if (typeof val !== 'number' || !Number.isFinite(val)) return fallback;
-  return Math.max(min, Math.min(max, val));
-}
-
-function sanitizePartyMember(raw: unknown, idx: number): PartyMember | null {
-  const obj = asRecord(raw);
-  if (!obj) return null;
-  const speciesId = clampNum(
-    obj.speciesId ?? obj.id ?? obj.dexId,
-    1,
-    TOTAL_SPECIES_COUNT,
-    25,
-  );
-  const level = clampNum(obj.level ?? obj.lv, 1, 100, 20);
-  const base = createPartyMember(speciesId, level, {
-    uid: typeof obj.uid === 'string' && obj.uid.trim() ? obj.uid : `migrated-${speciesId}-${idx}`,
-    nickname: typeof obj.nickname === 'string' && obj.nickname.trim() ? obj.nickname.slice(0, 24) : undefined,
-    xp: clampNum(obj.xp, 0, 999999, Math.round(level * 30)),
-    hp: typeof obj.hp === 'number' && Number.isFinite(obj.hp) ? Math.max(1, Math.round(obj.hp)) : undefined,
-    composure: clampNum(obj.composure, 0, 100, 100),
-    bond: clampNum(obj.bond ?? obj.friendship, 0, 100, 75),
-    starRank: clampNum(obj.starRank ?? obj.stars, 0, 5, 3),
-    shiny: Boolean(obj.shiny),
-    moves: Array.isArray(obj.moves)
-      ? obj.moves.filter((m): m is string => typeof m === 'string').slice(0, 4)
-      : undefined,
-  });
-  return base;
-}
-
-function sanitizePokedex(raw: unknown, fallback: Record<number, PokedexEntryState>): Record<number, PokedexEntryState> {
-  const result: Record<number, PokedexEntryState> = { ...fallback };
-  if (Array.isArray(raw)) {
-    // Legacy v1 array of caught species IDs or entry objects
-    for (const item of raw) {
-      if (typeof item === 'number' && item >= 1 && item <= TOTAL_SPECIES_COUNT) {
-        result[Math.floor(item)] = { seen: true, caught: true, starRank: 3, bond: 70, timesEncountered: 1 };
-      } else {
-        const rec = asRecord(item);
-        const id = rec ? clampNum(rec.speciesId ?? rec.id, 1, TOTAL_SPECIES_COUNT, 0) : 0;
-        if (id >= 1) {
-          result[id] = {
-            seen: Boolean(rec?.seen ?? true),
-            caught: Boolean(rec?.caught ?? false),
-            starRank: clampNum(rec?.starRank ?? rec?.stars, 0, 5, 2),
-            bond: clampNum(rec?.bond, 0, 100, 60),
-            shiny: Boolean(rec?.shiny),
-            timesEncountered: clampNum(rec?.timesEncountered, 1, 999, 1),
-          };
-        }
-      }
-    }
-    return result;
-  }
-  const mapObj = asRecord(raw);
-  if (!mapObj) return result;
-  for (const [k, v] of Object.entries(mapObj)) {
-    const id = Number(k);
-    if (!Number.isInteger(id) || id < 1 || id > TOTAL_SPECIES_COUNT) continue;
-    if (typeof v === 'boolean') {
-      result[id] = { seen: true, caught: v, starRank: v ? 3 : 1, bond: v ? 65 : 0, timesEncountered: 1 };
-    } else {
-      const rec = asRecord(v);
-      if (rec) {
-        result[id] = {
-          seen: Boolean(rec.seen ?? rec.caught ?? true),
-          caught: Boolean(rec.caught ?? false),
-          starRank: clampNum(rec.starRank ?? rec.stars, 0, 5, rec.caught ? 3 : 1),
-          bond: clampNum(rec.bond ?? rec.friendship, 0, 100, rec.caught ? 70 : 0),
-          shiny: Boolean(rec.shiny),
-          timesEncountered: clampNum(rec.timesEncountered, 1, 999, 1),
-        };
-      }
-    }
-  }
-  return result;
-}
-
-function sanitizeBadges(raw: unknown, fallback: string[]): string[] {
-  if (!Array.isArray(raw)) return [...fallback];
-  const out = new Set<string>();
-  for (const b of raw) {
-    if (typeof b === 'string') {
-      if (BADGE_BY_ID[b]) {
-        out.add(b);
-      } else {
-        // Map legacy v1 badge names/slugs by substring match
-        const lower = b.toLowerCase();
-        const found = Object.values(BADGE_BY_ID).find(
-          (def) => def.id.includes(lower) || def.name.toLowerCase().includes(lower) || def.type === lower,
-        );
-        if (found) out.add(found.id);
-      }
-    } else if (typeof b === 'number' && b >= 1 && b <= 28) {
-      const found = Object.values(BADGE_BY_ID).find((def) => def.index === Math.floor(b));
-      if (found) out.add(found.id);
-    }
-  }
-  return out.size > 0 ? Array.from(out) : [...fallback];
-}
-
-export function sanitizeProfile(raw: unknown, slotId: 'slot0' | 'slot1'): TrainerProfile {
-  const def = createDefaultProfile(slotId);
-  const obj = asRecord(raw);
-  if (!obj) return def;
-
-  const rawBiome = typeof obj.biomeId === 'string'
-    ? obj.biomeId
-    : typeof obj.biome === 'string'
-      ? obj.biome
-      : def.biomeId;
-  const biomeId: BiomeId = VALID_BIOMES.has(rawBiome) ? (rawBiome as BiomeId) : def.biomeId;
-
-  const rawParty = Array.isArray(obj.party)
-    ? obj.party.map((m, i) => sanitizePartyMember(m, i)).filter((m): m is PartyMember => Boolean(m)).slice(0, 6)
-    : [];
-  const party = rawParty.length > 0 ? rawParty : def.party;
-
-  const styleObj = asRecord(obj.style ?? obj.cosmetics ?? obj.styleStudio);
-  const outfit = styleObj && VALID_OUTFITS.has(styleObj.outfit as OutfitId) ? (styleObj.outfit as OutfitId) : def.style.outfit;
-  const cape = styleObj && VALID_CAPES.has(styleObj.cape as CapeId) ? (styleObj.cape as CapeId) : def.style.cape;
-  const headgear = styleObj && VALID_HEADGEAR.has(styleObj.headgear as HeadgearId) ? (styleObj.headgear as HeadgearId) : def.style.headgear;
-  const aura = styleObj && VALID_AURAS.has(styleObj.aura as AuraId) ? (styleObj.aura as AuraId) : def.style.aura;
-
-  const invObj = asRecord(obj.inventory ?? obj.bag);
-  const facing = VALID_DIRS.has(obj.facing as Direction) ? (obj.facing as Direction) : def.facing;
-
-  return {
-    ...def,
-    slotId,
-    name: typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim().slice(0, 20) : def.name,
-    title: typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim().slice(0, 32) : def.title,
-    createdAt: clampNum(obj.createdAt, 0, Number.MAX_SAFE_INTEGER, def.createdAt),
-    updatedAt: clampNum(obj.updatedAt, 0, Number.MAX_SAFE_INTEGER, Date.now()),
-    playtimeSeconds: clampNum(obj.playtimeSeconds ?? obj.playtime, 0, 9999999, def.playtimeSeconds),
-    biomeId,
-    x: clampNum(obj.x, 1, 26, def.x),
-    y: clampNum(obj.y, 2, 16, def.y),
-    facing,
-    party,
-    pokedex: sanitizePokedex(obj.pokedex ?? obj.dex, def.pokedex),
-    badges: sanitizeBadges(obj.badges, def.badges),
-    openedChests: Array.isArray(obj.openedChests) ? obj.openedChests.filter((x): x is string => typeof x === 'string') : def.openedChests,
-    clearedShrines: Array.isArray(obj.clearedShrines) ? obj.clearedShrines.filter((x): x is string => typeof x === 'string') : def.clearedShrines,
-    inventory: {
-      pokeBalls: clampNum(invObj?.pokeBalls ?? invObj?.pokeballs, 0, 999, def.inventory.pokeBalls),
-      starBalls: clampNum(invObj?.starBalls ?? invObj?.starballs, 0, 999, def.inventory.starBalls),
-      potions: clampNum(invObj?.potions, 0, 999, def.inventory.potions),
-      superPotions: clampNum(invObj?.superPotions, 0, 999, def.inventory.superPotions),
-      starShards: clampNum(invObj?.starShards ?? invObj?.shards, 0, 999999, def.inventory.starShards),
-    },
-    style: {
-      outfit,
-      cape,
-      headgear,
-      aura,
-      primaryAccent: typeof styleObj?.primaryAccent === 'string' ? styleObj.primaryAccent : def.style.primaryAccent,
-      secondaryAccent: typeof styleObj?.secondaryAccent === 'string' ? styleObj.secondaryAccent : def.style.secondaryAccent,
-    },
-    skyHopHighScore: clampNum(obj.skyHopHighScore ?? obj.skyhopScore, 0, 9999999, def.skyHopHighScore),
-    skyHopBestCombo: clampNum(obj.skyHopBestCombo, 0, 9999, def.skyHopBestCombo),
-    rivalsDefeated: clampNum(obj.rivalsDefeated, 0, 999, def.rivalsDefeated),
-  };
-}
-
-function sanitizeSettings(raw: unknown): GameSettings {
-  const def = createDefaultSettings();
-  const obj = asRecord(raw);
-  if (!obj) return applyUrlQueryOverrides(def);
-  const renderer = obj.rendererOverride;
-  const rendererOverride: RendererMode =
-    renderer === 'webgl2' || renderer === 'canvas2d' || renderer === 'auto'
-      ? renderer
-      : def.rendererOverride;
-
-  return applyUrlQueryOverrides({
-    reducedMotion: typeof obj.reducedMotion === 'boolean' ? obj.reducedMotion : def.reducedMotion,
-    crtMode: typeof obj.crtMode === 'boolean' ? obj.crtMode : def.crtMode,
-    rendererOverride,
-    audioMuted: typeof obj.audioMuted === 'boolean' ? obj.audioMuted : def.audioMuted,
-    masterVolume: clampNum(obj.masterVolume, 0, 1, def.masterVolume),
-    showTouchControls: typeof obj.showTouchControls === 'boolean' ? obj.showTouchControls : def.showTouchControls,
-  });
 }
 
 export function applyUrlQueryOverrides(settings: GameSettings): GameSettings {
   if (typeof window === 'undefined') return settings;
   const params = new URLSearchParams(window.location.search);
   const next = { ...settings };
+
   const rendererParam = params.get('renderer')?.toLowerCase();
   if (rendererParam === 'canvas2d' || rendererParam === 'webgl2' || rendererParam === 'auto') {
     next.rendererOverride = rendererParam;
@@ -422,43 +76,246 @@ export function applyUrlQueryOverrides(settings: GameSettings): GameSettings {
   return next;
 }
 
-export function hydratePayload(raw: unknown, sourceKey: string, preservedLegacyKeys: string[]): StarlightSaveState {
-  const obj = asRecord(raw);
-  if (!obj) return createDefaultSaveState();
+function sanitizeSettings(raw: unknown): GameSettings {
+  const def = createDefaultSettings();
+  if (!isRecord(raw)) return applyUrlQueryOverrides(def);
+  const renderer: RendererMode =
+    raw.rendererOverride === 'webgl2' || raw.rendererOverride === 'canvas2d' || raw.rendererOverride === 'auto'
+      ? raw.rendererOverride
+      : def.rendererOverride;
+  const showTouchPad: TouchPadMode =
+    raw.showTouchPad === 'auto' || raw.showTouchPad === 'show' || raw.showTouchPad === 'hide'
+      ? raw.showTouchPad
+      : raw.showTouchControls === true
+        ? 'show'
+        : def.showTouchPad;
+  const battlePace: BattlePace =
+    raw.battlePace === 'cinema' || raw.battlePace === 'classic' || raw.battlePace === 'fast'
+      ? raw.battlePace
+      : def.battlePace;
 
-  const profilesObj = asRecord(obj.profiles);
-  let slot0Raw: unknown = profilesObj?.slot0 ?? profilesObj?.[0];
-  let slot1Raw: unknown = profilesObj?.slot1 ?? profilesObj?.[1];
+  // Note: Legacy dojo saves defaulted crtEnabled: true; per spec Decision 3, v2 defaults crtMode: false
+  // unless the user explicitly toggled crtMode in v2/v3 settings!
+  const crtMode = typeof raw.crtMode === 'boolean' ? raw.crtMode : def.crtMode;
+  const audioMuted = typeof raw.audioMuted === 'boolean'
+    ? raw.audioMuted
+    : typeof raw.muted === 'boolean'
+      ? raw.muted
+      : def.audioMuted;
 
-  // Legacy v1 array of profiles or single flat trainer object
-  if (!slot0Raw && Array.isArray(obj.profiles)) {
-    slot0Raw = obj.profiles[0];
-    slot1Raw = obj.profiles[1];
-  } else if (!slot0Raw && (obj.trainerName || obj.name || obj.party || obj.pokedex || obj.badges)) {
-    slot0Raw = { ...obj, name: obj.trainerName ?? obj.name };
+  return applyUrlQueryOverrides({
+    reducedMotion: typeof raw.reducedMotion === 'boolean' ? raw.reducedMotion : def.reducedMotion,
+    crtMode,
+    rendererOverride: renderer,
+    audioMuted,
+    masterVolume: clamp(raw.masterVolume, 0, 1, def.masterVolume),
+    showTouchPad,
+    battlePace,
+  });
+}
+
+function serializeRepairedProfile(repaired: Record<string, unknown>): DojoProfileState {
+  const team = Array.isArray(repaired.team)
+    ? repaired.team.map((m) => (m instanceof Pokemon ? m.toJSON() : m))
+    : [];
+  const box = Array.isArray(repaired.box)
+    ? repaired.box.map((m) => (m instanceof Pokemon ? m.toJSON() : m))
+    : [];
+  return {
+    ...(repaired as unknown as DojoProfileState),
+    team,
+    box,
+  };
+}
+
+/**
+ * Converts a legacy pre-overhaul v2 (Lyra/Orion slot0/slot1) or old flat v1 trainer object
+ * into a canonical C:\dojo Violet/Ozias profile losslessly!
+ */
+function convertLegacyProfileToDojo(raw: unknown, trainerId: TrainerId): DojoProfileState {
+  if (!isRecord(raw)) {
+    return serializeRepairedProfile(validateAndRepairProfile(null, trainerId));
   }
 
-  const activeSlot: 'slot0' | 'slot1' =
-    obj.activeSlot === 'slot1' || obj.activeProfile === 1 ? 'slot1' : 'slot0';
+  // Already a dojo-shaped profile?
+  if (
+    raw.trainerId === 'violet'
+    || raw.trainerId === 'ozias'
+    || 'starterId' in raw
+    || 'shrinesCleared' in raw
+    || 'chestsOpened' in raw
+    || isRecord(raw.bag)
+  ) {
+    return serializeRepairedProfile(validateAndRepairProfile({ ...raw, trainerId }, trainerId));
+  }
 
-  const state: StarlightSaveState = {
-    schemaVersion: 2,
-    activeSlot,
-    profiles: {
-      slot0: sanitizeProfile(slot0Raw, 'slot0'),
-      slot1: sanitizeProfile(slot1Raw, 'slot1'),
+  // Legacy v1 or old v2 (slot0/slot1) format -> translate cleanly
+  const rawParty = Array.isArray(raw.party) ? raw.party : Array.isArray(raw.team) ? raw.team : [];
+  const team = rawParty
+    .map((m) => {
+      if (!isRecord(m)) return null;
+      const speciesId = Number(m.speciesId ?? m.id ?? m.dexId ?? 25);
+      const level = Math.max(1, Math.min(50, Math.round(Number(m.level ?? m.lv ?? 5))));
+      return {
+        uid: typeof m.uid === 'string' ? m.uid : undefined,
+        speciesId: Number.isInteger(speciesId) && speciesId >= 1 && speciesId <= 1025 ? speciesId : 25,
+        level,
+        xp: Number(m.xp ?? 0),
+        hp: typeof m.hp === 'number' ? m.hp : undefined,
+        isShiny: Boolean(m.shiny ?? m.isShiny),
+        nickname: typeof m.nickname === 'string' ? m.nickname : null,
+        bond: Number(m.bond ?? m.friendship ?? 40),
+        upgradeTier: Math.max(0, Math.min(5, Number(m.starRank ?? m.upgradeTier ?? 0))),
+      };
+    })
+    .filter(Boolean);
+
+  const starterId = team.length > 0 ? (team[0] as { speciesId: number }).speciesId : null;
+
+  // Convert legacy pokedex formats (array or Record<id, {seen, caught}>)
+  const seen: number[] = [];
+  const caught: Record<number, number> = {};
+  const rawDex = raw.pokedex ?? raw.dex;
+  if (Array.isArray(rawDex)) {
+    for (const item of rawDex) {
+      const id = typeof item === 'number' ? Math.round(item) : isRecord(item) ? Number(item.speciesId ?? item.id) : 0;
+      if (id >= 1 && id <= 1025) {
+        seen.push(id);
+        caught[id] = Math.max(caught[id] ?? 0, 1);
+      }
+    }
+  } else if (isRecord(rawDex)) {
+    for (const [k, v] of Object.entries(rawDex)) {
+      const id = Number(k);
+      if (!Number.isInteger(id) || id < 1 || id > 1025) continue;
+      if (v === true) {
+        seen.push(id);
+        caught[id] = 1;
+      } else if (isRecord(v)) {
+        if (v.seen || v.caught) seen.push(id);
+        if (v.caught) caught[id] = 1;
+      }
+    }
+  }
+
+  const inv = isRecord(raw.inventory) ? raw.inventory : isRecord(raw.bag) ? raw.bag : {};
+  const oldStyle = isRecord(raw.style) ? raw.style : {};
+  const mappedStyleId =
+    oldStyle.outfit === 'astral-robe' ? 'twilight'
+      : oldStyle.outfit === 'ranger-coat' ? 'ranger'
+        : oldStyle.outfit === 'solstice-tunic' ? 'solstice'
+          : oldStyle.outfit === 'aegis-jacket' ? 'royal'
+            : 'default';
+  const mappedAccessory =
+    oldStyle.headgear === 'sky-goggles' ? 'goggles'
+      : oldStyle.headgear === 'lunar-circlet' ? 'crown'
+        : oldStyle.headgear === 'shrine-visor' ? 'visor'
+          : 'cap';
+  const mappedAura =
+    oldStyle.aura === 'starlight' ? 'stars'
+      : oldStyle.aura === 'sky-thunder' ? 'lightning'
+        : oldStyle.aura === 'aurora' ? 'cosmic'
+          : oldStyle.aura === 'ember-crown' ? 'blossom'
+            : 'none';
+
+  const customNickname =
+    typeof raw.name === 'string'
+    && raw.name.trim().length > 0
+    && !['lyra', 'orion', 'violet', 'ozias'].includes(raw.name.trim().toLowerCase())
+      ? raw.name.trim().slice(0, 18)
+      : undefined;
+
+  const converted = {
+    trainerId,
+    starterId,
+    pos: isRecord(raw.pos) ? raw.pos : { x: 8, y: 15, dir: 'down' },
+    appearance: {
+      styleId: mappedStyleId,
+      accessory: mappedAccessory,
+      cape: Boolean(oldStyle.cape && oldStyle.cape !== 'none'),
+      aura: mappedAura,
+      ...(customNickname ? { nickname: customNickname } : {}),
     },
-    settings: sanitizeSettings(obj.settings),
+    team,
+    box: [],
+    pokedex: { seen, caught },
+    badges: Array.isArray(raw.badges) ? raw.badges.filter((b): b is string => typeof b === 'string') : [],
+    shrinesCleared: Array.isArray(raw.clearedShrines) ? raw.clearedShrines : [],
+    chestsOpened: Array.isArray(raw.openedChests) ? raw.openedChests : [],
+    bag: {
+      potions: Number(inv.potions ?? 5),
+      greatBalls: Number(inv.pokeBalls ?? inv.greatBalls ?? 3),
+      starBalls: Number(inv.starBalls ?? 1),
+      starShards: Number(inv.starShards ?? inv.shards ?? 0),
+      cheerCharges: 0,
+    },
+    arcade: {
+      unlocked: Number(raw.skyHopHighScore ?? 0) > 0,
+      highScore: Number(raw.skyHopHighScore ?? 0),
+      plays: Number(raw.skyHopHighScore ?? 0) > 0 ? 1 : 0,
+    },
   };
 
-  if (sourceKey !== V2_STORAGE_KEY) {
+  return serializeRepairedProfile(validateAndRepairProfile(converted, trainerId));
+}
+
+export function createDefaultSaveState(): StarlightSaveState {
+  return {
+    schemaVersion: 3,
+    activeTrainerId: null,
+    profiles: {
+      violet: serializeRepairedProfile(validateAndRepairProfile(null, 'violet')),
+      ozias: serializeRepairedProfile(validateAndRepairProfile(null, 'ozias')),
+    },
+    settings: applyUrlQueryOverrides(createDefaultSettings()),
+  };
+}
+
+export function hydratePayload(
+  raw: unknown,
+  sourceKey: string,
+  preservedLegacyKeys: string[],
+): StarlightSaveState {
+  if (!isRecord(raw)) return createDefaultSaveState();
+
+  const profilesObj = isRecord(raw.profiles) ? raw.profiles : null;
+  let violetRaw: unknown = profilesObj?.violet ?? profilesObj?.slot0 ?? profilesObj?.[0];
+  let oziasRaw: unknown = profilesObj?.ozias ?? profilesObj?.slot1 ?? profilesObj?.[1];
+
+  if (!violetRaw && Array.isArray(raw.profiles)) {
+    violetRaw = raw.profiles[0];
+    oziasRaw = raw.profiles[1];
+  } else if (!violetRaw && (raw.trainerName || raw.name || raw.party || raw.team || raw.pokedex || raw.badges)) {
+    violetRaw = { ...raw, name: raw.trainerName ?? raw.name };
+  }
+
+  let activeTrainerId: TrainerId | null = null;
+  if (raw.activeTrainerId === 'violet' || raw.activeTrainerId === 'ozias') {
+    activeTrainerId = raw.activeTrainerId;
+  } else if (raw.activeSlot === 'slot1' || raw.activeProfile === 1) {
+    activeTrainerId = 'ozias';
+  } else if (raw.activeSlot === 'slot0' || raw.activeProfile === 0) {
+    activeTrainerId = 'violet';
+  }
+
+  const state: StarlightSaveState = {
+    schemaVersion: 3,
+    activeTrainerId,
+    profiles: {
+      violet: convertLegacyProfileToDojo(violetRaw, 'violet'),
+      ozias: convertLegacyProfileToDojo(oziasRaw, 'ozias'),
+    },
+    settings: sanitizeSettings(raw.settings),
+  };
+
+  if (sourceKey !== V2_STORAGE_KEY || Number(raw.schemaVersion) < 3) {
     state.migratedFromV1 = {
       sourceKey,
       migratedAt: Date.now(),
       preservedLegacyKeys,
     };
-  } else if (asRecord(obj.migratedFromV1)) {
-    state.migratedFromV1 = obj.migratedFromV1 as StarlightSaveState['migratedFromV1'];
+  } else if (isRecord(raw.migratedFromV1)) {
+    state.migratedFromV1 = raw.migratedFromV1 as StarlightSaveState['migratedFromV1'];
   }
 
   return state;
@@ -542,6 +399,17 @@ function writeToIndexedDb(dbName: string, key: string, value: StarlightSaveState
   });
 }
 
+/**
+ * Canonical Save Hydrator with strict precedence:
+ *   1. Native v3 (`starlight_v2_save` with `schemaVersion >= 3`)
+ *   2. Authentic C:\dojo save (`starlight_pokemon_save_v1`) — ALWAYS beats pre-overhaul schemaVersion 2 demo saves!
+ *   3. Pre-overhaul v2 save (`starlight_v2_save` with `schemaVersion === 2`)
+ *   4. Other legacy v1 keys (`starlight_island_save`, `starlight_save_v1`, `pokemon_starlight_v1`, `starlight_profiles`)
+ *   5. IndexedDB backups (`starlight_v2_db`, `starlight_island_db`)
+ *   6. Fresh dual-profile Violet & Ozias save
+ *
+ * Strictly non-destructive: NEVER deletes or mutates ANY legacy key!
+ */
 export async function hydrateSaveState(): Promise<SaveHydrationResult> {
   const warnings: string[] = [];
   const presentLegacyKeys: string[] = [];
@@ -557,50 +425,78 @@ export async function hydrateSaveState(): Promise<SaveHydrationResult> {
       }
     }
 
-    // 1. Prefer native v2 save when present and valid
+    let parsedV2Candidate: Record<string, unknown> | null = null;
     try {
       const rawV2 = localStorage.getItem(V2_STORAGE_KEY);
       if (rawV2) {
         const parsed = JSON.parse(rawV2);
-        const state = hydratePayload(parsed, V2_STORAGE_KEY, presentLegacyKeys);
-        return { state, source: 'v2-local', warnings };
+        if (isRecord(parsed)) {
+          if (Number(parsed.schemaVersion) >= 3) {
+            const state = hydratePayload(parsed, V2_STORAGE_KEY, presentLegacyKeys);
+            return { state, source: 'v3-local', warnings };
+          }
+          parsedV2Candidate = parsed;
+        }
       }
     } catch {
-      warnings.push('Corrupted v2 localStorage payload detected; checking backup/legacy sources.');
+      warnings.push('Corrupted v2 localStorage payload detected; checking dojo & legacy sources.');
     }
 
-    // 2. Non-destructive legacy v1 localStorage migration
+    // 2. Authentic C:\dojo save takes priority over pre-overhaul schemaVersion 2 demo saves!
+    try {
+      const rawDojo = localStorage.getItem(DOJO_STORAGE_KEY);
+      if (rawDojo) {
+        const parsed = JSON.parse(rawDojo);
+        if (isRecord(parsed)) {
+          const state = hydratePayload(parsed, DOJO_STORAGE_KEY, presentLegacyKeys);
+          await persistSaveState(state);
+          return { state, source: 'dojo-v1-migrated', warnings };
+        }
+      }
+    } catch {
+      warnings.push(`Skipped unreadable legacy key "${DOJO_STORAGE_KEY}".`);
+    }
+
+    // 3. Pre-overhaul schemaVersion 2 save (if no authentic dojo save existed)
+    if (parsedV2Candidate) {
+      const state = hydratePayload(parsedV2Candidate, V2_STORAGE_KEY, presentLegacyKeys);
+      await persistSaveState(state);
+      return { state, source: 'v2-migrated', warnings };
+    }
+
+    // 4. Other legacy v1 keys
     for (const legacyKey of presentLegacyKeys) {
+      if (legacyKey === DOJO_STORAGE_KEY) continue;
       try {
-        const rawV1 = localStorage.getItem(legacyKey);
-        if (!rawV1) continue;
-        const parsed = JSON.parse(rawV1);
+        const rawLegacy = localStorage.getItem(legacyKey);
+        if (!rawLegacy) continue;
+        const parsed = JSON.parse(rawLegacy);
+        if (!isRecord(parsed)) continue;
         const state = hydratePayload(parsed, legacyKey, presentLegacyKeys);
         await persistSaveState(state);
-        return { state, source: 'v1-migrated', warnings };
+        return { state, source: 'legacy-v1-migrated', warnings };
       } catch {
         warnings.push(`Skipped unreadable legacy key "${legacyKey}".`);
       }
     }
   }
 
-  // 3. Check IndexedDB v2 then v1 fallback
+  // 5. IndexedDB backups
   const idbV2 = await readFromIndexedDb(IDB_V2_NAME, V2_STORAGE_KEY);
-  if (idbV2) {
+  if (isRecord(idbV2)) {
     const state = hydratePayload(idbV2, V2_STORAGE_KEY, presentLegacyKeys);
-    return { state, source: 'v2-idb', warnings };
+    return { state, source: 'v3-idb', warnings };
   }
 
   const idbV1 = await readFromIndexedDb(IDB_V1_NAME, 'starlight_island_save');
-  if (idbV1) {
+  if (isRecord(idbV1)) {
     const state = hydratePayload(idbV1, 'indexeddb:starlight_island_db', presentLegacyKeys);
     await persistSaveState(state);
-    return { state, source: 'v1-migrated', warnings };
+    return { state, source: 'legacy-v1-migrated', warnings };
   }
 
-  // 4. Fresh default dual-profile save
+  // 6. Fresh Violet & Ozias save
   const fresh = createDefaultSaveState();
-  fresh.settings = applyUrlQueryOverrides(fresh.settings);
   await persistSaveState(fresh);
   return { state: fresh, source: 'fresh-default', warnings };
 }
@@ -610,8 +506,96 @@ export async function persistSaveState(state: StarlightSaveState): Promise<void>
     try {
       localStorage.setItem(V2_STORAGE_KEY, JSON.stringify(state));
     } catch {
-      // Storage quota or private browsing fallback
+      // Private browsing / quota fallback
     }
   }
   await writeToIndexedDb(IDB_V2_NAME, V2_STORAGE_KEY, state);
+}
+
+/**
+ * Bridges C:\dojo's complete StorageManager gameplay mutations with Starlight v2's
+ * canonical schemaVersion 3 storage key (`starlight_v2_save`) + IndexedDB mirror,
+ * NEVER touching `starlight_pokemon_save_v1` or any legacy key!
+ */
+export class StarlightStorageBridge {
+  readonly manager: StorageManager;
+  private settings: GameSettings;
+  private migratedFromV1?: StarlightSaveState['migratedFromV1'];
+
+  constructor(initialState: StarlightSaveState) {
+    this.settings = { ...initialState.settings };
+    this.migratedFromV1 = initialState.migratedFromV1;
+    this.manager = createStorageManager(V2_STORAGE_KEY);
+    this.loadFromV3State(initialState);
+    // Override manager.save so every internal dojo mutation writes schemaVersion: 3 cleanly!
+    this.manager.save = () => {
+      const snapshot = this.toV3SaveState();
+      void persistSaveState(snapshot);
+      return true;
+    };
+  }
+
+  private loadFromV3State(state: StarlightSaveState): void {
+    this.manager.state = {
+      version: 2,
+      activeTrainerId: state.activeTrainerId,
+      settings: {
+        muted: state.settings.audioMuted,
+        crtEnabled: state.settings.crtMode,
+        showTouchPad: state.settings.showTouchPad,
+        battlePace: state.settings.battlePace,
+      },
+      profiles: {
+        violet: validateAndRepairProfile({ ...state.profiles.violet }, 'violet'),
+        ozias: validateAndRepairProfile({ ...state.profiles.ozias }, 'ozias'),
+      },
+    };
+  }
+
+  getSettings(): GameSettings {
+    return { ...this.settings };
+  }
+
+  updateSettings(patch: Partial<GameSettings>): GameSettings {
+    this.settings = {
+      ...this.settings,
+      ...patch,
+    };
+    this.manager.state.settings = {
+      muted: this.settings.audioMuted,
+      crtEnabled: this.settings.crtMode,
+      showTouchPad: this.settings.showTouchPad,
+      battlePace: this.settings.battlePace,
+    };
+    this.saveSync();
+    return this.getSettings();
+  }
+
+  getActiveProfileLive(): Record<string, unknown> | null {
+    return this.manager.getActiveProfile() as Record<string, unknown> | null;
+  }
+
+  getActiveProfileJSON(): DojoProfileState | null {
+    const live = this.manager.getActiveProfile();
+    if (!live) return null;
+    return this.manager.serializeProfile(live) as DojoProfileState;
+  }
+
+  toV3SaveState(): StarlightSaveState {
+    return {
+      schemaVersion: 3,
+      activeTrainerId: (this.manager.state.activeTrainerId as TrainerId | null) ?? null,
+      profiles: {
+        violet: this.manager.serializeProfile(this.manager.state.profiles.violet) as DojoProfileState,
+        ozias: this.manager.serializeProfile(this.manager.state.profiles.ozias) as DojoProfileState,
+      },
+      settings: { ...this.settings },
+      ...(this.migratedFromV1 ? { migratedFromV1: this.migratedFromV1 } : {}),
+    };
+  }
+
+  saveSync(): void {
+    const snapshot = this.toV3SaveState();
+    void persistSaveState(snapshot);
+  }
 }
