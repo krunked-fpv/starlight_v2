@@ -89,6 +89,19 @@ function parsePp(text: string | null): number {
   return m ? Number(m[1]) : -1;
 }
 
+async function dismissDialogueIfVisible(page: Page): Promise<void> {
+  const overlay = page.getByTestId('dialogue-overlay');
+  if (await overlay.isVisible().catch(() => false)) {
+    const closeBtn = page.getByTestId('dialogue-close');
+    if (await closeBtn.isVisible().catch(() => false)) {
+      await closeBtn.click();
+    } else {
+      await page.keyboard.press('Escape');
+    }
+    await expect(overlay).toBeHidden();
+  }
+}
+
 async function bootFreshToOverworld(
   page: Page,
   renderer: 'webgl2' | 'canvas2d',
@@ -105,6 +118,7 @@ async function bootFreshToOverworld(
   await expect(page.getByTestId('starter-screen')).toBeVisible();
   await page.getByTestId(`starter-choose-${starterId}`).click();
   await expect(page.getByTestId('overworld-screen')).toBeVisible();
+  await dismissDialogueIfVisible(page);
 }
 
 async function walkInForestUntilEncounter(page: Page, maxIterations = 40): Promise<boolean> {
@@ -185,6 +199,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
       // Allow 1 retry in the rare case an extreme-RNG high-ATK wild encounter (e.g. Teddiursa crit) KOs a Lv.5 starter
       for (let encounterAttempt = 0; encounterAttempt < 2; encounterAttempt += 1) {
         if (encounterAttempt > 0) {
+          await dismissDialogueIfVisible(page);
           await page.getByTestId('warp-farm').click();
           await expect(page.getByTestId('hud-biome-name')).not.toHaveText('Starlight Village');
         }
@@ -262,6 +277,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
         if (phase === 'defeat' && encounterAttempt === 0) {
           await page.getByTestId('battle-close-result').click();
           await expect(page.getByTestId('overworld-screen')).toBeVisible();
+          await dismissDialogueIfVisible(page);
         }
       }
 
@@ -314,6 +330,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
         await page.getByTestId('battle-close-result').click();
       } else if (catchEnd === 'defeat') {
         await page.getByTestId('battle-close-result').click();
+        await dismissDialogueIfVisible(page);
       } else {
         await page.getByTestId('battle-flee').click();
       }
@@ -419,6 +436,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
     await expect(page.getByTestId('battle-status-message')).toContainText('Ivysaur');
     await page.getByTestId('battle-close-result').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await dismissDialogueIfVisible(page);
 
     // 2. Full 6-mon party catch -> 7th Pokémon goes cleanly to Storage Box with Gotcha message preserved
     await page.evaluate(() =>
@@ -453,6 +471,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
     expect(counts).toEqual({ team: 6, box: 1 });
     await page.getByTestId('battle-close-result').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await dismissDialogueIfVisible(page);
 
     expect(telemetry.consoleErrors).toEqual([]);
     expect(telemetry.pageErrors).toEqual([]);
@@ -634,6 +653,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
 
     await page.getByTestId('battle-close-result').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await dismissDialogueIfVisible(page);
     const postRecall = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
     expect(postRecall.biomeId).toBe('village');
     expect(postRecall.playerPos).toEqual({ x: 8, y: 15 });
