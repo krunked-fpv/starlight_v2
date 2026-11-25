@@ -206,6 +206,7 @@ function createMockWebGL2Context(
     UNSIGNED_BYTE: 0x1401,
     UNPACK_PREMULTIPLY_ALPHA_WEBGL: 0x9241,
     FRAMEBUFFER: 0x8d40,
+    NONE: 0,
     COLOR_ATTACHMENT0: 0x8ce0,
     COLOR_ATTACHMENT1: 0x8ce1,
     FRAMEBUFFER_COMPLETE: 0x8cd5,
@@ -946,7 +947,9 @@ describe('WebGL2Backend', () => {
     expect(stats.drawCalls).toBe(8);
     expect(gl._calls.drawArraysInstanced).toHaveBeenCalled();
     expect(gl._calls.drawArrays).toHaveBeenCalledTimes(2); // Lighting + Bloom fullscreen passes
+    expect(gl._calls.drawBuffers).toHaveBeenCalledWith([gl.NONE, gl.COLOR_ATTACHMENT1]);
     expect(gl._calls.drawBuffers).toHaveBeenCalledWith([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    expect(gl._calls.drawBuffers).not.toHaveBeenCalledWith([gl.COLOR_ATTACHMENT1]);
     expect(gl._calls.uniform4fv).toHaveBeenCalled();
     expect(gl._calls.texImage2D).toHaveBeenCalled();
 

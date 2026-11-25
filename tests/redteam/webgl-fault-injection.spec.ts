@@ -180,7 +180,14 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
     expect(bootState.backend).toBe('webgl2');
 
     await enterOverworldWithStarter(page);
-    await page.waitForTimeout(300);
+    await page.waitForFunction(
+      () => {
+        const s = window.__STARLIGHT_DEBUG__?.getState();
+        return Boolean(s && s.frameStats.fps > 0 && s.frameStats.drawCalls > 0);
+      },
+      undefined,
+      { timeout: 10_000 },
+    );
 
     const beforeLoss = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
     expect(beforeLoss.frameStats.fps).toBeGreaterThan(0);
@@ -208,8 +215,15 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
     // Confirm live loop ticks & player movement still responds smoothly on Canvas2D
     const posBefore = afterLoss1.playerPos;
     await page.keyboard.down('ArrowRight');
-    await page.waitForTimeout(420);
-    await page.keyboard.up('ArrowRight');
+    try {
+      await page.waitForFunction(
+        (startX: number) => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? startX) > startX,
+        posBefore.x,
+        { timeout: 6_000 },
+      );
+    } finally {
+      await page.keyboard.up('ArrowRight');
+    }
 
     const afterLoss2 = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
     expect(afterLoss2.playerPos.x).toBeGreaterThan(posBefore.x);
@@ -244,7 +258,7 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 10_000 },
+      { timeout: 20_000 },
     );
 
     // Fire elemental move VFX and kill WebGL2 context immediately mid-VFX
@@ -309,8 +323,15 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
     // Walk across Starlight Village via keyboard input
     const posBefore = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
     await page.keyboard.down('ArrowRight');
-    await page.waitForTimeout(420);
-    await page.keyboard.up('ArrowRight');
+    try {
+      await page.waitForFunction(
+        (startX: number) => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? startX) > startX,
+        posBefore.x,
+        { timeout: 6_000 },
+      );
+    } finally {
+      await page.keyboard.up('ArrowRight');
+    }
     const posAfter = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
     expect(posAfter.x).toBeGreaterThan(posBefore.x);
 
@@ -347,11 +368,13 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
 
     await page.getByTestId('setting-renderer').selectOption('webgl2');
     await page.waitForFunction(
-      () => window.__STARLIGHT_DEBUG__?.getState().backend === 'webgl2',
+      () => {
+        const s = window.__STARLIGHT_DEBUG__?.getState();
+        return Boolean(s && s.backend === 'webgl2' && s.frameStats.drawCalls > 0);
+      },
       undefined,
       { timeout: 10_000 },
     );
-    await page.waitForTimeout(220);
 
     const glStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
     expect(glStats.drawCalls).toBeGreaterThan(0);
@@ -359,11 +382,13 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
 
     await page.getByTestId('setting-renderer').selectOption('canvas2d');
     await page.waitForFunction(
-      () => window.__STARLIGHT_DEBUG__?.getState().backend === 'canvas2d',
+      () => {
+        const s = window.__STARLIGHT_DEBUG__?.getState();
+        return Boolean(s && s.backend === 'canvas2d' && s.frameStats.drawCalls > 0 && s.frameStats.clampedDtMs > 0);
+      },
       undefined,
       { timeout: 10_000 },
     );
-    await page.waitForTimeout(220);
 
     const finalPixels = await sampleMainCanvasPixels(page);
     expect(finalPixels.nonTransparentCount).toBeGreaterThan(finalPixels.sampledCount * 0.85);

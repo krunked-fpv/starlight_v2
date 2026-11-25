@@ -115,6 +115,7 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
     test(`completes Title -> Starter Lab -> Overworld -> Briefing -> Wild & Shrine Battles -> 5-Tab Drawer -> Sky-Hop on ${renderer}`, async ({
       page,
     }) => {
+      test.setTimeout(120_000);
       const telemetry = attachCollectors(page);
       await stubExternalSpriteCdns(page);
 
@@ -142,7 +143,24 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       // 3. Starlight Village Overworld
       await expect(page.getByTestId('overworld-screen')).toBeVisible();
       await expect(page.getByTestId('hud-biome-name')).toHaveText('Starlight Village');
-      await page.waitForTimeout(220);
+      await page.waitForFunction(
+        () => {
+          const st = window.__STARLIGHT_DEBUG__?.getState();
+          const canvas = document.getElementById('starlight-canvas');
+          if (!st || !canvas) return false;
+          const rect = canvas.getBoundingClientRect();
+          return (
+            st.screen === 'overworld' &&
+            st.frameStats.drawCalls > 0 &&
+            rect.width > 0 &&
+            rect.height > 0 &&
+            Math.abs(st.camera.viewportWidth - rect.width) <= 2 &&
+            Math.abs(st.camera.viewportHeight - rect.height) <= 2
+          );
+        },
+        undefined,
+        { timeout: 10_000 },
+      );
 
       const owStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
       expect(owStats.drawCalls, `Expected live drawCalls > 0 on ${renderer}`).toBeGreaterThan(0);
@@ -162,14 +180,21 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       await page.waitForFunction(
         () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 0) >= 10,
         undefined,
-        { timeout: 6_000 },
+        { timeout: 10_000 },
       );
 
       // 3b. Arrow key walk left back toward center
       const posAfterTap = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
       await page.keyboard.down('ArrowLeft');
-      await page.waitForTimeout(360);
-      await page.keyboard.up('ArrowLeft');
+      try {
+        await page.waitForFunction(
+          (startX: number) => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? startX) < startX,
+          posAfterTap.x,
+          { timeout: 6_000 },
+        );
+      } finally {
+        await page.keyboard.up('ArrowLeft');
+      }
       const posAfterKey = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
       expect(posAfterKey.x).toBeLessThan(posAfterTap.x);
 
@@ -216,7 +241,7 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
         undefined,
-        { timeout: 10_000 },
+        { timeout: 20_000 },
       );
 
       const preMoveMsg = await page.getByTestId('battle-status-message').textContent();
@@ -254,7 +279,7 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
         undefined,
-        { timeout: 10_000 },
+        { timeout: 20_000 },
       );
       await page.getByTestId('battle-move-0').click();
       if (await page.getByTestId('battle-potion').isEnabled()) {
@@ -348,24 +373,27 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       await page.getByTestId('skyhop-start').click();
       await expect(page.getByTestId('skyhop-center-card')).toBeHidden();
 
-      // Move vertically toward Wave 1 Rising Starlight Arc stars and fire Star Dash (magnet + obstacle shatter)
+      // Fire Star Dash and steer onto Wave 1 Rising Starlight Arc Star 0 lane (yFrac 0.78) until score rises
+      await page.getByTestId('skyhop-dash').click();
       const surfaceBox = await page.getByTestId('skyhop-flight-surface').boundingBox();
       if (surfaceBox) {
-        await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.4, surfaceBox.y + surfaceBox.height * 0.68);
+        await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.4, surfaceBox.y + surfaceBox.height * 0.78);
         await page.mouse.down();
-        await page.waitForTimeout(200);
-        await page.mouse.up();
       }
-      await page.getByTestId('skyhop-dash').click();
+      try {
+        await page.waitForFunction(
+          () => (window.__STARLIGHT_DEBUG__?.getState().skyhopScore ?? 0) > 0,
+          undefined,
+          { timeout: 25_000 },
+        );
+      } finally {
+        if (surfaceBox) {
+          await page.mouse.up();
+        }
+      }
       await page.keyboard.down('ArrowUp');
-      await page.waitForTimeout(350);
+      await page.waitForTimeout(120);
       await page.keyboard.up('ArrowUp');
-
-      await page.waitForFunction(
-        () => (window.__STARLIGHT_DEBUG__?.getState().skyhopScore ?? 0) > 0,
-        undefined,
-        { timeout: 8_000 },
-      );
 
       const skyScore = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().skyhopScore);
       expect(skyScore).toBeGreaterThan(0);

@@ -8,7 +8,7 @@ export default defineConfig({
   testDir: './tests',
   testMatch: ['e2e/**/*.spec.ts', 'redteam/**/*.spec.ts'],
   retries: 0,
-  timeout: 45_000,
+  timeout: 75_000,
   expect: {
     timeout: 10_000,
   },

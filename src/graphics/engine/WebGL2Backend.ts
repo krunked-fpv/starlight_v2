@@ -624,7 +624,7 @@ export class WebGL2Backend implements IRenderBackend {
             this.clearColor[3],
           );
           gl.clear(gl.COLOR_BUFFER_BIT);
-          gl.drawBuffers([gl.COLOR_ATTACHMENT1]);
+          gl.drawBuffers([gl.NONE ?? 0, gl.COLOR_ATTACHMENT1]);
           gl.clearColor(0, 0, 0, 0);
           gl.clear(gl.COLOR_BUFFER_BIT);
           gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);

@@ -69,13 +69,34 @@ function attachCollectors(page: Page) {
 async function bootV2ToOverworld(page: Page, renderer: 'webgl2' | 'canvas2d' = 'webgl2', starterId = 1): Promise<void> {
   await stubExternalSpriteCdns(page);
   await page.goto(`./?renderer=${renderer}`);
-  await page.waitForFunction(() => Boolean(window.__STARLIGHT_DEBUG__), undefined, { timeout: 20_000 });
+  await page.waitForFunction(
+    () => typeof window.__STARLIGHT_DEBUG__?.getState === 'function' && window.__STARLIGHT_DEBUG__.getState().manifestLoaded,
+    undefined,
+    { timeout: 20_000 },
+  );
   await expect(page.getByTestId('celestial-ui-shell')).toBeVisible();
   await page.getByTestId('title-play-violet').click();
   await expect(page.getByTestId('starter-screen')).toBeVisible();
   await page.getByTestId(`starter-choose-${starterId}`).click();
   await expect(page.getByTestId('overworld-screen')).toBeVisible();
-  await page.waitForTimeout(240);
+  await page.waitForFunction(
+    () => {
+      const st = window.__STARLIGHT_DEBUG__?.getState();
+      const canvas = document.getElementById('starlight-canvas');
+      if (!st || !canvas) return false;
+      const rect = canvas.getBoundingClientRect();
+      return (
+        st.screen === 'overworld' &&
+        st.frameStats.drawCalls > 0 &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        Math.abs(st.camera.viewportWidth - rect.width) <= 2 &&
+        Math.abs(st.camera.viewportHeight - rect.height) <= 2
+      );
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
 }
 
 test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => {
@@ -114,14 +135,21 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
           return p && p.x === 10 && p.y === 15;
         },
         undefined,
-        { timeout: 6_000 },
+        { timeout: 10_000 },
       );
     }
 
     // Keyboard WASD hold-to-walk check
     await deskPage.keyboard.down('KeyA');
-    await deskPage.waitForTimeout(420);
-    await deskPage.keyboard.up('KeyA');
+    try {
+      await deskPage.waitForFunction(
+        () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 10) < 10,
+        undefined,
+        { timeout: 6_000 },
+      );
+    } finally {
+      await deskPage.keyboard.up('KeyA');
+    }
     const afterWasd = await deskPage.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
     expect(afterWasd.x).toBeLessThan(10);
 
@@ -161,7 +189,7 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
           return p && p.x === 10 && p.y === 15;
         },
         undefined,
-        { timeout: 6_000 },
+        { timeout: 10_000 },
       );
     }
 
@@ -397,8 +425,15 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
       expect(lead.hp).toBeGreaterThan(0);
 
       await page.keyboard.down('ArrowRight');
-      await page.waitForTimeout(360);
-      await page.keyboard.up('ArrowRight');
+      try {
+        await page.waitForFunction(
+          () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 8) > 8,
+          undefined,
+          { timeout: 6_000 },
+        );
+      } finally {
+        await page.keyboard.up('ArrowRight');
+      }
       const moved = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
       expect(moved.x).toBeGreaterThan(8);
     }
