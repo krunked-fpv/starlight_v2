@@ -244,25 +244,26 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     // BUG-11: Sky-Hop dock button hidden until Secret Arcade unlocked
     await expect(page.getByTestId('nav-skyhop')).toBeHidden();
 
-    // BUG-12: Walk up onto Healing Fountain (7,13) via (7,14) and verify heal
-    for (let step = 0; step < 8; step += 1) {
-      const pos = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
-      if (pos.x === 7 && pos.y === 14) break;
-      const key = pos.y > 14 ? 'ArrowUp' : pos.y < 14 ? 'ArrowDown' : pos.x > 7 ? 'ArrowLeft' : 'ArrowRight';
-      await page.keyboard.down(key);
-      try {
-        await page.waitForFunction(
-          ({ sx, sy }) => {
-            const p = window.__STARLIGHT_DEBUG__?.getState().playerPos;
-            return Boolean(p && (p.x !== sx || p.y !== sy));
-          },
-          { sx: pos.x, sy: pos.y },
-          { timeout: 3_000 },
-        );
-      } finally {
-        await page.keyboard.up(key);
-      }
+    // BUG-12: Walk cleanly via BFS tap-to-walk to (7,14) right below Healing Fountain (7,13) and verify heal
+    const fountainAdjPt = await page.evaluate(() => {
+      const canvas = document.getElementById('starlight-canvas');
+      const rect = canvas?.getBoundingClientRect();
+      if (!rect || !window.__STARLIGHT_DEBUG__) return null;
+      const pt = window.__STARLIGHT_DEBUG__.tileToScreen(7, 14);
+      return { x: rect.left + pt.x, y: rect.top + pt.y };
+    });
+    expect(fountainAdjPt).not.toBeNull();
+    if (fountainAdjPt) {
+      await page.mouse.click(fountainAdjPt.x, fountainAdjPt.y);
     }
+    await page.waitForFunction(
+      () => {
+        const p = window.__STARLIGHT_DEBUG__?.getState().playerPos;
+        return Boolean(p && p.x === 7 && p.y === 14);
+      },
+      undefined,
+      { timeout: 10_000 },
+    );
     await expect(page.getByTestId('interact-pill')).toBeVisible();
     await expect(page.getByTestId('interact-pill')).toContainText(/Fountain/i);
     await page.getByTestId('interact-pill').click();
