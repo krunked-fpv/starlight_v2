@@ -1244,3 +1244,189 @@ describe('Combat & Encounter Deep Audit Regression Suite', () => {
     }
   });
 });
+
+describe('V1 Core Parity Deep Fixes (Battle, Sky-Hop, Audio & Save Hydrator)', () => {
+  it('enforces Astral Shrine Trial moveIds without non-V1 apex trait, single +1 Cheer Heart on catch, Bond-before-XP, and bench/catch level-up SFX', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1); // Bulbasaur Lv.5
+    const profile = bridge.manager.getActiveProfile();
+
+    // 1. Astral Shrine Trial: uses trial.moveIds + isElite=true and NEVER encounterTrait='apex'
+    const forestShrine = Object.values(SHRINES).find((s) => s.id === 'forest_shrine')!;
+    const expectedTrial = getScaledShrineTrial(forestShrine, profile) as ReturnType<typeof getScaledShrineTrial> & {
+      moveIds?: string[];
+    };
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    const trialState = battle.startEncounter({
+      biomeId: 'forest',
+      tier: 'shrine-trial',
+      shrineId: 'forest_shrine',
+      forceOfflineRig: true,
+      battlePace: 'fast',
+    });
+    expect(trialState.enemy.mon.isElite).toBe(true);
+    expect(trialState.enemy.mon.encounterTrait).toBeNull();
+    if (Array.isArray(expectedTrial.moveIds) && expectedTrial.moveIds.length > 0) {
+      expect(trialState.enemy.mon.moves.map((m) => m.id)).toEqual(expectedTrial.moveIds.slice(0, 4));
+    }
+
+    // 2. Single +1 Cheer Heart on catch (never double-awarded +2!) + level-up SFX on catch!
+    battle.closeBattle();
+    profile.bag.cheerCharges = 0;
+    profile.bag.starBalls = 3;
+    const lead = profile.team[0];
+    lead.xp = lead.xpToNext - 1; // guaranteed level-up on catch XP
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true, battlePace: 'fast' });
+    battle.advanceUntilSettled();
+    const catchSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
+    const out1 = battle.throwBall('star');
+    const out2 = battle.advanceUntilSettled();
+    catchSpy.mockRestore();
+
+    expect(profile.bag.cheerCharges).toBe(1);
+    expect([...out1.sfx, ...out2.sfx]).toContain('level-up');
+  });
+
+  it('resolves Buddy Endure BEFORE defensive counter-boost so a 1-HP enduring partner still triggers its counter-boost', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+
+    // Pick a species with phantom_mirage (triggers on psychic/rock/normal -> SPD +1) & bond 90
+    const mirageSpecies = getAllSpecies().find((sp) => sp.ability === 'phantom_mirage');
+    expect(mirageSpecies).toBeDefined();
+
+    const ghostMon = createPokemon(mirageSpecies!.id, 5, 'cave');
+    ghostMon.bond = 90;
+    ghostMon.hp = 2; // > 1 so Buddy Endure can trigger, low enough to be KO'd by Psychic
+    profile.team = [ghostMon];
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({ biomeId: 'sanctum', tier: 'wild', forceSpeciesId: 150, forceOfflineRig: true, battlePace: 'fast' });
+    // Ensure foe attacks with a Psychic move (which triggers phantom_mirage & deals lethal dmg to 2-HP Ghost)
+    const internalBattle = battle as unknown as {
+      enemyParty: Array<{ level: number; recalculateStats: () => void; healFull: () => void; moveIds: string[] }>;
+    };
+    internalBattle.enemyParty[0].level = 20;
+    internalBattle.enemyParty[0].recalculateStats();
+    internalBattle.enemyParty[0].healFull();
+    internalBattle.enemyParty[0].moveIds = ['psychic'];
+    battle.advanceUntilSettled();
+
+    // Force random=0.01 so Buddy Endure triggers (endureChance 0.25 at bond 90)
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.01);
+    const init = battle.performMove(battle.getState().player.mon.moves[0].id);
+    const rest = battle.advanceUntilSettled();
+    randSpy.mockRestore();
+
+    // Partner endured at 1 HP AND gained its phantom_mirage defensive SPD counter-boost!
+    expect(ghostMon.hp).toBe(1);
+    expect(ghostMon.battleStages.spd).toBeGreaterThanOrEqual(1);
+    expect([...init.sfx, ...rest.sfx]).toContain('endure');
+  });
+
+  it('matches V1 Sky-Hop unlock gate, anti-repeat shuffled wave deck, non-repeating sky palette, Wave 2-5 escalation spawns, tap-to-glide release, and particles', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+
+    const sky = new DojoSkyHopController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    // 1. Locked cabinet refuses startNewRun even if charges > 0
+    profile.arcade.unlocked = false;
+    profile.arcade.charges = 3;
+    expect(sky.startNewRun()).toBe(false);
+    expect(sky.getState().running).toBe(false);
+    expect(sky.getState().outOfCharges).toBe(true);
+
+    // 2. Unlock & run back-to-back runs -> opening wave ID and sky palette never repeat consecutively!
+    sky.open({ forceUnlock: true });
+    profile.arcade.charges = 3;
+    expect(sky.startNewRun()).toBe(true);
+    const diag1 = sky.getWaveDeckDiagnostics();
+    expect(sky.getState().particles.length).toBeGreaterThan(0); // wave fanfare particles spawned
+
+    // 3. Tap-to-glide: releasing pointer (null) preserves glide target until partner arrives within 3px
+    const startY = sky.getState().playerY;
+    sky.setPointerNormY(0.2);
+    sky.setPointerNormY(null);
+    for (let i = 0; i < 40; i++) {
+      sky.update(0.03);
+    }
+    expect(sky.getState().playerY).toBeLessThan(startY - 30);
+
+    // 4. Second run picks fresh opening wave & non-repeating sky offset
+    expect(sky.startNewRun()).toBe(true);
+    const diag2 = sky.getWaveDeckDiagnostics();
+    expect(diag2.lastOpeningWaveId).not.toBe(diag1.lastOpeningWaveId);
+    expect(diag2.runSkyOffset).not.toBe(diag1.runSkyOffset);
+
+    // 5. Wave escalation spawns: Wave 2 storm_orb, Wave 3 void_meteor, Wave 4 Cloud Gate, Wave 5 heart
+    const internal = sky as unknown as {
+      beginWave: (n: number) => void;
+      pendingSpawns: Array<{ kind: string; yFrac: number }>;
+    };
+    internal.beginWave(2);
+    expect(internal.pendingSpawns.some((s) => s.kind === 'storm_orb')).toBe(true);
+    internal.beginWave(4);
+    expect(internal.pendingSpawns.filter((s) => s.kind === 'cloud').length).toBeGreaterThanOrEqual(2);
+    expect(internal.pendingSpawns.some((s) => s.kind === 'bigstar' && s.yFrac === 0.5)).toBe(true);
+    internal.beginWave(6);
+    expect(internal.pendingSpawns.filter((s) => s.kind === 'void_meteor').length).toBeGreaterThanOrEqual(2);
+    sky.getState().hearts = 1;
+    internal.beginWave(5);
+    expect(internal.pendingSpawns.some((s) => s.kind === 'heart')).toBe(true);
+  });
+
+  it('exposes full V1 audio SFX wrappers & SaveHydrator activeTrainer fallback + export/import round-trip', () => {
+    const audio = new StarlightAudioController();
+    const internalAudio = audio as unknown as {
+      engine: {
+        playHoldTick: ReturnType<typeof vi.fn>;
+        playCursorMove: ReturnType<typeof vi.fn>;
+        playXpTick: ReturnType<typeof vi.fn>;
+        playWarpTeleport: ReturnType<typeof vi.fn>;
+        playSafeRecall: ReturnType<typeof vi.fn>;
+        playWindup: ReturnType<typeof vi.fn>;
+      };
+    };
+    internalAudio.engine.playHoldTick = vi.fn();
+    internalAudio.engine.playCursorMove = vi.fn();
+    internalAudio.engine.playXpTick = vi.fn();
+    internalAudio.engine.playWarpTeleport = vi.fn();
+    internalAudio.engine.playSafeRecall = vi.fn();
+    internalAudio.engine.playWindup = vi.fn();
+
+    audio.playHoldTick(0.6);
+    audio.playCursorMove();
+    audio.playXpTick(0.75);
+    audio.playWarpTeleport({ phase: 'depart' });
+    audio.playSafeRecall({ phase: 'full' });
+    audio.playWindup('fire');
+
+    expect(internalAudio.engine.playHoldTick).toHaveBeenCalledWith(0.6);
+    expect(internalAudio.engine.playCursorMove).toHaveBeenCalledTimes(1);
+    expect(internalAudio.engine.playXpTick).toHaveBeenCalledWith(0.75);
+    expect(internalAudio.engine.playWarpTeleport).toHaveBeenCalledWith({ phase: 'depart' });
+    expect(internalAudio.engine.playSafeRecall).toHaveBeenCalledWith({ phase: 'full' });
+    expect(internalAudio.engine.playWindup).toHaveBeenCalledWith('fire');
+    expect(audio.getMasterVolume()).toBe(0.65);
+
+    // Save export/import + legacy activeTrainer fallback
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('ozias');
+    bridge.manager.chooseStarter(4);
+    const exported = bridge.exportSaveJSON();
+
+    const bridge2 = new StarlightStorageBridge(createDefaultSaveState());
+    const legacyShaped = JSON.parse(exported);
+    delete legacyShaped.activeTrainerId;
+    legacyShaped.activeTrainer = 'ozias';
+    const imported = bridge2.importSaveJSON(JSON.stringify(legacyShaped));
+    expect(imported.ok).toBe(true);
+    expect(bridge2.toV3SaveState().activeTrainerId).toBe('ozias');
+    expect(bridge2.toV3SaveState().profiles.ozias.starterId).toBe(4);
+  });
+});

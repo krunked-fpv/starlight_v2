@@ -36,7 +36,7 @@ import {
 import { ENCOUNTER_TRAITS, EVOLUTION_ITEMS, RIVAL_TRAINERS, SHRINES } from './raw/config.js';
 import type { StarlightStorageBridge } from '../save/saveHydrator';
 import type { SpriteAssetLoader } from './spriteLoader';
-import { getAbilityEntry, getMoveEntry, getSpeciesEntry } from './catalog';
+import { formatCleanGameText, getAbilityEntry, getMoveEntry, getSpeciesEntry } from './catalog';
 import { stripEmojis } from './emojiSanitizer';
 
 export interface BattleStartOptions {
@@ -785,13 +785,17 @@ export class DojoBattleController {
       biomeId = (shrine.biome as BiomeId) || biomeId;
       this.wasShrineClearedAtStart = Boolean(profile?.shrinesCleared?.includes(shrine.id));
       if (opts.tier === 'shrine-trial') {
-        const trial = getScaledShrineTrial(shrine, profile);
+        // V1 parity (C:\dojo\js\main.js:2992-3029): Astral Shrine Trials use trial.moveIds + isElite
+        // and NEVER assign wild encounterTrait: 'apex'
+        const trial = getScaledShrineTrial(shrine, profile) as ReturnType<typeof getScaledShrineTrial> & {
+          moveIds?: string[];
+        };
         shrineTrialNumber = trial.trialNumber;
         this.enemyParty = [
           createPokemon(trial.guardianId, trial.level, biomeId, {
             upgradeTier: trial.upgradeTier,
-            isElite: true,
-            encounterTrait: 'apex',
+            isElite: trial.isElite ?? true,
+            ...(Array.isArray(trial.moveIds) && trial.moveIds.length > 0 ? { moveIds: trial.moveIds } : {}),
           }),
         ];
       } else {
@@ -801,7 +805,7 @@ export class DojoBattleController {
           createPokemon(guard.guardianId, guard.level, biomeId, {
             upgradeTier: guard.upgradeTier,
             isElite: false,
-            moveIds: guard.moveIds,
+            ...(Array.isArray(guard.moveIds) && guard.moveIds.length > 0 ? { moveIds: guard.moveIds } : {}),
           }),
         ];
       }
@@ -872,15 +876,32 @@ export class DojoBattleController {
     const foeName = stripEmojis(foe.displayName);
     const playerName = stripEmojis(this.playerMon.displayName);
     if (isTrainerBattle && rivalName) {
-      this.pushLog(`${rivalName} challenged you and sent out Lv.${foe.level} ${foeName}! Go, ${playerName}!`);
+      const rivalObj = Object.values(RIVAL_TRAINERS).find((r) => r.id === rivalId);
+      const rawIntro = (this.wasRivalRematchAtStart && rivalObj?.rematchIntro) || rivalObj?.intro || '';
+      const formattedIntro = rawIntro
+        ? formatCleanGameText(rawIntro, { profile, rival: rivalObj, rivalName })
+        : '';
+      this.pushLog(
+        formattedIntro
+          ? `${rivalName}: "${formattedIntro}" Sent out Lv.${foe.level} ${foeName}! Go, ${playerName}!`
+          : `${rivalName} challenged you and sent out Lv.${foe.level} ${foeName}! Go, ${playerName}!`,
+      );
     } else if (shrineId) {
-      const label = shrineTrialNumber > 0 ? `Astral Trial #${shrineTrialNumber} Guardian` : 'Shrine Guardian';
-      this.pushLog(`${label} Lv.${foe.level} ${foeName} emerged! Go, ${playerName}!`);
+      const shrineObj = Object.values(SHRINES).find((s) => s.id === shrineId);
+      if (shrineTrialNumber > 0) {
+        this.pushLog(`Astral Shrine Trial #${shrineTrialNumber}! Guardian Lv.${foe.level} ${foeName} appeared! Go, ${playerName}!`);
+      } else if (shrineObj?.intro) {
+        this.pushLog(`${formatCleanGameText(shrineObj.intro, { profile })} Go, ${playerName}!`);
+      } else {
+        this.pushLog(`Shrine Guardian Lv.${foe.level} ${foeName} emerged! Go, ${playerName}!`);
+      }
     } else {
       const traitPrefix = foe.encounterTrait && ENCOUNTER_TRAITS[foe.encounterTrait]
         ? `${stripEmojis(ENCOUNTER_TRAITS[foe.encounterTrait].label)} `
         : '';
-      this.pushLog(`A wild ${traitPrefix}Lv.${foe.level} ${foeName} appeared! Go, ${playerName}!`);
+      const elitePrefix = foe.isElite ? 'ELITE ' : '';
+      const shinyPrefix = foe.isShiny ? 'Starlight Shimmer ' : '';
+      this.pushLog(`A wild ${elitePrefix}${shinyPrefix}${traitPrefix}Lv.${foe.level} ${foeName} appeared! Go, ${playerName}!`);
     }
 
     this.syncCombatantSprites(true);
@@ -1082,10 +1103,19 @@ export class DojoBattleController {
       this.pendingOutcome.sfx.push('level-up');
       this.spawnFloatingText('player', `LEVEL UP! Lv.${this.playerMon.level}`, '#fde047', 21, 0, 1.5, -24);
     }
+    const benchXpGains: number[] = [];
+    const benchLevelUps: string[] = [];
     for (const bench of team) {
       if (!bench || isSameMon(bench, this.playerMon) || bench.isFainted) continue;
       const share = computeBenchXpShare(bench, this.playerMon, defeatedEnemy, xpRes.baseXp);
-      bench.gainXp(share.xp);
+      benchXpGains.push(share.xp);
+      const benchRes = bench.gainXp(share.xp);
+      if (benchRes?.leveledUp) {
+        benchLevelUps.push(`${stripEmojis(bench.displayName)} -> Lv.${bench.level}!`);
+      }
+    }
+    if (benchLevelUps.length > 0 && !lvRes.leveledUp) {
+      this.pendingOutcome.sfx.push('level-up');
     }
     const badges = this.storage.manager.evaluateBadges(false) || [];
     if (badges.length > 0) {
@@ -1094,7 +1124,16 @@ export class DojoBattleController {
       this.pendingOutcome.sfx.push('badge');
     }
     const lvMsg = lvRes.leveledUp ? ` ${stripEmojis(this.playerMon.displayName)} grew to Lv.${this.playerMon.level}!` : '';
-    this.pushLog(`Earned +${xpRes.xp} XP!${lvMsg}`);
+    const benchMsg = benchXpGains.length > 0
+      ? (() => {
+          const minB = Math.min(...benchXpGains);
+          const maxB = Math.max(...benchXpGains);
+          const span = minB === maxB ? `${minB}` : `${minB}-${maxB}`;
+          const upSuffix = benchLevelUps.length > 0 ? ` (${benchLevelUps.join(', ')})` : '';
+          return ` Bench gained ${span} Catch-Up XP!${upSuffix}`;
+        })()
+      : '';
+    this.pushLog(`Earned +${xpRes.xp} XP!${lvMsg}${benchMsg}`);
     this.syncCombatantSprites();
     this.storage.saveSync();
   }
@@ -1133,8 +1172,16 @@ export class DojoBattleController {
     const profile = this.storage.manager.getActiveProfile();
     const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [this.playerMon];
 
-    const bondTier = getBondTier(this.playerMon.bond);
     const isWildOnly = !this.state.shrineId && !this.state.isTrainerBattle;
+    const isCuriousWild = caught && isWildOnly && enemy.encounterTrait === 'curious';
+
+    // V1 parity (C:\dojo\js\battle.js:8955-8959, 9296): gain Bond BEFORE computing XP so crossing a Bond Tier applies immediately!
+    this.playerMon.gainBond(4);
+    if (isCuriousWild) {
+      this.playerMon.gainBond(4);
+    }
+
+    const bondTier = getBondTier(this.playerMon.bond);
     const isSpiritedWild = isWildOnly && enemy.encounterTrait === 'spirited';
     const traitMult = isSpiritedWild ? (ENCOUNTER_TRAITS.spirited?.xpMult ?? 1.15) : 1.0;
     // COMBAT-11 parity: v1 uses 0.6 for catch and 1.0 for ALL KOs (wild, rival, shrine)
@@ -1149,23 +1196,19 @@ export class DojoBattleController {
     const totalXp = this.cumulativeXpGained + xpRes.xp;
     const anyLeveledUp = this.leveledUpInBattle || lvRes.leveledUp;
 
-    // COMBAT-11 parity: v1 grants +4 bond on both KO & catch (+4 extra for Curious wild)
-    this.playerMon.gainBond(4);
-    if (caught && isWildOnly && enemy.encounterTrait === 'curious') {
-      this.playerMon.gainBond(4);
-      enemy.gainBond(4);
-    }
-    if (caught) {
-      this.storage.manager.addCheerCharges(1, false);
-    }
-
     // Smart bench XP share (never awards catch XP to the newly caught Pokémon itself!)
+    const benchXpGains: number[] = [];
+    const benchLevelUps: string[] = [];
     for (const bench of team) {
       if (!bench || isSameMon(bench, this.playerMon) || bench.isFainted) continue;
       if (excludeBenchUid && bench.uid === excludeBenchUid) continue;
       const share = computeBenchXpShare(bench, this.playerMon, enemy, xpRes.baseXp);
-      bench.gainXp(share.xp);
+      benchXpGains.push(share.xp);
+      const benchRes = bench.gainXp(share.xp);
       bench.gainBond(2);
+      if (benchRes?.leveledUp) {
+        benchLevelUps.push(`${stripEmojis(bench.displayName)} -> Lv.${bench.level}!`);
+      }
     }
 
     const shards = getBattleShardReward(enemy, {
@@ -1176,13 +1219,29 @@ export class DojoBattleController {
     });
     this.storage.manager.addStarShards(shards, false);
 
+    // V1 parity (C:\dojo\js\battle.js:8961-8990): recordBattleWin() already grants +1 Cheer Heart;
+    // on catch, only top up +1 Cheer Heart if recordBattleWin() didn't already increment it (never double-award +2!).
+    const cheerBeforeWin = Number(this.storage.manager.getCheerState?.()?.charges ?? profile?.bag?.cheerCharges ?? 0);
     const newBadgeIds: string[] = [...(this.pendingOutcome.newBadgeIds ?? [])];
     const winBadges = this.storage.manager.recordBattleWin() || [];
     for (const b of winBadges) newBadgeIds.push(b.id);
 
+    if (caught) {
+      const cheerAfter = this.storage.manager.getCheerState?.();
+      const afterCharges = Number(cheerAfter?.charges ?? profile?.bag?.cheerCharges ?? 0);
+      const maxCharges = Number(cheerAfter?.maxCharges ?? 3);
+      if (afterCharges - cheerBeforeWin <= 0 && afterCharges < maxCharges) {
+        this.storage.manager.addCheerCharges(1, false);
+      }
+    }
+
+    let trialBonusShards = 0;
     if (this.state.shrineId) {
       if (this.state.tier === 'shrine-trial') {
+        const clearedBadges = this.storage.manager.markShrineCleared(this.state.shrineId) || [];
+        for (const b of clearedBadges) newBadgeIds.push(b.id);
         const trialRes = this.storage.manager.recordShrineTrialWin(this.state.shrineId, { starShards: 3, starBalls: 1 });
+        trialBonusShards = 3;
         for (const b of trialRes.newBadges || []) newBadgeIds.push(b.id);
       } else {
         const alreadyCleared = Boolean(profile?.shrinesCleared?.includes(this.state.shrineId));
@@ -1224,10 +1283,11 @@ export class DojoBattleController {
       };
     }
 
+    const totalShardsEarned = shards + trialBonusShards;
     const uniqueBadges = [...new Set(newBadgeIds)];
     this.state.rewardSummary = {
       xpGained: totalXp,
-      shardsGained: shards,
+      shardsGained: totalShardsEarned,
       newBadges: uniqueBadges,
       caught,
       leveledUp: anyLeveledUp,
@@ -1245,14 +1305,23 @@ export class DojoBattleController {
       this.spawnFloatingText('player', `LEVEL UP! Lv.${this.playerMon.level}`, '#fde047', 22, 0, 1.55, -24);
     }
     this.pendingOutcome.sfx.push(caught ? 'catch-success' : 'victory');
-    if (lvRes.leveledUp && !caught) {
+    if (lvRes.leveledUp || benchLevelUps.length > 0) {
       this.pendingOutcome.sfx.push('level-up');
     }
     if (uniqueBadges.length > 0) this.pendingOutcome.sfx.push('badge');
     this.pendingOutcome.newBadgeIds = uniqueBadges;
     this.pendingOutcome.battleEnded = caught ? 'caught' : 'victory';
 
-    const shardLabel = shards === 1 ? '1 Star Shard' : `${shards} Star Shards`;
+    const shardLabel = totalShardsEarned === 1 ? '1 Star Shard' : `${totalShardsEarned} Star Shards`;
+    const benchMsg = benchXpGains.length > 0
+      ? (() => {
+          const minB = Math.min(...benchXpGains);
+          const maxB = Math.max(...benchXpGains);
+          const span = minB === maxB ? `${minB}` : `${minB}-${maxB}`;
+          const upSuffix = benchLevelUps.length > 0 ? ` (${benchLevelUps.join(', ')})` : '';
+          return ` Team bench gained ${span} Catch-Up XP!${upSuffix}`;
+        })()
+      : '';
     if (pendingEvo) {
       this.setPhase('evolving', 'Evolution!');
       this.triggerCameraCue('evolution');
@@ -1264,9 +1333,12 @@ export class DojoBattleController {
       const dropMsg = trailDropLabel ? ` Found a ${trailDropLabel} on the victory trail!` : '';
       if (caught) {
         const destLabel = catchDestination === 'box' ? 'Storage Box' : 'team';
-        this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${destLabel}! (+${totalXp} XP & +${shardLabel}!)${lvMsg}`);
+        const curiousTag = isCuriousWild ? ' (Curious +4 Bonus Bond!)' : '';
+        this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${destLabel}!${curiousTag} (+${totalXp} XP & +${shardLabel}!)${lvMsg}${benchMsg}`);
+      } else if (this.state.tier === 'shrine-trial') {
+        this.pushLog(`Astral Shrine Trial #${this.state.shrineTrialNumber || 1} Complete! +${totalXp} XP, +${shardLabel} & +1 Star Ball!${lvMsg}${benchMsg}${dropMsg}`);
       } else {
-        this.pushLog(`Victory! +${totalXp} XP & +${shardLabel}!${lvMsg}${dropMsg}`);
+        this.pushLog(`Victory! +${totalXp} XP & +${shardLabel}!${lvMsg}${benchMsg}${dropMsg}`);
       }
     }
     this.syncCombatantSprites(true);
@@ -1637,7 +1709,22 @@ export class DojoBattleController {
           }
         }
 
-        // Defensive ability trigger (+ counter stat boost ONLY if defender survived!)
+        // Bond endure check for player Pokémon FIRST (v1 battle.js:8606-8625 parity:
+        // must resolve before defensive counter-boost so a 1-HP enduring partner still triggers its counter-boost!)
+        let buddyEndured = false;
+        if (defenderSide === 'player' && defender.isFainted && prevHp > 1 && !this.playerBuddyEndured) {
+          const bondTier = getBondTier(defender.bond);
+          if (defender.bond >= 60 && bondTier.endureChance > 0 && Math.random() < bondTier.endureChance) {
+            defender.hp = 1;
+            this.playerBuddyEndured = true;
+            buddyEndured = true;
+            defVis.bracedFlash = 1;
+            this.pendingOutcome.sfx.push('endure');
+            this.spawnFloatingText('player', 'ENDURED! 1 HP', '#f472b6', 18, 0.08, 1.45, -36);
+          }
+        }
+
+        // Defensive ability trigger (+ counter stat boost ONLY if defender survived, including via Buddy Endure!)
         if (result.defenderAbilityTrigger) {
           const defTrig = result.defenderAbilityTrigger;
           defVis.abilityBanner = {
@@ -1666,20 +1753,6 @@ export class DojoBattleController {
               1.3,
               -42,
             );
-          }
-        }
-
-        // Bond endure check for player Pokémon (once per active mon, bond >= 60 & prevHp > 1)
-        let buddyEndured = false;
-        if (defenderSide === 'player' && defender.isFainted && prevHp > 1 && !this.playerBuddyEndured) {
-          const bondTier = getBondTier(defender.bond);
-          if (defender.bond >= 60 && bondTier.endureChance > 0 && Math.random() < bondTier.endureChance) {
-            defender.hp = 1;
-            this.playerBuddyEndured = true;
-            buddyEndured = true;
-            defVis.bracedFlash = 1;
-            this.pendingOutcome.sfx.push('endure');
-            this.spawnFloatingText('player', 'ENDURED! 1 HP', '#f472b6', 18, 0.08, 1.45, -36);
           }
         }
 
@@ -1927,6 +2000,9 @@ export class DojoBattleController {
           }
           enemy.hp = Math.max(1, enemy.hp);
           enemy.resetBattleState();
+          if (enemy.encounterTrait === 'curious') {
+            enemy.gainBond(4);
+          }
           const catchRes = this.storage.manager.recordCaught(enemy);
           catchDestination = catchRes.destination === 'box' ? 'box' : 'team';
           if (catchRes.newBadges?.length) {

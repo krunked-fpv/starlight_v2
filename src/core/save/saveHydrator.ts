@@ -292,6 +292,8 @@ export function hydratePayload(
   let activeTrainerId: TrainerId | null = null;
   if (raw.activeTrainerId === 'violet' || raw.activeTrainerId === 'ozias') {
     activeTrainerId = raw.activeTrainerId;
+  } else if (raw.activeTrainer === 'violet' || raw.activeTrainer === 'ozias') {
+    activeTrainerId = raw.activeTrainer;
   } else if (raw.activeSlot === 'slot1' || raw.activeProfile === 1) {
     activeTrainerId = 'ozias';
   } else if (raw.activeSlot === 'slot0' || raw.activeProfile === 0) {
@@ -592,6 +594,29 @@ export class StarlightStorageBridge {
       settings: { ...this.settings },
       ...(this.migratedFromV1 ? { migratedFromV1: this.migratedFromV1 } : {}),
     };
+  }
+
+  exportSaveJSON(): string {
+    return JSON.stringify(this.toV3SaveState(), null, 2);
+  }
+
+  importSaveJSON(rawJson: string): { ok: boolean; state?: StarlightSaveState; error?: string } {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (!isRecord(parsed)) {
+        return { ok: false, error: 'Save payload must be a JSON object.' };
+      }
+      const hydrated = hydratePayload(parsed, V2_STORAGE_KEY, this.migratedFromV1?.preservedLegacyKeys ?? []);
+      this.settings = { ...hydrated.settings };
+      this.loadFromV3State(hydrated);
+      this.saveSync();
+      return { ok: true, state: hydrated };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Invalid JSON save file.',
+      };
+    }
   }
 
   saveSync(): void {

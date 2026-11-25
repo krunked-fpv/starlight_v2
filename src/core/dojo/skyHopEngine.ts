@@ -1,5 +1,5 @@
-import type { ElementalType, SkyHopEntity, SkyHopState } from '../../contracts';
-import { EVOLUTION_ITEMS } from './raw/config.js';
+import type { ElementalType, SkyHopEntity, SkyHopParticle, SkyHopState } from '../../contracts';
+import { EVOLUTION_ITEMS, TYPES } from './raw/config.js';
 import { ARCADE_SHARD_BUYIN_COST, MAX_ARCADE_CHARGES } from './raw/storage.js';
 import type { StarlightStorageBridge } from '../save/saveHydrator';
 import type { SpriteAssetLoader } from './spriteLoader';
@@ -490,9 +490,13 @@ export interface SkyHopTickEvents {
   hitHazard?: boolean;
   healedHeart?: boolean;
   dashActivated?: boolean;
+  waveAdvanced?: boolean;
   runEnded?: boolean;
+  rewardedRun?: boolean;
   newBadgeIds?: string[];
 }
+
+const MAX_SKYHOP_PARTICLES = 220;
 
 export class DojoSkyHopController {
   private readonly storage: StarlightStorageBridge;
@@ -502,7 +506,14 @@ export class DojoSkyHopController {
   private waveElapsed = 0;
   private entitySeq = 1;
   private pointerTargetY: number | null = null;
+  private pointerActive = false;
   private keysHeld = new Set<'up' | 'down'>();
+  private waveDeck: SkyHopWaveSpec[] = [];
+  private lastWaveId: string | null = null;
+  private lastOpeningWaveId: string | null = null;
+  private recentWaveIds: string[] = [];
+  private runSkyOffset = 0;
+  private lastRunSkyOffset = -1;
 
   constructor(storage: StarlightStorageBridge, sprites: SpriteAssetLoader) {
     this.storage = storage;
@@ -574,7 +585,7 @@ export class DojoSkyHopController {
     this.state.running = false;
     this.state.gameOver = false;
     this.state.paused = false;
-    this.state.outOfCharges = this.state.charges <= 0;
+    this.state.outOfCharges = !this.storage.manager.isArcadeUnlocked() || this.state.charges <= 0;
     return this.state;
   }
 
@@ -583,7 +594,179 @@ export class DojoSkyHopController {
     this.state.running = false;
     this.state.paused = false;
     this.keysHeld.clear();
+    this.pointerActive = false;
     this.pointerTargetY = null;
+  }
+
+  getWaveDeckDiagnostics(): {
+    lastWaveId: string | null;
+    lastOpeningWaveId: string | null;
+    recentWaveIds: string[];
+    deckRemaining: number;
+    runSkyOffset: number;
+  } {
+    return {
+      lastWaveId: this.lastWaveId,
+      lastOpeningWaveId: this.lastOpeningWaveId,
+      recentWaveIds: [...this.recentWaveIds],
+      deckRemaining: this.waveDeck.length,
+      runSkyOffset: this.runSkyOffset,
+    };
+  }
+
+  /**
+   * Exact v1 Fisher-Yates wave deck refill with 4-tail recent-avoid & back-to-back guard
+   * (`C:\dojo\js\minigame.js:726-756`).
+   */
+  private refillWaveDeck(extraAvoidIds: string[] = []): void {
+    const deck = SKYHOP_WAVE_TEMPLATES.map((tpl) => ({ ...tpl }));
+    for (let i = deck.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+    const recentAvoid = new Set(
+      [this.lastWaveId, ...this.recentWaveIds.slice(-4), ...extraAvoidIds].filter(Boolean) as string[],
+    );
+    if (deck.length > 1) {
+      const checkTailCount = Math.min(4, deck.length - 1);
+      for (let offset = 0; offset < checkTailCount; offset++) {
+        const tailIdx = deck.length - 1 - offset;
+        if (!recentAvoid.has(deck[tailIdx].id)) continue;
+        const swapIdx = deck.findIndex((item, idx) => idx < tailIdx && !recentAvoid.has(item.id));
+        if (swapIdx !== -1) {
+          [deck[tailIdx], deck[swapIdx]] = [deck[swapIdx], deck[tailIdx]];
+        }
+      }
+      if (this.lastWaveId && deck[deck.length - 1].id === this.lastWaveId) {
+        const altIdx = deck.findIndex((item) => item.id !== this.lastWaveId);
+        if (altIdx !== -1) {
+          const lastIdx = deck.length - 1;
+          [deck[lastIdx], deck[altIdx]] = [deck[altIdx], deck[lastIdx]];
+        }
+      }
+    }
+    this.waveDeck = deck;
+  }
+
+  /**
+   * Exact v1 non-repeating wave draw (`C:\dojo\js\minigame.js:758-785`).
+   */
+  private drawNextWave(isOpening = false): SkyHopWaveSpec {
+    const extraAvoid = isOpening && this.lastOpeningWaveId ? [this.lastOpeningWaveId] : [];
+    if (!Array.isArray(this.waveDeck) || this.waveDeck.length === 0) {
+      this.refillWaveDeck(extraAvoid);
+    }
+    const immediateAvoid = new Set([this.lastWaveId, ...extraAvoid].filter(Boolean) as string[]);
+    if (this.waveDeck.length > 1 && immediateAvoid.has(this.waveDeck[this.waveDeck.length - 1]?.id)) {
+      const swapIdx = this.waveDeck.findIndex((w) => !immediateAvoid.has(w.id));
+      if (swapIdx !== -1) {
+        const lastIdx = this.waveDeck.length - 1;
+        [this.waveDeck[lastIdx], this.waveDeck[swapIdx]] = [this.waveDeck[swapIdx], this.waveDeck[lastIdx]];
+      }
+    }
+    let next = this.waveDeck.pop() ?? SKYHOP_WAVE_TEMPLATES[0];
+    if (this.lastWaveId && next.id === this.lastWaveId && this.waveDeck.length > 0) {
+      const alt = this.waveDeck[0];
+      this.waveDeck[0] = next;
+      next = alt;
+    }
+    this.lastWaveId = next.id;
+    if (isOpening && this.lastWaveId) {
+      this.lastOpeningWaveId = this.lastWaveId;
+    }
+    if (this.lastWaveId) {
+      this.recentWaveIds = [...this.recentWaveIds.filter((id) => id !== this.lastWaveId), this.lastWaveId].slice(-8);
+    }
+    return next;
+  }
+
+  private pushParticle(p: SkyHopParticle): void {
+    if (this.state.particles.length >= MAX_SKYHOP_PARTICLES) {
+      this.state.particles.shift();
+    }
+    this.state.particles.push(p);
+  }
+
+  private spawnTrailParticles(x: number, y: number, count = 2, burst = false): void {
+    const baseColor = TYPES[this.state.partnerType]?.color || '#38bdf8';
+    const colors =
+      this.state.dashTimer > 0 || this.state.partnerShiny
+        ? [baseColor, '#fde047', '#f472b6', '#ffffff', '#67e8f9']
+        : [baseColor, '#bae6fd', '#fde047', '#ffffff'];
+    const shapes: Array<SkyHopParticle['shape']> = burst ? ['star', 'spark', 'dot'] : ['dot', 'spark'];
+    const actualCount = this.state.reducedMotion ? Math.max(1, Math.ceil(count * 0.4)) : count;
+
+    for (let i = 0; i < actualCount; i++) {
+      const angle = burst
+        ? (Math.PI * 2 * i) / Math.max(1, actualCount) + (Math.random() - 0.5) * 0.25
+        : Math.PI + (Math.random() - 0.5) * 0.9;
+      const speed = burst ? 90 + Math.random() * 165 : 65 + Math.random() * 85;
+      this.pushParticle({
+        x: x - (burst ? 0 : 18),
+        y: y + (Math.random() - 0.5) * 14,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0,
+        maxLife: burst ? 0.58 + Math.random() * 0.18 : 0.44,
+        size: burst ? 4.8 + (i % 3) * 0.9 : 3.2,
+        color: colors[i % colors.length],
+        shape: shapes[i % shapes.length],
+      });
+    }
+  }
+
+  private spawnWaveFanfareParticles(waveNum = 1): void {
+    const sky = SKYHOP_PALETTES[this.state.skyIndex] ?? SKYHOP_PALETTES[0];
+    const colors = [sky.accent || '#38bdf8', '#fde047', '#f472b6', '#ffffff', '#67e8f9'];
+    const rawCount = waveNum > 1 ? 28 : 16;
+    const count = this.state.reducedMotion ? Math.ceil(rawCount * 0.4) : rawCount;
+    for (let i = 0; i < count; i++) {
+      const y = 26 + ((SKYHOP_LOGICAL_H - 52) * i) / Math.max(1, count - 1) + (Math.random() - 0.5) * 18;
+      this.pushParticle({
+        x: waveNum > 1 ? SKYHOP_LOGICAL_W - 24 - (i % 4) * 32 : SKYHOP_PLAYER_X + (Math.random() - 0.3) * 80,
+        y,
+        vx: waveNum > 1 ? -(180 + Math.random() * 160) : 70 + Math.random() * 120,
+        vy: (Math.random() - 0.5) * 60,
+        life: 0,
+        maxLife: 0.72 + Math.random() * 0.22,
+        size: 4.5 + (i % 3) * 1.2,
+        color: colors[i % colors.length],
+        shape: i % 2 === 0 ? 'star' : 'spark',
+      });
+    }
+  }
+
+  private spawnVictoryBurstParticles(): void {
+    const sky = SKYHOP_PALETTES[this.state.skyIndex] ?? SKYHOP_PALETTES[0];
+    const colors = ['#fde047', '#f472b6', '#38bdf8', sky.accent || '#a78bfa', '#ffffff'];
+    const count = this.state.reducedMotion ? 18 : 44;
+    for (let i = 0; i < count; i++) {
+      const angle = (Math.PI * 2 * i) / count;
+      const speed = 110 + (i % 5) * 48;
+      this.pushParticle({
+        x: SKYHOP_PLAYER_X + ((i % 3) - 1) * 24,
+        y: this.state.playerY,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 0,
+        maxLife: 0.85,
+        size: 5 + (i % 3) * 1.2,
+        color: colors[i % colors.length],
+        shape: i % 3 === 0 ? 'star' : 'spark',
+      });
+    }
+    this.pushParticle({
+      x: SKYHOP_PLAYER_X,
+      y: this.state.playerY,
+      vx: 0,
+      vy: 0,
+      life: 0,
+      maxLife: 0.65,
+      size: 24,
+      maxSize: 120,
+      color: '#fde047',
+      shape: 'ring',
+    });
   }
 
   private syncPartnerAndArcade(): void {
@@ -621,14 +804,44 @@ export class DojoSkyHopController {
 
   startNewRun(): boolean {
     this.syncPartnerAndArcade();
+    // V1 parity (C:\dojo\js\minigame.js:946-958): enforce arcade unlock gate before charge consumption
+    if (!this.storage.manager.isArcadeUnlocked()) {
+      this.state.outOfCharges = true;
+      this.state.running = false;
+      this.state.gameOver = true;
+      this.state.paused = false;
+      this.state.entities = [];
+      this.state.particles = [];
+      this.pendingSpawns = [];
+      this.pointerActive = false;
+      this.pointerTargetY = null;
+      this.keysHeld.clear();
+      return false;
+    }
+
     const consume = this.storage.manager.consumeArcadeCharge(true);
     this.syncPartnerAndArcade();
     if (!consume.consumed) {
       this.state.outOfCharges = true;
       this.state.running = false;
       this.state.gameOver = true;
+      this.state.paused = false;
+      this.state.entities = [];
+      this.state.particles = [];
+      this.pendingSpawns = [];
+      this.pointerActive = false;
+      this.pointerTargetY = null;
+      this.keysHeld.clear();
       return false;
     }
+
+    // V1 parity (C:\dojo\js\minigame.js:986-991): fresh non-repeating starting sky palette per run
+    let skyStart = Math.floor(Math.random() * SKYHOP_PALETTES.length);
+    if (SKYHOP_PALETTES.length > 1 && skyStart === this.lastRunSkyOffset) {
+      skyStart = (skyStart + 1 + Math.floor(Math.random() * (SKYHOP_PALETTES.length - 1))) % SKYHOP_PALETTES.length;
+    }
+    this.runSkyOffset = skyStart;
+    this.lastRunSkyOffset = skyStart;
 
     this.state.active = true;
     this.state.running = true;
@@ -649,6 +862,9 @@ export class DojoSkyHopController {
     this.state.magnetTimer = 0;
     this.state.hitInvulnTimer = 0;
     this.state.shakeTimer = 0;
+    this.pointerActive = false;
+    this.pointerTargetY = null;
+    this.keysHeld.clear();
     this.state.entities = [];
     this.state.particles = [];
     this.beginWave(1);
@@ -660,17 +876,21 @@ export class DojoSkyHopController {
     this.state.paused = !this.state.paused;
   }
 
-  setPointerNormY(normY: number | null): void {
+  setPointerNormY(normY: number | null, active?: boolean): void {
     if (normY === null) {
-      this.pointerTargetY = null;
+      // V1 tap-to-glide parity (minigame.js:658-662,1340-1350): releasing pointer stops active drag
+      // while preserving pointerTargetY so a quick tap smoothly glides to the target height!
+      this.pointerActive = false;
       return;
     }
+    this.pointerActive = active ?? true;
     this.pointerTargetY = Math.max(40, Math.min(SKYHOP_LOGICAL_H - 40, normY * SKYHOP_LOGICAL_H));
   }
 
   setKeyDir(dir: 'up' | 'down', held: boolean): void {
     if (held) {
       this.keysHeld.add(dir);
+      this.pointerActive = false;
       this.pointerTargetY = null;
     } else {
       this.keysHeld.delete(dir);
@@ -683,14 +903,15 @@ export class DojoSkyHopController {
     this.state.dashTimer = 1.15;
     this.state.dashCooldown = 4.6;
     this.state.magnetTimer = Math.max(this.state.magnetTimer, 1.15);
-    this.state.particles.push({
+    this.spawnTrailParticles(SKYHOP_PLAYER_X, this.state.playerY, 36, true);
+    this.pushParticle({
       x: SKYHOP_PLAYER_X,
       y: this.state.playerY,
       vx: 0,
       vy: 0,
       life: 0,
-      maxLife: 0.45,
-      size: 24,
+      maxLife: 0.48,
+      size: 26,
       maxSize: 82,
       color: '#fde047',
       shape: 'ring',
@@ -700,11 +921,12 @@ export class DojoSkyHopController {
 
   private beginWave(waveNum: number): void {
     this.state.wave = waveNum;
-    const tpl = SKYHOP_WAVE_TEMPLATES[(waveNum - 1) % SKYHOP_WAVE_TEMPLATES.length];
+    const tpl = this.drawNextWave(waveNum === 1);
     this.state.waveName = tpl.name;
-    this.state.skyIndex = (waveNum - 1) % SKYHOP_PALETTES.length;
+    this.state.skyIndex = (this.runSkyOffset + Math.max(0, waveNum - 1)) % SKYHOP_PALETTES.length;
     this.state.waveBannerTimer = 1.8;
     this.waveElapsed = 0;
+    this.spawnWaveFanfareParticles(waveNum);
 
     const flip = waveNum % 2 === 0;
     const delayScale = Math.max(0.58, 1 - (waveNum - 1) * 0.045);
@@ -715,19 +937,42 @@ export class DojoSkyHopController {
       spawned: false,
     }));
 
-    if (waveNum >= 3) {
+    // V1 Wave Escalation Spawns (C:\dojo\js\minigame.js:1061-1098)
+    if (waveNum >= 2) {
       this.pendingSpawns.push({
-        delay: Number((0.6 * delayScale).toFixed(3)),
-        kind: 'void_meteor',
-        yFrac: 0.25 + ((waveNum % 3) * 0.22),
+        delay: Number((0.75 * delayScale).toFixed(3)),
+        kind: 'storm_orb',
+        yFrac: flip ? 0.34 : 0.66,
         spawned: false,
       });
     }
+
+    if (waveNum >= 3) {
+      const meteorCount = Math.min(3, 1 + Math.floor((waveNum - 3) / 3));
+      for (let idx = 0; idx < meteorCount; idx += 1) {
+        this.pendingSpawns.push({
+          delay: Number(((0.45 + idx * 0.72) * delayScale).toFixed(3)),
+          kind: 'void_meteor',
+          yFrac: 0.22 + ((waveNum + idx * 2) % 4) * 0.18,
+          spawned: false,
+        });
+      }
+    }
+
+    if (waveNum >= 4 && waveNum % 2 === 0) {
+      const gateDelay = Number((1.55 * delayScale).toFixed(3));
+      this.pendingSpawns.push(
+        { delay: gateDelay, kind: 'cloud', yFrac: 0.36, spawned: false },
+        { delay: gateDelay, kind: 'bigstar', yFrac: 0.5, spawned: false },
+        { delay: gateDelay, kind: 'cloud', yFrac: 0.64, spawned: false },
+      );
+    }
+
     if (waveNum >= 5 && waveNum % 5 === 0 && this.state.hearts < MAX_HEARTS) {
       this.pendingSpawns.push({
-        delay: Number((1.4 * delayScale).toFixed(3)),
+        delay: Number((1.45 * delayScale).toFixed(3)),
         kind: 'heart',
-        yFrac: 0.5,
+        yFrac: flip ? 0.24 : 0.76,
         spawned: false,
       });
     }
@@ -739,7 +984,36 @@ export class DojoSkyHopController {
     const speedMult = spec.speedMult ?? (kind === 'void_meteor' ? 1.34 : kind === 'storm_orb' ? 1.16 : 1);
     const speed = (255 + waveBoost) * speedMult;
     const y = Math.max(36, Math.min(SKYHOP_LOGICAL_H - 36, spec.yFrac * SKYHOP_LOGICAL_H));
-    const radius = kind === 'cloud' ? 22 : kind === 'void_meteor' ? 21 : kind === 'storm_orb' || kind === 'bigstar' ? 20 : 16;
+    const radius =
+      kind === 'void_meteor'
+        ? 21
+        : kind === 'storm_orb'
+          ? 20
+          : kind === 'cloud'
+            ? 22
+            : kind === 'bigstar'
+              ? 20
+              : kind === 'comet'
+                ? 18
+                : 15;
+    const vy =
+      kind === 'void_meteor'
+        ? (y > SKYHOP_LOGICAL_H * 0.5 ? -1 : 1) * (48 + Math.min(34, this.state.wave * 3))
+        : 0;
+    const bobAmp =
+      kind === 'storm_orb'
+        ? 46 + Math.min(24, this.state.wave * 2.5)
+        : kind === 'comet'
+          ? 26
+          : kind === 'void_meteor'
+            ? 0
+            : 10;
+    const bobFreq =
+      kind === 'storm_orb'
+        ? 3.6 + Math.min(1.4, this.state.wave * 0.12)
+        : kind === 'comet'
+          ? 4.5
+          : 2.6;
 
     this.state.entities.push({
       id: `sh-${this.entitySeq++}`,
@@ -747,12 +1021,12 @@ export class DojoSkyHopController {
       x: kind === 'void_meteor' ? SKYHOP_LOGICAL_W + 96 : SKYHOP_LOGICAL_W + 34,
       y,
       baseY: y,
-      vy: kind === 'void_meteor' ? (y > SKYHOP_LOGICAL_H * 0.5 ? -56 : 56) : 0,
+      vy,
       radius,
       speed,
       age: 0,
-      bobAmp: kind === 'storm_orb' ? 46 : kind === 'comet' ? 26 : kind === 'void_meteor' ? 0 : 10,
-      bobFreq: kind === 'storm_orb' ? 3.8 : kind === 'comet' ? 4.4 : 2.6,
+      bobAmp,
+      bobFreq,
     });
   }
 
@@ -834,6 +1108,12 @@ export class DojoSkyHopController {
   private finishRun(): string[] {
     this.state.running = false;
     this.state.gameOver = true;
+    this.pointerActive = false;
+    this.pointerTargetY = null;
+    this.keysHeld.clear();
+    if (this.state.score >= MIN_ARCADE_REWARD_SCORE) {
+      this.spawnVictoryBurstParticles();
+    }
     const profile = this.storage.getActiveProfileJSON();
     const badgeCount = profile?.badges?.length ?? 0;
     const gemCooldown = profile?.arcade?.gemCooldown ?? 0;
@@ -875,8 +1155,15 @@ export class DojoSkyHopController {
       this.state.playerY += this.state.playerVy * dt;
     } else if (this.pointerTargetY !== null) {
       const diff = this.pointerTargetY - this.state.playerY;
-      this.state.playerVy = Math.max(-520, Math.min(520, diff * 13));
-      this.state.playerY += this.state.playerVy * dt;
+      if (Math.abs(diff) <= 3) {
+        this.state.playerY = this.pointerTargetY;
+        this.state.playerVy = 0;
+        if (!this.pointerActive) this.pointerTargetY = null;
+      } else {
+        const followRate = this.pointerActive ? 15.5 : 10.5;
+        this.state.playerVy = Math.max(-520, Math.min(520, diff * followRate));
+        this.state.playerY += this.state.playerVy * dt;
+      }
     } else {
       this.state.playerVy *= Math.pow(0.02, dt);
     }
@@ -884,11 +1171,17 @@ export class DojoSkyHopController {
     // Wave 5+ gentle rhythmic sky crosswind (v1 parity)
     if (this.state.wave >= 5) {
       const windVy = Math.sin(this.waveElapsed * 1.9) * Math.min(54, (this.state.wave - 4) * 10);
-      this.state.playerY += windVy * (this.pointerTargetY !== null ? 0.3 : 1) * dt;
+      this.state.playerY += windVy * (this.pointerActive ? 0.3 : 1) * dt;
     }
 
     this.state.playerY = Math.max(40, Math.min(SKYHOP_LOGICAL_H - 40, this.state.playerY));
     this.state.bankAngle = Math.max(-0.35, Math.min(0.35, this.state.playerVy / 900));
+
+    // Ambient starlight trail behind Lead Pokémon (v1 minigame.js:1365-1367)
+    const trailChance = this.state.dashTimer > 0 ? 0.98 : 0.6;
+    if (Math.random() < (this.state.reducedMotion ? trailChance * 0.35 : trailChance)) {
+      this.spawnTrailParticles(SKYHOP_PLAYER_X, this.state.playerY, this.state.dashTimer > 0 ? 4 : 2, false);
+    }
 
     this.waveElapsed += dt;
     let maxDelay = 0;
@@ -907,7 +1200,13 @@ export class DojoSkyHopController {
       ent.x -= ent.speed * scrollBoost * dt;
       if (ent.kind === 'void_meteor') {
         ent.baseY += ent.vy * dt;
-        if (ent.baseY < 42 || ent.baseY > SKYHOP_LOGICAL_H - 42) ent.vy = -ent.vy;
+        if (ent.baseY < 42) {
+          ent.baseY = 42;
+          ent.vy = Math.abs(ent.vy || 50);
+        } else if (ent.baseY > SKYHOP_LOGICAL_H - 42) {
+          ent.baseY = SKYHOP_LOGICAL_H - 42;
+          ent.vy = -Math.abs(ent.vy || 50);
+        }
         ent.y = ent.baseY;
       } else {
         ent.y = Math.max(28, Math.min(SKYHOP_LOGICAL_H - 28, ent.baseY + Math.sin(ent.age * ent.bobFreq) * ent.bobAmp));
@@ -918,7 +1217,7 @@ export class DojoSkyHopController {
         const dx = SKYHOP_PLAYER_X - ent.x;
         const dy = this.state.playerY - ent.y;
         const d = Math.hypot(dx, dy);
-        if (d > 1 && d < 130) {
+        if (d > 1 && d < 125) {
           ent.x += (dx / d) * 280 * dt;
           ent.baseY += (dy / d) * 280 * dt;
           ent.y = ent.baseY;
@@ -926,7 +1225,15 @@ export class DojoSkyHopController {
       }
 
       const dist = Math.hypot(ent.x - SKYHOP_PLAYER_X, ent.y - this.state.playerY);
-      if (dist <= 29) {
+      const hitRadius =
+        ent.kind === 'cloud'
+          ? 28
+          : ent.kind === 'storm_orb'
+            ? 26
+            : ent.kind === 'void_meteor'
+              ? 27
+              : 29;
+      if (dist <= hitRadius) {
         if (isHazard) {
           if (this.state.dashTimer > 0) {
             if (ent.kind === 'void_meteor') {
@@ -936,9 +1243,23 @@ export class DojoSkyHopController {
               this.state.comboStreak = 0;
               this.state.hitInvulnTimer = 0.55;
               this.state.shakeTimer = 0.22;
+              this.spawnTrailParticles(ent.x, ent.y, 28, true);
+              this.pushParticle({
+                x: ent.x,
+                y: ent.y,
+                vx: 0,
+                vy: 0,
+                life: 0,
+                maxLife: 0.42,
+                size: 18,
+                maxSize: 74,
+                color: '#f87171',
+                shape: 'ring',
+              });
               events.hitHazard = true;
             } else {
               this.state.score += ent.kind === 'storm_orb' ? 8 : 5;
+              this.spawnTrailParticles(ent.x, ent.y, 20, true);
               events.collectedStar = true;
             }
             this.state.entities.splice(i, 1);
@@ -950,11 +1271,13 @@ export class DojoSkyHopController {
             this.state.comboStreak = 0;
             this.state.hitInvulnTimer = 1.0;
             this.state.shakeTimer = 0.28;
+            this.spawnTrailParticles(SKYHOP_PLAYER_X, this.state.playerY, 24, true);
             events.hitHazard = true;
             this.state.entities.splice(i, 1);
             if (this.state.hearts <= 0) {
               const newBadgeIds = this.finishRun();
               events.runEnded = true;
+              events.rewardedRun = this.state.score >= MIN_ARCADE_REWARD_SCORE;
               if (newBadgeIds.length > 0) events.newBadgeIds = newBadgeIds;
               return events;
             }
@@ -963,6 +1286,19 @@ export class DojoSkyHopController {
         } else if (ent.kind === 'heart') {
           this.state.hearts = Math.min(MAX_HEARTS, this.state.hearts + 1);
           this.state.score += 15;
+          this.spawnTrailParticles(ent.x, ent.y, 20, true);
+          this.pushParticle({
+            x: ent.x,
+            y: ent.y,
+            vx: 0,
+            vy: 0,
+            life: 0,
+            maxLife: 0.45,
+            size: 16,
+            maxSize: 64,
+            color: '#f472b6',
+            shape: 'ring',
+          });
           events.healedHeart = true;
           this.state.entities.splice(i, 1);
           continue;
@@ -973,13 +1309,28 @@ export class DojoSkyHopController {
           const pts = ent.kind === 'bigstar' ? 20 : ent.kind === 'comet' ? 16 : 8;
           this.state.score += pts * this.state.combo;
           if (ent.kind === 'comet') this.state.magnetTimer = Math.max(this.state.magnetTimer, 0.85);
+          this.spawnTrailParticles(ent.x, ent.y, ent.kind === 'bigstar' ? 24 : 12, true);
+          if (ent.kind === 'bigstar') {
+            this.pushParticle({
+              x: ent.x,
+              y: ent.y,
+              vx: 0,
+              vy: 0,
+              life: 0,
+              maxLife: 0.4,
+              size: 14,
+              maxSize: 58,
+              color: '#fde047',
+              shape: 'ring',
+            });
+          }
           events.collectedStar = true;
           this.state.entities.splice(i, 1);
           continue;
         }
       }
 
-      if (ent.x < -40) {
+      if (ent.x < -36) {
         if (ent.kind === 'star' || ent.kind === 'bigstar' || ent.kind === 'comet') {
           this.state.comboStreak = Math.max(0, this.state.comboStreak - 4);
           this.state.combo = Math.min(5, 1 + Math.floor(this.state.comboStreak / 5));
@@ -997,9 +1348,10 @@ export class DojoSkyHopController {
     }
 
     const allSpawned = this.pendingSpawns.every((sp) => sp.spawned);
-    if (allSpawned && (this.state.entities.length === 0 || this.waveElapsed >= maxDelay + 3.0)) {
+    if (allSpawned && (this.state.entities.length === 0 || this.waveElapsed >= maxDelay + 3.2)) {
       this.state.score += 12 + Math.min(28, this.state.wave * 4);
       this.beginWave(this.state.wave + 1);
+      events.waveAdvanced = true;
     }
 
     return events;

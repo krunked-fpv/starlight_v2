@@ -4,12 +4,22 @@ import { SPECIES } from './raw/config.js';
 
 export { THEMES };
 
+type AudioEngineExtended = Omit<AudioEngine, 'playWindup' | 'playWarpTeleport' | 'playSafeRecall'> & {
+  getDiagnostics?: () => Record<string, unknown>;
+  playHoldTick?: (progress?: number) => void;
+  playXpTick?: (progress?: number) => void;
+  playWindup?: (type?: string) => void;
+  playTackle?: () => void;
+  playWarpTeleport?: (options?: { phase?: 'depart' | 'arrive' | 'full'; mode?: 'starlight' | 'safe' }) => void;
+  playSafeRecall?: (options?: { phase?: 'depart' | 'arrive' | 'full' }) => void;
+};
+
 /**
  * Wraps C:\dojo's 23-theme chiptune Web Audio engine + 1,025 deterministic Pokémon cries
  * and attaches a real-time AnalyserNode waveform tap for the Pokédex Cry Visualizer.
  */
 export class StarlightAudioController {
-  private readonly engine: AudioEngine;
+  private readonly engine: AudioEngineExtended;
   private analyser: AnalyserNode | null = null;
   private waveformSamples = new Float32Array(128);
   private lastCrySpeciesId = 25;
@@ -17,7 +27,7 @@ export class StarlightAudioController {
   private masterVolume = 0.65;
 
   constructor() {
-    this.engine = createAudioEngine();
+    this.engine = createAudioEngine() as AudioEngineExtended;
     this.synthesizeDeterministicWaveform(25, 420, 'pulse12');
   }
 
@@ -53,9 +63,35 @@ export class StarlightAudioController {
     this.applyGainNow();
   }
 
+  isMuted(): boolean {
+    if (typeof this.engine.isMuted === 'function') {
+      return Boolean(this.engine.isMuted());
+    }
+    return Boolean(this.engine.muted);
+  }
+
   setMasterVolume(volume: number): void {
     this.masterVolume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 0.65));
     this.applyGainNow();
+  }
+
+  getMasterVolume(): number {
+    return this.masterVolume;
+  }
+
+  getCurrentTheme(): string | null {
+    return this.engine.currentTheme ?? null;
+  }
+
+  getDiagnostics(): Record<string, unknown> {
+    if (typeof this.engine.getDiagnostics === 'function') {
+      return this.engine.getDiagnostics() as Record<string, unknown>;
+    }
+    return {
+      muted: this.isMuted(),
+      currentTheme: this.getCurrentTheme(),
+      masterVolume: this.masterVolume,
+    };
   }
 
   private applyGainNow(): void {
@@ -92,6 +128,18 @@ export class StarlightAudioController {
     this.engine.playMenuBlip(freq);
   }
 
+  playCursorMove(): void {
+    this.engine.playCursorMove?.();
+  }
+
+  playHoldTick(progress = 0): void {
+    this.engine.playHoldTick?.(progress);
+  }
+
+  playXpTick(progress = 0.5): void {
+    this.engine.playXpTick?.(progress);
+  }
+
   playStep(onGrass = false): void {
     if (onGrass) {
       this.engine.playNoise({ duration: 0.035, gain: 0.028, filterFreq: 1850 });
@@ -108,8 +156,12 @@ export class StarlightAudioController {
     this.engine.playMoveSelect?.();
   }
 
-  playWindup(): void {
-    this.engine.playWindup?.();
+  playWindup(type = 'normal'): void {
+    this.engine.playWindup?.(type);
+  }
+
+  playTackle(): void {
+    this.engine.playTackle?.();
   }
 
   playHitStop(): void {
@@ -180,12 +232,12 @@ export class StarlightAudioController {
     this.engine.playDiscoveryChime?.(kind);
   }
 
-  playWarpTeleport(): void {
-    this.engine.playWarpTeleport?.();
+  playWarpTeleport(options?: { phase?: 'depart' | 'arrive' | 'full'; mode?: 'starlight' | 'safe' }): void {
+    this.engine.playWarpTeleport?.(options);
   }
 
-  playSafeRecall(): void {
-    this.engine.playSafeRecall?.();
+  playSafeRecall(options?: { phase?: 'depart' | 'arrive' | 'full' }): void {
+    this.engine.playSafeRecall?.(options);
   }
 
   playCatchThrow(): void {
