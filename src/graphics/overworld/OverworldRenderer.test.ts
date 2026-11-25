@@ -31,6 +31,7 @@ import {
   MAX_RENDER_LIGHTS,
   OverworldRenderer,
   computeOverworldZoom,
+  getSoftenedFollowerFrame,
 } from './index';
 
 function createMock2DContext(): CanvasRenderingContext2D {
@@ -658,7 +659,11 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
     renderer.render(backend, state);
     backend.endFrame();
 
-    expect(spriteSpy.mock.calls.some((c) => c[0].source === frame0 && c[0].pixelCrisp === true)).toBe(true);
+    expect(
+      spriteSpy.mock.calls.some(
+        (c) => c[0].source === frame0 && c[0].pixelCrisp === false && Array.isArray(c[0].tint),
+      ),
+    ).toBe(true);
     expect(particleSpy).toHaveBeenCalled();
 
     spriteSpy.mockClear();
@@ -666,7 +671,11 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
     backend.beginFrame(0.14, 0.016);
     renderer.render(backend, state);
     backend.endFrame();
-    expect(spriteSpy.mock.calls.some((c) => c[0].source === frame1 && c[0].pixelCrisp === true)).toBe(true);
+    expect(
+      spriteSpy.mock.calls.some(
+        (c) => c[0].source === frame1 && c[0].pixelCrisp === false && Array.isArray(c[0].tint),
+      ),
+    ).toBe(true);
 
     // 2. Fallback sprites for all 11 archetypes when follower.frames is null
     const archetypes: BodyArchetype[] = [
@@ -712,7 +721,12 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
       backend.endFrame();
 
       expect(
-        spriteSpy.mock.calls.some((c) => c[0].sheetId === 'fallbacks' && c[0].regionId === arch),
+        spriteSpy.mock.calls.some(
+          (c) =>
+            c[0].sheetId === 'fallbacks' &&
+            c[0].regionId === arch &&
+            c[0].pixelCrisp === false,
+        ),
       ).toBe(true);
     }
 
@@ -1084,6 +1098,98 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
     expect(resizedCam.viewportHeight).toBe(844);
     expect(resizedCam.zoom).toBe(1.25);
     expect(resizedCam.visibleTilesX).toBeCloseTo(390 / 40, 3);
+
+    backend.dispose();
+  });
+
+  it('softens following mini Pokémon while keeping world props/trees crisp with deterministic organic variety', async () => {
+    const manifest = loadV2ManifestFixture();
+    const { canvas } = createMockCanvas(960, 540);
+    const backend = new Canvas2DBackend();
+    await backend.init(canvas, { dprCap: 1, reducedMotion: false, crtMode: false });
+    registerFixtureAtlases(backend, manifest);
+
+    const spriteSpy = vi.spyOn(backend, 'drawSprite');
+    const renderer = new OverworldRenderer();
+    renderer.attachAtlas(manifest);
+
+    // Non-DOM mock frame safely returns null from getSoftenedFollowerFrame
+    const mockFrame = { width: 48, height: 48 } as unknown as HTMLCanvasElement;
+    expect(getSoftenedFollowerFrame(mockFrame, null)).toBeNull();
+
+    const { state } = createSimScene('violet', 25);
+    // Place a cluster of 10 palm trees in the beach/water biome to check organic scale & flip variety
+    const mapCopy = WORLD_MAP.map((r) => [...r]);
+    for (let dx = -4; dx <= 5; dx++) {
+      mapCopy[22][5 + dx] = TILE.TREE;
+    }
+    state.worldMap = mapCopy;
+    state.player.x = 5;
+    state.player.y = 24;
+    state.currentBiomeId = 'water';
+
+    renderer.update(state, 0.016);
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    const treeCmds = spriteSpy.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.sheetId === 'props' && c.regionId === 'tree_palm');
+    expect(treeCmds.length).toBeGreaterThanOrEqual(8);
+    expect(treeCmds.every((c) => c.pixelCrisp === true)).toBe(true);
+    // Verify trees are NOT identical clones (organic mirroring + subtle size diversity)
+    expect(treeCmds.some((c) => c.flipX === true)).toBe(true);
+    expect(treeCmds.some((c) => c.flipX === false)).toBe(true);
+    const uniqueWidths = new Set(treeCmds.map((c) => c.dw));
+    expect(uniqueWidths.size).toBeGreaterThanOrEqual(2);
+
+    backend.dispose();
+  });
+
+  it('renders V1-parity 3 discovery overlays, 3-state Secret Arcade cabinet, warp beam + celebration bursts, aurora bands, and readiness warning auras', async () => {
+    const manifest = loadV2ManifestFixture();
+    const { canvas } = createMockCanvas(960, 540);
+    const backend = new Canvas2DBackend();
+    await backend.init(canvas, { dprCap: 1, reducedMotion: false, crtMode: false });
+    registerFixtureAtlases(backend, manifest);
+
+    const renderer = new OverworldRenderer();
+    renderer.attachAtlas(manifest);
+    const { state } = createSimScene('violet', 25);
+
+    // 1. Place all 3 discovery node kinds + cycle all 3 Secret Arcade states (unattuned -> attuned -> unlocked)
+    state.discoveryNodes = [
+      { id: 'd1', x: 7, y: 15, kind: 'starShard', biomeId: 'village', accentHex: '#38bdf8', spawnedAt: 0 },
+      { id: 'd2', x: 9, y: 15, kind: 'berry', biomeId: 'village', accentHex: '#e879f9', spawnedAt: 0 },
+      { id: 'd3', x: 10, y: 15, kind: 'greatBall', biomeId: 'village', accentHex: '#fde047', spawnedAt: 0 },
+    ];
+    for (const arcadeState of [
+      { x: 11, y: 12, unlocked: false, knocks: 0 },
+      { x: 11, y: 12, unlocked: false, knocks: 2 },
+      { x: 11, y: 12, unlocked: true, knocks: 3 },
+    ]) {
+      state.secretArcadeSpot = arcadeState;
+      renderer.update(state, 0.016);
+      backend.beginFrame(1.2, 0.016);
+      renderer.render(backend, state);
+      const stats = backend.endFrame();
+      expect(stats.drawCalls).toBeGreaterThan(0);
+    }
+
+    // 2. Trigger chest celebration burst + cross-map warp beam + aurora biome ('peak')
+    if (state.chests.length > 0) {
+      state.chests[0] = { ...state.chests[0], opened: true };
+    }
+    renderer.triggerCelebrationBurst(8, 15, 'gold');
+    state.player.x = 40;
+    state.player.y = 25;
+    state.currentBiomeId = 'peak';
+    renderer.update(state, 0.016);
+    backend.beginFrame(2.0, 0.016);
+    renderer.render(backend, state);
+    const auroraStats = backend.endFrame();
+    expect(auroraStats.drawCalls).toBeGreaterThan(0);
 
     backend.dispose();
   });

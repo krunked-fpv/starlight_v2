@@ -15,7 +15,7 @@ import type {
   TrainerAuraId,
 } from '../../contracts';
 import { TYPE_PALETTES } from '../../core/data/typePalettes';
-import { SpriteAssetLoader, getSpeciesEntry } from '../../core/dojo';
+import { SpriteAssetLoader, TILE, getBiomeVisualProfile, getSpeciesEntry } from '../../core/dojo';
 import {
   LIQUID_TILES,
   TALL_GRASS_TILES,
@@ -27,14 +27,15 @@ import {
   hexRgba,
   hexToRgb01,
   hexToRgb255,
+  lerp,
+  markImmutableCanvas,
   mixRgb,
   strokeEllipse,
   type LightCandidate,
   type ViewTileBounds,
 } from './AutotileRenderer';
 import { drawReadinessAuraRing } from './LandmarkRenderer';
-import { TILE } from '../../core/dojo';
-import { measureSpriteOpaqueBounds } from '../battle/SpriteSilhouette';
+import { measureSpriteOpaqueBounds, type SpriteOpaqueBounds } from '../battle/SpriteSilhouette';
 
 interface MotionSample {
   x: number;
@@ -42,11 +43,217 @@ interface MotionSample {
   stepAccum: number;
 }
 
+interface SoftFollowerEntry {
+  canvas: HTMLCanvasElement;
+  bounds: SpriteOpaqueBounds;
+}
+
+const SOFTENED_FOLLOWER_CACHE = new WeakMap<HTMLCanvasElement, SoftFollowerEntry | null>();
+
+function isReadableDomCanvas(src: unknown): src is HTMLCanvasElement {
+  if (!src || typeof src !== 'object') return false;
+  const c = src as { width?: number; height?: number; getContext?: unknown };
+  return typeof c.getContext === 'function' && typeof c.width === 'number' && typeof c.height === 'number' && c.width > 0 && c.height > 0;
+}
+
+/**
+ * Pre-softens & warmly harmonizes a live Pokémon animation frame ONCE (WeakMap-cached & tagged
+ * __starlightImmutable for single-upload WebGL2 VRAM reuse) so miniature following Pokémon feel
+ * plush, smooth-edged, and naturally integrated into the 16-bit/32-bit pixel overworld instead
+ * of looking like razor-sharp black-outlined nearest-neighbor stickers!
+ */
+export function getSoftenedFollowerFrame(
+  source: HTMLCanvasElement,
+  measuredBounds: SpriteOpaqueBounds | null,
+): SoftFollowerEntry | null {
+  if (!isReadableDomCanvas(source) || typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    return null;
+  }
+
+  const cached = SOFTENED_FOLLOWER_CACHE.get(source);
+  if (cached !== undefined) return cached;
+
+  try {
+    const fw = source.width;
+    const fh = source.height;
+    const b = measuredBounds ?? {
+      minX: 0,
+      minY: 0,
+      maxX: fw - 1,
+      maxY: fh - 1,
+      contentW: fw,
+      contentH: fh,
+      frameW: fw,
+      frameH: fh,
+    };
+
+    const pad = 3;
+    const maxContentDim = Math.max(b.contentW, b.contentH, 1);
+    // Harmonious miniature companion pixel density (~38px content -> smooth bilinear upscale at 2.5x zoom)
+    const targetDim = clamp(Math.round(Math.min(maxContentDim, 38)), 22, 38);
+    const scale = targetDim / maxContentDim;
+    const dstContentW = Math.max(8, Math.round(b.contentW * scale));
+    const dstContentH = Math.max(8, Math.round(b.contentH * scale));
+    const outW = dstContentW + pad * 2;
+    const outH = dstContentH + pad * 2;
+
+    // Step 1: Smooth high-quality bilinear downsampling onto scratch canvas
+    const work = document.createElement('canvas');
+    work.width = outW;
+    work.height = outH;
+    const wCtx = work.getContext('2d', { willReadFrequently: true }) ?? work.getContext('2d');
+    if (!wCtx || typeof wCtx.getImageData !== 'function') {
+      SOFTENED_FOLLOWER_CACHE.set(source, null);
+      return null;
+    }
+
+    wCtx.imageSmoothingEnabled = true;
+    wCtx.imageSmoothingQuality = 'high';
+    wCtx.clearRect(0, 0, outW, outH);
+
+    // If source is huge (e.g. 475x475 official artwork), do a 2-step progressive box/bilinear downsample
+    if (maxContentDim > 112) {
+      const midW = Math.max(dstContentW * 2, 64);
+      const midH = Math.max(dstContentH * 2, 64);
+      const mid = document.createElement('canvas');
+      mid.width = midW;
+      mid.height = midH;
+      const mCtx = mid.getContext('2d');
+      if (mCtx) {
+        mCtx.imageSmoothingEnabled = true;
+        mCtx.imageSmoothingQuality = 'high';
+        mCtx.drawImage(source, b.minX, b.minY, b.contentW, b.contentH, 0, 0, midW, midH);
+        wCtx.drawImage(mid, 0, 0, midW, midH, pad, pad, dstContentW, dstContentH);
+      } else {
+        wCtx.drawImage(source, b.minX, b.minY, b.contentW, b.contentH, pad, pad, dstContentW, dstContentH);
+      }
+    } else {
+      wCtx.drawImage(source, b.minX, b.minY, b.contentW, b.contentH, pad, pad, dstContentW, dstContentH);
+    }
+
+    // Step 2: Gentle outline warming, saturation harmony, subtle 3x3 micro-soften & feathered rim
+    const imgData = wCtx.getImageData(0, 0, outW, outH);
+    const src = new Uint8ClampedArray(imgData.data);
+    const dst = imgData.data;
+
+    for (let y = 0; y < outH; y++) {
+      for (let x = 0; x < outW; x++) {
+        const idx = (y * outW + x) * 4;
+        const a = src[idx + 3];
+        if (a < 8) {
+          dst[idx + 3] = 0;
+          continue;
+        }
+
+        // Accumulate soft 3x3 weighted neighborhood (alpha-weighted) to take off razor-sharp aliasing
+        let sumR = src[idx] * 4;
+        let sumG = src[idx + 1] * 4;
+        let sumB = src[idx + 2] * 4;
+        let sumW = 4;
+        let transparentNeighbors = 0;
+
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= outH) {
+            transparentNeighbors += 1;
+            continue;
+          }
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            if (nx < 0 || nx >= outW) {
+              transparentNeighbors += 1;
+              continue;
+            }
+            const ni = (ny * outW + nx) * 4;
+            const na = src[ni + 3];
+            if (na < 36) {
+              transparentNeighbors += 1;
+            } else {
+              const wt = (dx === 0 || dy === 0 ? 1.0 : 0.5) * (na / 255);
+              sumR += src[ni] * wt;
+              sumG += src[ni + 1] * wt;
+              sumB += src[ni + 2] * wt;
+              sumW += wt;
+            }
+          }
+        }
+
+        // Blend ~30% toward soft neighbor average for plush mini-sprite feel
+        let r = lerp(src[idx], sumR / sumW, 0.30);
+        let g = lerp(src[idx + 1], sumG / sumW, 0.30);
+        let bVal = lerp(src[idx + 2], sumB / sumW, 0.30);
+
+        const lum = (0.299 * r + 0.587 * g + 0.114 * bVal) / 255;
+
+        // Soften harsh pure-black #000 outlines into warm deep twilight plum-slate ink
+        if (lum < 0.22) {
+          const darkFactor = clamp((0.22 - lum) / 0.22, 0, 1);
+          r = lerp(r, 48, darkFactor * 0.58);
+          g = lerp(g, 42, darkFactor * 0.58);
+          bVal = lerp(bVal, 68, darkFactor * 0.62);
+        } else {
+          // Gently temper neon over-saturation (~14% toward warm luma) so follower harmonizes with terrain
+          const lumaPx = 0.299 * r + 0.587 * g + 0.114 * bVal;
+          r = lerp(r, lumaPx * 1.02, 0.14);
+          g = lerp(g, lumaPx * 1.0, 0.14);
+          bVal = lerp(bVal, lumaPx * 0.98, 0.14);
+        }
+
+        // Feather outer silhouette edge slightly so companion never looks like a harsh cutout sticker
+        let outA = a;
+        if (transparentNeighbors > 0) {
+          const feather = transparentNeighbors >= 3 ? 0.78 : 0.88;
+          outA = Math.round(a * feather);
+        }
+
+        dst[idx] = clamp(Math.round(r), 0, 255);
+        dst[idx + 1] = clamp(Math.round(g), 0, 255);
+        dst[idx + 2] = clamp(Math.round(bVal), 0, 255);
+        dst[idx + 3] = clamp(outA, 0, 255);
+      }
+    }
+    wCtx.putImageData(imgData, 0, 0);
+
+    // Step 3: Blit into a clean GPU-friendly canvas (without willReadFrequently) & tag immutable!
+    const gpuCanvas = document.createElement('canvas');
+    gpuCanvas.width = outW;
+    gpuCanvas.height = outH;
+    const gCtx = gpuCanvas.getContext('2d');
+    if (gCtx) {
+      gCtx.imageSmoothingEnabled = true;
+      gCtx.drawImage(work, 0, 0);
+    }
+    markImmutableCanvas(gpuCanvas);
+
+    const entry: SoftFollowerEntry = {
+      canvas: gCtx ? gpuCanvas : markImmutableCanvas(work),
+      bounds: {
+        minX: pad,
+        minY: pad,
+        maxX: pad + dstContentW - 1,
+        maxY: pad + dstContentH - 1,
+        contentW: dstContentW,
+        contentH: dstContentH,
+        frameW: outW,
+        frameH: outH,
+      },
+    };
+    SOFTENED_FOLLOWER_CACHE.set(source, entry);
+    return entry;
+  } catch {
+    SOFTENED_FOLLOWER_CACHE.set(source, null);
+    return null;
+  }
+}
+
 export const AURA_VISUALS: Record<
   TrainerAuraId,
   {
     primaryHex: string;
     secondaryHex: string;
+    primarySoftRgba: string;
+    secondaryRingRgba: string;
     lightRgb: [number, number, number] | null;
     lightRadius: number;
     lightIntensity: number;
@@ -55,6 +262,8 @@ export const AURA_VISUALS: Record<
   none: {
     primaryHex: '#94a3b8',
     secondaryHex: '#cbd5e1',
+    primarySoftRgba: 'rgba(148, 163, 184, 0.24)',
+    secondaryRingRgba: 'rgba(203, 213, 225, 0.78)',
     lightRgb: null,
     lightRadius: 0,
     lightIntensity: 0,
@@ -62,6 +271,8 @@ export const AURA_VISUALS: Record<
   stars: {
     primaryHex: '#fde047',
     secondaryHex: '#fef9c3',
+    primarySoftRgba: 'rgba(253, 224, 71, 0.24)',
+    secondaryRingRgba: 'rgba(254, 249, 195, 0.78)',
     lightRgb: [1.0, 0.88, 0.34],
     lightRadius: 128,
     lightIntensity: 1.05,
@@ -69,6 +280,8 @@ export const AURA_VISUALS: Record<
   hearts: {
     primaryHex: '#f472b6',
     secondaryHex: '#fbcfe8',
+    primarySoftRgba: 'rgba(244, 114, 182, 0.24)',
+    secondaryRingRgba: 'rgba(251, 207, 232, 0.78)',
     lightRgb: [0.98, 0.48, 0.74],
     lightRadius: 120,
     lightIntensity: 0.98,
@@ -76,6 +289,8 @@ export const AURA_VISUALS: Record<
   lightning: {
     primaryHex: '#38bdf8',
     secondaryHex: '#fef08a',
+    primarySoftRgba: 'rgba(56, 189, 248, 0.24)',
+    secondaryRingRgba: 'rgba(254, 240, 138, 0.78)',
     lightRgb: [0.28, 0.78, 1.0],
     lightRadius: 136,
     lightIntensity: 1.12,
@@ -83,6 +298,8 @@ export const AURA_VISUALS: Record<
   blossom: {
     primaryHex: '#fb7185',
     secondaryHex: '#fce7f3',
+    primarySoftRgba: 'rgba(251, 113, 133, 0.24)',
+    secondaryRingRgba: 'rgba(252, 231, 243, 0.78)',
     lightRgb: [0.98, 0.52, 0.64],
     lightRadius: 122,
     lightIntensity: 0.96,
@@ -90,6 +307,8 @@ export const AURA_VISUALS: Record<
   cosmic: {
     primaryHex: '#2dd4bf',
     secondaryHex: '#c084fc',
+    primarySoftRgba: 'rgba(45, 212, 191, 0.24)',
+    secondaryRingRgba: 'rgba(192, 132, 252, 0.78)',
     lightRgb: [0.24, 0.88, 0.82],
     lightRadius: 138,
     lightIntensity: 1.1,
@@ -137,7 +356,7 @@ export function resolveCharacterRegion(
   return desired;
 }
 
-function createScratchCanvas(w: number, h: number): {
+function createCosmeticCanvas(w: number, h: number): {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
 } | null {
@@ -148,7 +367,8 @@ function createScratchCanvas(w: number, h: number): {
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    // GPU-friendly canvas (avoid willReadFrequently which forces Skia CPU readback path)
+    const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.imageSmoothingEnabled = false;
     return { canvas, ctx };
@@ -157,15 +377,27 @@ function createScratchCanvas(w: number, h: number): {
   }
 }
 
+const NPC_HAT_PALETTES: ReadonlyArray<{ hat: string; hi: string; trim: string; scarf: string }> = [
+  { hat: '#9a3412', hi: '#c2410c', trim: '#fbbf24', scarf: '#e11d48' },
+  { hat: '#0f766e', hi: '#14b8a6', trim: '#99f6e4', scarf: '#0ea5e9' },
+  { hat: '#4338ca', hi: '#6366f1', trim: '#fde047', scarf: '#818cf8' },
+  { hat: '#9d174d', hi: '#db2777', trim: '#fbcfe8', scarf: '#ec4899' },
+  { hat: '#b45309', hi: '#d97706', trim: '#fef08a', scarf: '#f59e0b' },
+];
+
 export class CharacterRigRenderer {
   private footsteps: FootstepEffect[] = [];
   private samples = new Map<string, MotionSample>();
   private backCosmeticCanvas: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null = null;
   private frontCosmeticCanvas: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null = null;
+  private lastBackKey = '';
+  private lastFrontKey = '';
 
   resetEffects(): void {
     this.footsteps.length = 0;
     this.samples.clear();
+    this.lastBackKey = '';
+    this.lastFrontKey = '';
   }
 
   getFootstepCount(): number {
@@ -255,7 +487,12 @@ export class CharacterRigRenderer {
       kind = 'dust';
       colorHex = tileId === TILE.SNOW_GRASS ? '#bae6fd' : '#86efac';
       maxAge = 0.56;
-    } else if (tileId === TILE.RUNE_TRAIL || currentBiomeId === 'sanctum' || currentBiomeId === 'rift' || currentBiomeId === 'crater') {
+    } else if (
+      tileId === TILE.RUNE_TRAIL ||
+      currentBiomeId === 'sanctum' ||
+      currentBiomeId === 'rift' ||
+      currentBiomeId === 'crater'
+    ) {
       kind = 'sparkle';
       colorHex = '#7dd3fc';
       maxAge = 0.62;
@@ -294,7 +531,7 @@ export class CharacterRigRenderer {
       x: wx,
       y: wy,
       radius: meta.lightRadius,
-      color: [...meta.lightRgb],
+      color: [meta.lightRgb[0], meta.lightRgb[1], meta.lightRgb[2]],
       intensity: meta.lightIntensity,
       flickerSpeed: auraId === 'lightning' ? 6.5 : 2.8,
       flickerAmount: auraId === 'lightning' ? 0.16 : 0.08,
@@ -303,9 +540,8 @@ export class CharacterRigRenderer {
   }
 
   /**
-   * Collects Y-sorted SpriteDrawCmds for NPCs, Rivals, Lead Follower, Player,
-   * and (when DOM canvas available) Y-sorted cosmetic overlay canvases for proper occlusion.
-   * Returns true if offscreen cosmetic canvases were emitted into outSprites.
+   * Collects Y-sorted SpriteDrawCmds for NPCs, Rivals, softened & harmonized Lead Follower,
+   * Player, and dirty-checked cosmetic canvases.
    */
   collectSprites(
     state: OverworldSceneState,
@@ -313,22 +549,35 @@ export class CharacterRigRenderer {
     manifest: AtlasManifest | null,
     outSprites: SpriteDrawCmd[],
   ): boolean {
-    const { tileSize, npcs, rivals, follower, player, elapsedSeconds, reducedMotion } = state;
+    const { tileSize, npcs, rivals, follower, player, elapsedSeconds, reducedMotion, currentBiomeId } = state;
     const t = reducedMotion ? 0 : elapsedSeconds;
 
-    // 1. 23 NPCs
+    // 1. 23 NPCs (Professor Willow uses 'willow_idle'; villagers use 4 bespoke HD-2D villager archetypes!)
+    const charRegions = manifest?.sheets?.characters?.regions;
+    const villagerRegions = [
+      'villager_scout',
+      'villager_scholar',
+      'villager_artisan',
+      'villager_sailor',
+    ];
     for (let i = 0; i < npcs.length; i++) {
       const npc = npcs[i];
       if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
       const isWillow = npc.role === 'professor' || npc.id.includes('willow');
-      const regionId = isWillow
-        ? 'willow_idle'
-        : i % 2 === 0
-          ? 'willow_idle'
-          : 'ozias_idle';
+      let regionId: string;
+      if (isWillow) {
+        regionId = 'willow_idle';
+      } else {
+        let hash = i;
+        for (let k = 0; k < npc.id.length; k++) {
+          hash = (hash * 31 + npc.id.charCodeAt(k)) >>> 0;
+        }
+        const preferred = villagerRegions[hash % villagerRegions.length];
+        regionId = charRegions?.[preferred] ? preferred : 'ozias_idle';
+      }
       const tintRgb = isWillow
         ? null
-        : mixRgb([255, 255, 255], hexToRgb255(npc.accentHex || '#a855f7'), 0.34);
+        : mixRgb([255, 255, 255], hexToRgb255(npc.accentHex || '#a855f7'), 0.16);
 
       const dw = 32;
       const dh = 40;
@@ -343,7 +592,8 @@ export class CharacterRigRenderer {
     }
 
     // 2. 17 Rivals
-    for (const rival of rivals) {
+    for (let i = 0; i < rivals.length; i++) {
+      const rival = rivals[i];
       if (!isInBounds(rival.x, rival.y, bounds, 1)) continue;
       const dw = 32;
       const dh = 40;
@@ -353,29 +603,44 @@ export class CharacterRigRenderer {
       outSprites.push(
         buildSpriteCmd(manifest, 'characters', 'rival_idle', dx, dy, dw, dh, {
           depth: (rival.y + 0.94) * tileSize,
-          rimColor: rival.defeated ? undefined : [rr, rg, rb, 0.52],
+          rimColor: rival.defeated ? undefined : [rr, rg, rb, 0.48],
         }),
       );
     }
 
-    // 3. Lead Pokémon Follower (animated GIF/PNG frames OR 'fallbacks' pixel archetype sprite)
+    // 3. Lead Pokémon Follower — INTENTIONALLY SOFTENED & WARMLY HARMONIZED!
+    // Uses bilinear smoothing (pixelCrisp: false), pre-softened outline-warmed cached frame,
+    // and subtle biome ambient tint so miniature companions blend warmly into the pixel world
+    // instead of appearing jagged or overly sharp!
     if (follower) {
       const bob = follower.moving
-        ? -Math.round(Math.abs(Math.sin(follower.walkCycle * Math.PI * 1.4)) * (reducedMotion ? 1 : 2.6))
-        : Math.round(Math.sin(t * 2.8) * 0.8);
+        ? -Math.abs(Math.sin(follower.walkCycle * Math.PI * 1.4)) * (reducedMotion ? 1.0 : 2.6)
+        : Math.sin(t * 2.6) * 0.7;
       const depth = (follower.y + 0.92) * tileSize;
       const shinyRim: [number, number, number, number] | undefined = follower.isShiny
-        ? [1.0, 0.92, 0.42, 0.72]
+        ? [1.0, 0.92, 0.48, 0.52]
         : undefined;
+
+      // Subtle biome atmospheric tint so follower shares the world's warm/cool ambient lighting
+      const biomeAmb = getBiomeVisualProfile(currentBiomeId).colorGrade.ambientRgb;
+      const followerTint: [number, number, number, number] = [
+        clamp(lerp(0.98, biomeAmb[0] * 1.06, 0.16), 0.84, 1.04),
+        clamp(lerp(0.97, biomeAmb[1] * 1.04, 0.16), 0.84, 1.03),
+        clamp(lerp(0.97, biomeAmb[2] * 1.04, 0.16), 0.84, 1.04),
+        0.96,
+      ];
 
       const animFrame = follower.frames
         ? SpriteAssetLoader.selectFrame(follower.frames, elapsedSeconds)
         : null;
 
       if (animFrame) {
-        const fw = animFrame.width || follower.frames?.width || 48;
-        const fh = animFrame.height || follower.frames?.height || 48;
-        const bounds = measureSpriteOpaqueBounds(follower.frames, animFrame);
+        const rawBounds = measureSpriteOpaqueBounds(follower.frames, animFrame);
+        const soft = getSoftenedFollowerFrame(animFrame, rawBounds);
+        const drawSource = soft ? soft.canvas : animFrame;
+        const activeBounds = soft ? soft.bounds : rawBounds;
+        const fw = drawSource.width || follower.frames?.width || 48;
+        const fh = drawSource.height || follower.frames?.height || 48;
         const baseFlip = follower.facing === 'right';
         const flipX = follower.frames?.mirrorX ? !baseFlip : baseFlip;
         let dw: number;
@@ -383,17 +648,16 @@ export class CharacterRigRenderer {
         let dx: number;
         let dy: number;
 
-        if (bounds && bounds.contentW > 0 && bounds.contentH > 0) {
-          // Keep follower companion adorably proportionate (~26..28px visible height) so it never towers over or clips Violet's hat
+        if (activeBounds && activeBounds.contentW > 0 && activeBounds.contentH > 0) {
           const targetSpan = 27;
-          const contentDim = Math.max(bounds.contentW, bounds.contentH, 22);
-          const fit = clamp(targetSpan / contentDim, 0.35, 1.1);
+          const contentDim = Math.max(activeBounds.contentW, activeBounds.contentH, 20);
+          const fit = clamp(targetSpan / contentDim, 0.35, 1.2);
           dw = Math.max(16, Math.round(fw * fit));
           dh = Math.max(16, Math.round(fh * fit));
-          const rawCx = (bounds.minX + bounds.maxX + 1) * 0.5;
+          const rawCx = (activeBounds.minX + activeBounds.maxX + 1) * 0.5;
           const alignedCx = flipX ? fw - rawCx : rawCx;
           dx = Math.round((follower.x + 0.5) * tileSize - alignedCx * fit);
-          dy = Math.round((follower.y + 0.90) * tileSize - (bounds.maxY + 1) * fit + bob);
+          dy = Math.round((follower.y + 0.90) * tileSize - (activeBounds.maxY + 1) * fit + bob);
         } else {
           const fit = Math.min(30 / Math.max(1, fw), 30 / Math.max(1, fh));
           dw = Math.max(18, Math.round(fw * fit));
@@ -403,13 +667,14 @@ export class CharacterRigRenderer {
         }
 
         outSprites.push({
-          source: animFrame,
+          source: drawSource,
           dx,
           dy,
           dw,
           dh,
           flipX,
-          pixelCrisp: true,
+          pixelCrisp: false, // Smooth bilinear filtering (eliminates harsh nearest-neighbor sharpness!)
+          tint: followerTint,
           depth,
           rimColor: shinyRim,
         });
@@ -417,14 +682,17 @@ export class CharacterRigRenderer {
         const archetype: BodyArchetype =
           follower.frames?.archetype ?? getSpeciesEntry(follower.speciesId).archetype;
         const regionId = resolveFallbackArchetypeRegion(manifest, archetype);
-        const dw = 30;
-        const dh = 30;
+        const dw = 29;
+        const dh = 29;
         const dx = Math.round((follower.x + 0.5) * tileSize - dw * 0.5);
         const dy = Math.round((follower.y + 0.90) * tileSize - dh + bob);
 
         outSprites.push(
           buildSpriteCmd(manifest, 'fallbacks', regionId, dx, dy, dw, dh, {
             flipX: follower.facing === 'right',
+            pixelCrisp: false, // Soften fallback mini follower too
+            useNormalMap: false,
+            tint: followerTint,
             depth,
             rimColor: shinyRim,
           }),
@@ -432,7 +700,7 @@ export class CharacterRigRenderer {
       }
     }
 
-    // 4. Player (Violet / Ozias) + Y-sorted live Style Studio cosmetics
+    // 4. Player (Violet / Ozias — crisp 2x HD-2D 64x80 sprite) + dirty-checked live Style Studio cosmetics
     const playerBob = player.moving
       ? -Math.round(Math.abs(Math.sin(player.walkCycle * Math.PI * 1.5)) * (reducedMotion ? 1 : 2.5))
       : Math.round(Math.sin(t * 2.4) * 0.7);
@@ -448,22 +716,26 @@ export class CharacterRigRenderer {
           ? hexToRgb01(player.look.accent)
           : null;
 
-    // Offscreen cosmetic layers (used in browsers so trees/cottages properly occlude cape & headgear)
     let usedCanvasCosmetics = false;
     if (typeof document !== 'undefined') {
-      if (!this.backCosmeticCanvas) this.backCosmeticCanvas = createScratchCanvas(48, 52);
-      if (!this.frontCosmeticCanvas) this.frontCosmeticCanvas = createScratchCanvas(48, 52);
+      if (!this.backCosmeticCanvas) this.backCosmeticCanvas = createCosmeticCanvas(48, 52);
+      if (!this.frontCosmeticCanvas) this.frontCosmeticCanvas = createCosmeticCanvas(48, 52);
 
       if (this.backCosmeticCanvas && this.frontCosmeticCanvas) {
         usedCanvasCosmetics = true;
         const ox = Math.round((player.x + 0.5) * tileSize - 24);
         const oy = Math.round((player.y + 0.94) * tileSize - 48 + playerBob);
+        const animBucket = reducedMotion ? 0 : Math.floor(t * 15);
 
         // Back layer (cape when facing !== 'up')
-        const bCtx = this.backCosmeticCanvas.ctx;
-        bCtx.clearRect(0, 0, 48, 52);
         if (player.look.cape && player.facing !== 'up') {
-          this.drawPixelCape(bCtx, 24, 48, player.facing, player.look, player.moving, player.walkCycle, t, reducedMotion);
+          const backKey = `${player.facing}|${player.look.outfitPrimary}|${player.look.outfitSecondary}|${player.moving ? 1 : 0}|${Math.round(player.walkCycle * 6)}|${animBucket}`;
+          if (backKey !== this.lastBackKey) {
+            this.lastBackKey = backKey;
+            const bCtx = this.backCosmeticCanvas.ctx;
+            bCtx.clearRect(0, 0, 48, 52);
+            this.drawPixelCape(bCtx, 24, 48, player.facing, player.look, player.moving, player.walkCycle, t, reducedMotion);
+          }
           outSprites.push({
             source: this.backCosmeticCanvas.canvas,
             dx: ox,
@@ -476,9 +748,18 @@ export class CharacterRigRenderer {
         }
 
         // Front layer (outfit trim, front cape if facing === 'up', 8 accessories, aura glints)
-        const fCtx = this.frontCosmeticCanvas.ctx;
-        fCtx.clearRect(0, 0, 48, 52);
-        this.drawPlayerFrontCosmetics(fCtx, 24, 48, player, t, reducedMotion);
+        const needsFrontAnim =
+          player.look.aura !== 'none' ||
+          player.look.accessory === 'halo' ||
+          player.look.accessory === 'headband' ||
+          (player.look.cape && player.facing === 'up');
+        const frontKey = `${player.facing}|${player.look.styleId}|${player.look.accessory}|${player.look.aura}|${player.look.cape ? 1 : 0}|${needsFrontAnim ? animBucket : 0}`;
+        if (frontKey !== this.lastFrontKey) {
+          this.lastFrontKey = frontKey;
+          const fCtx = this.frontCosmeticCanvas.ctx;
+          fCtx.clearRect(0, 0, 48, 52);
+          this.drawPlayerFrontCosmetics(fCtx, 24, 48, player, t, reducedMotion);
+        }
         outSprites.push({
           source: this.frontCosmeticCanvas.canvas,
           dx: ox,
@@ -494,7 +775,7 @@ export class CharacterRigRenderer {
     outSprites.push(
       buildSpriteCmd(manifest, 'characters', pRegion, pDx, pDy, 32, 40, {
         depth: pDepth,
-        rimColor: rimRgb ? [rimRgb[0], rimRgb[1], rimRgb[2], 0.45] : undefined,
+        rimColor: rimRgb ? [rimRgb[0], rimRgb[1], rimRgb[2], 0.44] : undefined,
       }),
     );
 
@@ -502,9 +783,8 @@ export class CharacterRigRenderer {
   }
 
   /**
-   * Renders grounded contact shadows, rival readiness aura rings, player aura ground ring,
-   * terrain-aware footsteps, optional back cape (when not using offscreen canvas), and
-   * procedural pixel character fallbacks when atlases are unattached.
+   * Renders grounded pixel-stepped oval shadows, rival readiness aura rings, player aura ground ring,
+   * terrain-aware footsteps, hop-synced soft follower shadow, and procedural fallbacks.
    */
   renderGroundUnderlays(
     ctx: CanvasRenderingContext2D,
@@ -520,7 +800,9 @@ export class CharacterRigRenderer {
     ctx.imageSmoothingEnabled = false;
 
     // 1. Footsteps
-    this.renderFootsteps(ctx);
+    if (this.footsteps.length > 0) {
+      this.renderFootsteps(ctx);
+    }
 
     // 2. Player aura ground ring
     if (player.look.aura !== 'none') {
@@ -535,18 +817,20 @@ export class CharacterRigRenderer {
     }
 
     // 3. NPCs shadows (+ fallback)
-    for (const npc of npcs) {
+    for (let i = 0; i < npcs.length; i++) {
+      const npc = npcs[i];
       if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
       const cx = (npc.x + 0.5) * tileSize;
       const by = (npc.y + 0.92) * tileSize;
-      drawContactShadow(ctx, cx, by, 10, 4, 0.34);
+      drawContactShadow(ctx, cx, by, 10, 3.8, 0.34);
       if (!hasChars) {
         this.drawFallbackHumanoid(ctx, cx, by, npc.accentHex || '#a855f7', '#fef3c7', 'down');
       }
     }
 
     // 4. Rivals readiness aura rings + shadows (+ fallback)
-    for (const rival of rivals) {
+    for (let i = 0; i < rivals.length; i++) {
+      const rival = rivals[i];
       if (!isInBounds(rival.x, rival.y, bounds, 1)) continue;
       const cx = (rival.x + 0.5) * tileSize;
       const by = (rival.y + 0.92) * tileSize;
@@ -567,21 +851,27 @@ export class CharacterRigRenderer {
       }
     }
 
-    // 5. Follower shadow (+ fallback)
+    // 5. Follower soft hop-synced elliptical ground shadow (+ fallback)
     if (follower) {
       const fx = (follower.x + 0.5) * tileSize;
       const fy = (follower.y + 0.92) * tileSize;
-      drawContactShadow(ctx, fx, fy, 10, 3.8, 0.32);
+      const hopLift = follower.moving
+        ? Math.abs(Math.sin(follower.walkCycle * Math.PI * 1.4)) * (reducedMotion ? 0.3 : 1.0)
+        : 0;
+      const shadowScale = 1 - hopLift * 0.18;
+      // Soft translucent elliptical ground shadow grounding the softened mini Pokémon naturally
+      fillEllipse(ctx, fx, fy, 10.5 * shadowScale, 4.2 * shadowScale, 'rgba(12, 16, 36, 0.14)');
+      fillEllipse(ctx, fx, fy, 7.6 * shadowScale, 3.0 * shadowScale, 'rgba(10, 14, 32, 0.22)');
       const hasFrames = Boolean(follower.frames && follower.frames.frames.length > 0);
       if (!hasFrames && !hasFallbacks) {
         this.drawFallbackFollower(ctx, follower, fx, fy, t);
       }
     }
 
-    // 6. Player shadow (+ back cape fallback if Node Vitest without DOM canvas + character fallback)
+    // 6. Player shadow (+ back cape fallback in Node Vitest + character fallback)
     const px = (player.x + 0.5) * tileSize;
     const py = (player.y + 0.92) * tileSize;
-    drawContactShadow(ctx, px, py, 11, 4.2, 0.36);
+    drawContactShadow(ctx, px, py, 10.5, 4.0, 0.36);
 
     const playerBob = player.moving
       ? -Math.round(Math.abs(Math.sin(player.walkCycle * Math.PI * 1.5)) * (reducedMotion ? 1 : 2.5))
@@ -606,7 +896,7 @@ export class CharacterRigRenderer {
   /**
    * Renders post-sprite character overlays:
    * - Direct player cosmetics (when DOM offscreen canvas wasn't used)
-   * - NPC quest '!' floating pixel badges
+   * - Detailed villager hats/scarves + refined golden diamond quest '!' crests
    * - Shiny follower pixel star sparkles
    */
   renderPostSpriteOverlays(
@@ -629,14 +919,7 @@ export class CharacterRigRenderer {
       this.drawPlayerFrontCosmetics(ctx, px, py, player, t, reducedMotion);
     }
 
-    // 2. Distinct villager hats/hair/scarves for non-Willow NPCs (works identically on WebGL2 & Canvas2D) + quest '!' pixel crests
-    const npcHatPalettes: ReadonlyArray<{ hat: string; trim: string; scarf: string }> = [
-      { hat: '#9a3412', trim: '#fbbf24', scarf: '#e11d48' }, // Warm auburn ranger cap & berry scarf
-      { hat: '#0f766e', trim: '#99f6e4', scarf: '#14b8a6' }, // Coastal teal sun-beret & seafoam sash
-      { hat: '#4338ca', trim: '#fde047', scarf: '#6366f1' }, // Starlight indigo scholar beret & gold pin
-      { hat: '#9d174d', trim: '#fbcfe8', scarf: '#ec4899' }, // Blossom rose sunhat & ribbon
-      { hat: '#b45309', trim: '#fef08a', scarf: '#f59e0b' }, // Golden straw explorer hat & amber vest
-    ];
+    // 2. Refined villager neckerchief accents + V1-parity golden quest crests (star ready vs unvisited '!')
     for (let i = 0; i < npcs.length; i++) {
       const npc = npcs[i];
       if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
@@ -646,33 +929,34 @@ export class CharacterRigRenderer {
         for (let k = 0; k < npc.id.length; k++) {
           hash = (hash * 31 + npc.id.charCodeAt(k)) >>> 0;
         }
-        const style = npcHatPalettes[hash % npcHatPalettes.length];
+        const style = NPC_HAT_PALETTES[hash % NPC_HAT_PALETTES.length];
         const scarfCol = npc.accentHex || style.scarf;
         const nx = Math.round((npc.x + 0.5) * tileSize);
         const ny = Math.round((npc.y + 0.94) * tileSize);
-        // Stepped 16-bit rounded villager cap/beret sitting snugly over hair crown
+        // Subtle crisp neckerchief & golden clasp accent complementing bespoke villager sprite
         ctx.fillStyle = '#12152e';
-        ctx.fillRect(nx - 6, ny - 38, 12, 2);
-        ctx.fillRect(nx - 8, ny - 36, 16, 5);
-        ctx.fillStyle = style.hat;
-        ctx.fillRect(nx - 5, ny - 37, 10, 2);
-        ctx.fillRect(nx - 7, ny - 35, 14, 3);
-        ctx.fillStyle = style.trim;
-        ctx.fillRect(nx - 6, ny - 33, 12, 1);
-        ctx.fillRect(nx - 1, ny - 36, 2, 2);
-        // Crisp neckerchief & tunic vest trim
-        ctx.fillStyle = '#12152e';
-        ctx.fillRect(nx - 6, ny - 21, 12, 4);
+        ctx.fillRect(nx - 5, ny - 21, 10, 4);
         ctx.fillStyle = scarfCol;
-        ctx.fillRect(nx - 5, ny - 20, 10, 2);
+        ctx.fillRect(nx - 4, ny - 20, 8, 2);
         ctx.fillStyle = style.trim;
         ctx.fillRect(nx - 1, ny - 20, 2, 2);
       }
-      if (!npc.hasAvailableQuest) continue;
-      this.drawQuestExclamationBadge(ctx, npc, tileSize, t, reducedMotion);
+      if (npc.hasAvailableQuest) {
+        this.drawQuestExclamationBadge(ctx, npc, tileSize, t, reducedMotion, true);
+      } else if (!npc.talked && !npc.questCompleted && npc.role !== 'villager') {
+        this.drawQuestExclamationBadge(ctx, npc, tileSize, t, reducedMotion, false);
+      }
     }
 
-    // 3. Shiny follower pixel glints
+    // 2b. V1-parity Rival floating readiness emblem (crossed pixel swords vs rematch star + readiness pip)
+    const { rivals } = state;
+    for (let i = 0; i < rivals.length; i++) {
+      const rival = rivals[i];
+      if (!isInBounds(rival.x, rival.y, bounds, 1)) continue;
+      this.drawRivalStatusCrest(ctx, rival, tileSize, t, reducedMotion);
+    }
+
+    // 3. Shiny follower delicate pixel glints
     if (follower?.isShiny) {
       const fx = (follower.x + 0.5) * tileSize;
       const fy = (follower.y + 0.45) * tileSize;
@@ -681,7 +965,7 @@ export class CharacterRigRenderer {
         const gx = Math.round(fx + Math.cos(ang) * 14);
         const gy = Math.round(fy + Math.sin(ang) * 8);
         ctx.fillStyle = '#fff59d';
-        drawFourPointStar(ctx, gx, gy, 4, 1.4, t);
+        drawFourPointStar(ctx, gx, gy, 3.6, 1.2, t);
         ctx.fill();
       }
     }
@@ -708,14 +992,14 @@ export class CharacterRigRenderer {
         const ox = Math.cos(ang) * orbitR;
         const oy =
           Math.sin(ang) * (orbitR * 0.48) -
-          (auraId === 'hearts' || auraId === 'blossom' ? ((elapsedSeconds * 12 + i * 6) % 16) : 0);
+          (auraId === 'hearts' || auraId === 'blossom' ? (elapsedSeconds * 12 + i * 6) % 16 : 0);
         const useSec = i % 2 === 1;
         backend.drawParticle({
           x: px + ox,
           y: py + oy,
-          radius: reducedMotion ? 5.5 : 7.8,
-          color: [useSec ? sr : r, useSec ? sg : g, useSec ? sb : b, reducedMotion ? 0.42 : 0.68],
-          softness: 0.78,
+          radius: reducedMotion ? 5.2 : 7.2,
+          color: [useSec ? sr : r, useSec ? sg : g, useSec ? sb : b, reducedMotion ? 0.4 : 0.62],
+          softness: 0.8,
           additive: auraId !== 'blossom',
         });
       }
@@ -728,11 +1012,11 @@ export class CharacterRigRenderer {
       for (let i = 0; i < count; i++) {
         const ang = elapsedSeconds * 2.2 + (i * Math.PI * 2) / count;
         backend.drawParticle({
-          x: fx + Math.cos(ang) * 14,
+          x: fx + Math.cos(ang) * 13,
           y: fy + Math.sin(ang) * 7,
-          radius: 5.5,
-          color: [1.0, 0.94, 0.52, 0.7],
-          softness: 0.75,
+          radius: 4.5,
+          color: [1.0, 0.94, 0.58, 0.58],
+          softness: 0.78,
           additive: true,
         });
       }
@@ -740,7 +1024,8 @@ export class CharacterRigRenderer {
   }
 
   renderFootsteps(ctx: CanvasRenderingContext2D): void {
-    for (const f of this.footsteps) {
+    for (let i = 0; i < this.footsteps.length; i++) {
+      const f = this.footsteps[i];
       const t = clamp(f.age / Math.max(0.01, f.maxAge), 0, 1);
       const alpha = (1 - t) * 0.75;
 
@@ -748,7 +1033,7 @@ export class CharacterRigRenderer {
         const r = 4 + t * 12;
         strokeEllipse(ctx, f.x, f.y, r, r * 0.48, hexRgba(f.colorHex, alpha), 1.4);
       } else if (f.kind === 'sparkle') {
-        const size = (1 - Math.abs(t - 0.35)) * 4.8;
+        const size = (1 - Math.abs(t - 0.35)) * 4.5;
         ctx.fillStyle = hexRgba(f.colorHex, alpha);
         drawFourPointStar(ctx, f.x, f.y - t * 8, Math.max(1.5, size), Math.max(0.6, size * 0.35), t * 2);
         ctx.fill();
@@ -756,8 +1041,8 @@ export class CharacterRigRenderer {
         ctx.fillStyle = hexRgba(f.colorHex, alpha);
         ctx.fillRect(Math.round(f.x + Math.sin(t * 6) * 3) - 1, Math.round(f.y - t * 6) - 1, 3, 2);
       } else {
-        const r = 2 + Math.round(t * 3);
-        ctx.fillStyle = hexRgba(f.colorHex, alpha * 0.7);
+        const r = 2 + Math.round(t * 2.5);
+        ctx.fillStyle = hexRgba(f.colorHex, alpha * 0.68);
         ctx.fillRect(Math.round(f.x - t * 3 - r * 0.5), Math.round(f.y - t * 4), r, r);
         ctx.fillRect(Math.round(f.x + t * 3), Math.round(f.y - t * 3), r, r);
       }
@@ -774,18 +1059,13 @@ export class CharacterRigRenderer {
   ): void {
     const { look, facing, moving, walkCycle } = player;
 
-    // Cape front shoulder drape when facing up
     if (look.cape && facing === 'up') {
       this.drawPixelCape(ctx, ax, baseY, facing, look, moving, walkCycle, t, reducedMotion);
     }
 
-    // 10 Outfit style crisp pixel scarf, sash, & emblem trim
     this.drawOutfitStyleTrim(ctx, ax, baseY, facing, look);
-
-    // 8 Crisp pixel headgear accessories
     this.drawPixelAccessory(ctx, ax, baseY - 26, facing, look.accessory, look, t, reducedMotion);
 
-    // 6 Animated pixel aura sparkle accents
     if (look.aura !== 'none') {
       this.drawPixelAuraAccents(ctx, ax, baseY - 18, look.aura, t, reducedMotion);
     }
@@ -802,7 +1082,6 @@ export class CharacterRigRenderer {
     const secondary = look.outfitSecondary;
     const torsoTop = baseY - 20;
 
-    // On default trainer look, let the hand-crafted pixel sprite jacket shine cleanly with a delicate star clasp
     if (look.styleId === 'default') {
       if (facing !== 'up') {
         ctx.fillStyle = '#18122e';
@@ -813,7 +1092,6 @@ export class CharacterRigRenderer {
       return;
     }
 
-    // Crisp pixel scarf/collar & belt sash colored by the 9 alternate Style Studio palettes
     if (facing === 'up') {
       ctx.fillStyle = '#16112b';
       ctx.fillRect(ax - 7, torsoTop, 14, 5);
@@ -824,7 +1102,6 @@ export class CharacterRigRenderer {
       return;
     }
 
-    // Collar / scarf accent with crisp 1px dark outline
     ctx.fillStyle = '#16112b';
     ctx.fillRect(ax - 7, torsoTop - 1, 14, 5);
     ctx.fillStyle = primary;
@@ -832,7 +1109,6 @@ export class CharacterRigRenderer {
     ctx.fillStyle = secondary;
     ctx.fillRect(ax - 2, torsoTop + 2, 4, 3);
 
-    // Side sash tail, waist belt & coat hem accent
     ctx.fillStyle = secondary;
     ctx.fillRect(ax - 6, torsoTop + 8, 12, 2);
     ctx.fillStyle = look.accent;
@@ -861,7 +1137,6 @@ export class CharacterRigRenderer {
     const botY = baseY - 5;
 
     ctx.save();
-    // 1px dark indigo outline + body + secondary luminous hem
     ctx.fillStyle = '#18122e';
     ctx.fillRect(ax - 9 + trail, topY + 1, 18, 6);
     ctx.fillRect(ax - 11 + trail + wave, topY + 6, 22, botY - topY - 4);
@@ -870,7 +1145,11 @@ export class CharacterRigRenderer {
     ctx.fillRect(ax - 8 + trail, topY + 2, 16, 6);
     ctx.fillRect(ax - 10 + trail + wave, topY + 7, 20, botY - topY - 7);
 
-    // Luminous hem trim & star pin
+    // Subtle shaded vertical cape pleats
+    ctx.fillStyle = 'rgba(18, 14, 38, 0.24)';
+    ctx.fillRect(ax - 5 + trail + wave, topY + 8, 2, botY - topY - 10);
+    ctx.fillRect(ax + 3 + trail + wave, topY + 8, 2, botY - topY - 10);
+
     ctx.fillStyle = look.outfitSecondary;
     ctx.fillRect(ax - 10 + trail + wave, botY - 2, 20, 2);
     ctx.fillStyle = '#fff9c4';
@@ -892,8 +1171,6 @@ export class CharacterRigRenderer {
 
     switch (accessory) {
       case 'cap': {
-        // Default Violet/Ozias sprites already wear their hand-pixelled Starlight signature cap:
-        // avoid slapping a blocky red/white rectangle over their forehead; add a crisp star emblem glint instead!
         if (look.styleId === 'default') {
           if (facing !== 'up') {
             ctx.fillStyle = '#18122e';
@@ -946,7 +1223,6 @@ export class CharacterRigRenderer {
         ctx.fillRect(ax - 7, headY - 8, 14, 3);
         ctx.fillStyle = '#fde047';
         ctx.fillRect(ax - 1 + dirOff, headY - 9, 3, 3);
-        // Fluttering tail ribbons
         const flutter = reducedMotion ? 0 : Math.round(Math.sin(t * 6) * 1.5);
         ctx.fillStyle = '#ef4444';
         ctx.fillRect(ax + (facing === 'right' ? -10 : 7), headY - 7 + flutter, 3, 4);
@@ -990,7 +1266,6 @@ export class CharacterRigRenderer {
         break;
       }
       case 'antlers': {
-        // Woodland antlers & sakura blossoms
         ctx.fillStyle = '#78350f';
         ctx.fillRect(ax - 6, headY - 13, 2, 5);
         ctx.fillRect(ax - 9, headY - 16, 4, 2);
@@ -1017,8 +1292,8 @@ export class CharacterRigRenderer {
   ): void {
     const meta = AURA_VISUALS[auraId];
     const pulse = reducedMotion ? 1 : 0.92 + 0.08 * Math.sin(t * 4);
-    fillEllipse(ctx, ax, ay, 17 * pulse, 7 * pulse, hexRgba(meta.primaryHex, 0.24));
-    strokeEllipse(ctx, ax, ay, 15 * pulse, 6.4 * pulse, hexRgba(meta.secondaryHex, 0.78), 1.5);
+    fillEllipse(ctx, ax, ay, 17 * pulse, 7 * pulse, meta.primarySoftRgba);
+    strokeEllipse(ctx, ax, ay, 15 * pulse, 6.4 * pulse, meta.secondaryRingRgba, 1.5);
 
     if (auraId === 'lightning') {
       ctx.fillStyle = meta.secondaryHex;
@@ -1046,10 +1321,9 @@ export class CharacterRigRenderer {
       const ox = Math.round(Math.cos(ang) * 15);
       const oy = Math.round(Math.sin(ang) * 6);
       const col = i % 2 === 0 ? meta.primaryHex : meta.secondaryHex;
-      ctx.fillStyle = hexRgba(col, 0.92);
+      ctx.fillStyle = col;
 
       if (auraId === 'hearts') {
-        // Tiny 3x3 pixel heart
         ctx.fillRect(ax + ox - 1, cy + oy - 1, 1, 2);
         ctx.fillRect(ax + ox + 1, cy + oy - 1, 1, 2);
         ctx.fillRect(ax + ox, cy + oy, 1, 2);
@@ -1059,40 +1333,116 @@ export class CharacterRigRenderer {
       } else if (auraId === 'blossom') {
         ctx.fillRect(ax + ox - 1, cy + oy, 3, 2);
       } else {
-        // stars / cosmic
         drawFourPointStar(ctx, ax + ox, cy + oy, 3.2, 1.2, ang);
         ctx.fill();
       }
     }
   }
 
+  /**
+   * Sleek, beveled golden pixel-art diamond quest crest (replaces clunky dark-navy square box).
+   */
   private drawQuestExclamationBadge(
     ctx: CanvasRenderingContext2D,
     npc: OverworldNpcNode,
     tileSize: number,
     t: number,
     reducedMotion: boolean,
+    isQuestAvailable = true,
   ): void {
     const cx = Math.round((npc.x + 0.5) * tileSize);
-    const bob = reducedMotion ? 0 : Math.round(Math.sin(t * 4.5 + npc.x) * 2);
-    const by = Math.round((npc.y - 0.58) * tileSize + bob);
+    const bob = reducedMotion ? 0 : Math.round(Math.sin(t * 4.2 + npc.x) * 1.8);
+    const by = Math.round((npc.y - 0.56) * tileSize + bob);
 
-    // Crisp double-bordered Celestial pixel quest crest
-    ctx.fillStyle = '#070a1c';
-    ctx.fillRect(cx - 7, by - 9, 14, 16);
-    ctx.fillStyle = '#fbbf24';
-    ctx.fillRect(cx - 6, by - 8, 12, 14);
-    ctx.fillStyle = '#111b44';
-    ctx.fillRect(cx - 5, by - 7, 10, 12);
-    ctx.fillStyle = 'rgba(255, 232, 138, 0.22)';
-    ctx.fillRect(cx - 5, by - 7, 10, 2);
+    // Subtle soft amber glow halo behind crest
+    fillEllipse(ctx, cx, by, 8.5, 8.5, isQuestAvailable ? 'rgba(255, 212, 102, 0.24)' : 'rgba(186, 230, 253, 0.16)');
 
-    ctx.fillStyle = '#070a1c';
-    ctx.fillRect(cx, by - 4, 2, 5);
+    // Chamfered 1px dark indigo pixel-diamond frame
+    ctx.fillStyle = '#0c1026';
+    ctx.fillRect(cx - 3, by - 8, 6, 16);
+    ctx.fillRect(cx - 5, by - 6, 10, 12);
+    ctx.fillRect(cx - 7, by - 4, 14, 8);
+    ctx.fillRect(cx - 1, by - 9, 2, 18);
+
+    // Gilded brass beveled rim
+    ctx.fillStyle = isQuestAvailable ? '#d99624' : '#94a3b8';
+    ctx.fillRect(cx - 2, by - 7, 4, 14);
+    ctx.fillRect(cx - 4, by - 5, 8, 10);
+    ctx.fillRect(cx - 6, by - 3, 12, 6);
+
+    // Warm sunlit top-left specular rim
+    ctx.fillStyle = isQuestAvailable ? '#fff3b0' : '#e2e8f0';
+    ctx.fillRect(cx - 2, by - 7, 4, 2);
+    ctx.fillRect(cx - 5, by - 4, 3, 2);
+
+    // Deep royal-sapphire inner medallion
+    ctx.fillStyle = '#182454';
+    ctx.fillRect(cx - 2, by - 5, 4, 10);
+    ctx.fillRect(cx - 4, by - 3, 8, 6);
+    ctx.fillStyle = '#273a7a';
+    ctx.fillRect(cx - 2, by - 5, 3, 3);
+
+    // Crisp luminous cream-gold '!' glyph with 1px drop shadow
+    ctx.fillStyle = '#0a0e22';
+    ctx.fillRect(cx, by - 3, 2, 4);
     ctx.fillRect(cx, by + 3, 2, 2);
-    ctx.fillStyle = '#fff199';
-    ctx.fillRect(cx - 1, by - 5, 2, 5);
+    ctx.fillStyle = '#fff5b8';
+    ctx.fillRect(cx - 1, by - 4, 2, 4);
     ctx.fillRect(cx - 1, by + 2, 2, 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(cx - 1, by - 4, 1, 2);
+  }
+
+  private drawRivalStatusCrest(
+    ctx: CanvasRenderingContext2D,
+    rival: OverworldSceneState['rivals'][number],
+    tileSize: number,
+    t: number,
+    reducedMotion: boolean,
+  ): void {
+    const cx = Math.round((rival.x + 0.5) * tileSize);
+    const bob = reducedMotion ? 0 : Math.round(Math.sin(t * 4.0 + rival.x) * 1.8);
+    const by = Math.round((rival.y - 0.58) * tileSize + bob);
+
+    const tierRim =
+      rival.defeated
+        ? '#38bdf8'
+        : rival.readinessTier === 'danger'
+          ? '#f43f5e'
+          : rival.readinessTier === 'challenging'
+            ? '#f59e0b'
+            : rival.readinessTier === 'favored'
+              ? '#22c55e'
+              : '#38bdf8';
+
+    // Dark pixel-outlined chamfered shield badge
+    ctx.fillStyle = '#0c1026';
+    ctx.fillRect(cx - 6, by - 6, 12, 12);
+    ctx.fillRect(cx - 4, by - 7, 8, 14);
+    ctx.fillStyle = tierRim;
+    ctx.fillRect(cx - 5, by - 5, 10, 10);
+    ctx.fillRect(cx - 3, by - 6, 6, 12);
+    ctx.fillStyle = '#141d42';
+    ctx.fillRect(cx - 4, by - 4, 8, 8);
+
+    if (rival.defeated) {
+      // Crisp 4-point cyan rematch star
+      ctx.fillStyle = '#67e8f9';
+      ctx.fillRect(cx - 3, by, 6, 1);
+      ctx.fillRect(cx, by - 3, 1, 6);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(cx - 1, by - 1, 2, 2);
+    } else {
+      // Crisp crossed pixel duelist blades (zero emoji)
+      ctx.fillStyle = '#fef08a';
+      ctx.fillRect(cx - 3, by - 3, 2, 2);
+      ctx.fillRect(cx - 1, by - 1, 2, 2);
+      ctx.fillRect(cx + 1, by + 1, 2, 2);
+      ctx.fillRect(cx + 1, by - 3, 2, 2);
+      ctx.fillRect(cx - 3, by + 1, 2, 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(cx - 1, by - 1, 2, 2);
+    }
   }
 
   private drawFallbackHumanoid(
@@ -1142,7 +1492,7 @@ export class CharacterRigRenderer {
     ctx.fillStyle = trimHex;
     ctx.fillRect(x - 4, y - 14, 8, 3);
     if (follower.facing !== 'up') {
-      ctx.fillStyle = '#0f172a';
+      ctx.fillStyle = '#2d2642';
       ctx.fillRect(x - 3, y - 19, 2, 2);
       ctx.fillRect(x + 1, y - 19, 2, 2);
     }
