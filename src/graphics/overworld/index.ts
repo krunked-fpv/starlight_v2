@@ -1,13 +1,37 @@
-export { OverworldRenderer } from './OverworldRenderer';
+export { OverworldRenderer, MAX_RENDER_LIGHTS } from './OverworldRenderer';
 export {
   AutotileRenderer,
   CANONICAL_47_MASKS,
+  LIQUID_TILES,
+  PATH_TILES,
+  SAND_TILES,
+  TALL_GRASS_TILES,
+  WALL_TILES,
+  WATER_TILES,
+  buildSpriteCmd,
   clamp,
-  lerp,
+  computeLiquidFoamMask,
+  computeTile47Mask,
+  detectBuildingClusters,
   hash2D,
   hexToRgb01,
   hexToRgb255,
+  lerp,
+  resolveAtlasRegion,
+  resolveTreePropRegion,
+  type BuildingCluster,
+  type LightCandidate,
   type ViewTileBounds,
 } from './AutotileRenderer';
-export { LandmarkRenderer } from './LandmarkRenderer';
-export { CharacterRigRenderer } from './CharacterRigRenderer';
+export {
+  LandmarkRenderer,
+  READINESS_COLORS,
+  drawReadinessAuraRing,
+  resolveLandmarkPropRegion,
+} from './LandmarkRenderer';
+export {
+  CharacterRigRenderer,
+  AURA_VISUALS,
+  resolveCharacterRegion,
+  resolveFallbackArchetypeRegion,
+} from './CharacterRigRenderer';

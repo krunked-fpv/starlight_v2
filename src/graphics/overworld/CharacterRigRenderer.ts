@@ -1,22 +1,25 @@
 import type {
+  AtlasManifest,
+  BodyArchetype,
   Direction,
   FootstepEffect,
   IRenderBackend,
-  OverworldActor,
+  OverworldFollowerState,
+  OverworldNpcNode,
+  OverworldPlayerState,
   OverworldSceneState,
-  OverworldTileKind,
   PointLight,
-  StyleLoadout,
+  ResolvedTrainerLook,
+  SpriteDrawCmd,
+  TrainerAccessoryId,
+  TrainerAuraId,
 } from '../../contracts';
-import { getSpecies } from '../../core/catalog/speciesCatalog';
-import {
-  AURA_BY_ID,
-  STYLE_CAPES,
-  STYLE_HEADGEAR,
-  STYLE_OUTFITS,
-} from '../../core/data/styleCatalog';
 import { TYPE_PALETTES } from '../../core/data/typePalettes';
+import { SpriteAssetLoader, getSpeciesEntry } from '../../core/dojo';
 import {
+  LIQUID_TILES,
+  TALL_GRASS_TILES,
+  buildSpriteCmd,
   clamp,
   drawContactShadow,
   drawFourPointStar,
@@ -24,40 +27,144 @@ import {
   hexRgba,
   hexToRgb01,
   hexToRgb255,
-  rgb255ToStr,
-  roundedRectPath,
-  shadeRgb,
+  mixRgb,
   strokeEllipse,
+  type LightCandidate,
+  type ViewTileBounds,
 } from './AutotileRenderer';
+import { drawReadinessAuraRing } from './LandmarkRenderer';
+import { TILE } from '../../core/dojo';
 
-interface ActorMotionSample {
+interface MotionSample {
   x: number;
   y: number;
-  vx: number;
-  vy: number;
   stepAccum: number;
 }
 
-const DEFAULT_STYLE: StyleLoadout = {
-  outfit: 'voyager',
-  cape: 'none',
-  headgear: 'star-beret',
-  aura: 'none',
-  primaryAccent: '#ffd166',
-  secondaryAccent: '#7be8ff',
+export const AURA_VISUALS: Record<
+  TrainerAuraId,
+  {
+    primaryHex: string;
+    secondaryHex: string;
+    lightRgb: [number, number, number] | null;
+    lightRadius: number;
+    lightIntensity: number;
+  }
+> = {
+  none: {
+    primaryHex: '#94a3b8',
+    secondaryHex: '#cbd5e1',
+    lightRgb: null,
+    lightRadius: 0,
+    lightIntensity: 0,
+  },
+  stars: {
+    primaryHex: '#fde047',
+    secondaryHex: '#fef9c3',
+    lightRgb: [1.0, 0.88, 0.34],
+    lightRadius: 128,
+    lightIntensity: 1.05,
+  },
+  hearts: {
+    primaryHex: '#f472b6',
+    secondaryHex: '#fbcfe8',
+    lightRgb: [0.98, 0.48, 0.74],
+    lightRadius: 120,
+    lightIntensity: 0.98,
+  },
+  lightning: {
+    primaryHex: '#38bdf8',
+    secondaryHex: '#fef08a',
+    lightRgb: [0.28, 0.78, 1.0],
+    lightRadius: 136,
+    lightIntensity: 1.12,
+  },
+  blossom: {
+    primaryHex: '#fb7185',
+    secondaryHex: '#fce7f3',
+    lightRgb: [0.98, 0.52, 0.64],
+    lightRadius: 122,
+    lightIntensity: 0.96,
+  },
+  cosmic: {
+    primaryHex: '#2dd4bf',
+    secondaryHex: '#c084fc',
+    lightRgb: [0.24, 0.88, 0.82],
+    lightRadius: 138,
+    lightIntensity: 1.1,
+  },
 };
 
-function findMeta<T extends string>(list: Array<{ id: T; primaryHex: string; secondaryHex: string }>, id: T) {
-  return list.find((item) => item.id === id) ?? list[0];
+function isInBounds(x: number, y: number, bounds: ViewTileBounds, pad = 1): boolean {
+  return (
+    x >= bounds.minTx - pad &&
+    x <= bounds.maxTx + pad &&
+    y >= bounds.minTy - pad &&
+    y <= bounds.maxTy + pad
+  );
+}
+
+export function resolveFallbackArchetypeRegion(
+  manifest: AtlasManifest | null,
+  archetype: BodyArchetype,
+): string {
+  const regions = manifest?.sheets?.fallbacks?.regions;
+  if (!regions) {
+    return archetype;
+  }
+  if (regions[archetype]) return archetype;
+  const prefixed = `fallback_${archetype}`;
+  if (regions[prefixed]) return prefixed;
+  if (archetype === 'aquatic') {
+    if (regions.winged) return 'winged';
+    if (regions.quadruped) return 'quadruped';
+  }
+  return Object.keys(regions)[0] ?? archetype;
+}
+
+export function resolveCharacterRegion(
+  manifest: AtlasManifest | null,
+  trainerId: 'violet' | 'ozias',
+  facing: Direction,
+): string {
+  const desired = `${trainerId}_${facing}`;
+  const regions = manifest?.sheets?.characters?.regions;
+  if (!regions) return desired;
+  if (regions[desired]) return desired;
+  const idle = `${trainerId}_idle`;
+  if (regions[idle]) return idle;
+  return desired;
+}
+
+function createScratchCanvas(w: number, h: number): {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+} | null {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    return null;
+  }
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = false;
+    return { canvas, ctx };
+  } catch {
+    return null;
+  }
 }
 
 export class CharacterRigRenderer {
   private footsteps: FootstepEffect[] = [];
-  private actorSamples = new Map<string, ActorMotionSample>();
+  private samples = new Map<string, MotionSample>();
+  private backCosmeticCanvas: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null = null;
+  private frontCosmeticCanvas: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null = null;
 
   resetEffects(): void {
     this.footsteps.length = 0;
-    this.actorSamples.clear();
+    this.samples.clear();
   }
 
   getFootstepCount(): number {
@@ -65,52 +172,37 @@ export class CharacterRigRenderer {
   }
 
   /**
-   * Tracks actor velocities, emits terrain-aware footstep effects, and ages active decals.
+   * Tracks player and follower locomotion to spawn terrain-aware footsteps & grass dust/petal bursts.
    */
   update(state: OverworldSceneState, dtSeconds: number): void {
     const dt = clamp(Number.isFinite(dtSeconds) ? dtSeconds : 0, 0, 0.05);
-    const { map } = state;
 
-    const tracked: OverworldActor[] = [state.player, state.follower];
-    for (const actor of tracked) {
-      const prev = this.actorSamples.get(actor.id);
+    const track = (id: string, x: number, y: number, moving: boolean, isPlayer: boolean) => {
+      const prev = this.samples.get(id);
       if (!prev) {
-        this.actorSamples.set(actor.id, {
-          x: actor.x,
-          y: actor.y,
-          vx: 0,
-          vy: 0,
-          stepAccum: 0,
-        });
-        continue;
+        this.samples.set(id, { x, y, stepAccum: 0 });
+        return;
       }
-
-      const dx = actor.x - prev.x;
-      const dy = actor.y - prev.y;
-      const dist = Math.hypot(dx, dy);
-      if (dt > 0.0001) {
-        const blend = clamp(dt * 14, 0.15, 1);
-        prev.vx = prev.vx * (1 - blend) + (dx / dt) * blend;
-        prev.vy = prev.vy * (1 - blend) + (dy / dt) * blend;
-      }
-
+      const dist = Math.hypot(x - prev.x, y - prev.y);
       if (dist > 0.002) {
         prev.stepAccum += dist;
-      } else if (actor.moving && dt > 0) {
-        // Support animated walkCycle preview even when actor x/y stays stationary
+      } else if (moving && dt > 0) {
         prev.stepAccum += dt * 1.4;
       }
 
-      if (prev.stepAccum >= 0.44) {
-        prev.stepAccum %= 0.44;
-        this.spawnFootstep(state, actor, map.tiles);
+      if (prev.stepAccum >= 0.45) {
+        prev.stepAccum %= 0.45;
+        this.spawnFootstep(state, x, y, isPlayer);
       }
+      prev.x = x;
+      prev.y = y;
+    };
 
-      prev.x = actor.x;
-      prev.y = actor.y;
+    track('player', state.player.x, state.player.y, state.player.moving, true);
+    if (state.follower) {
+      track('follower', state.follower.x, state.follower.y, state.follower.moving, false);
     }
 
-    // Age & prune footsteps
     for (let i = this.footsteps.length - 1; i >= 0; i--) {
       this.footsteps[i].age += dt;
       if (this.footsteps[i].age >= this.footsteps[i].maxAge) {
@@ -121,45 +213,56 @@ export class CharacterRigRenderer {
 
   private spawnFootstep(
     state: OverworldSceneState,
-    actor: OverworldActor,
-    tiles: OverworldTileKind[],
+    tileFloatX: number,
+    tileFloatY: number,
+    isPlayer: boolean,
   ): void {
-    const { map, biome, reducedMotion } = state;
+    const { cols, rows, tileSize, worldMap, currentBiomeId, reducedMotion, player } = state;
     if (reducedMotion && this.footsteps.length >= 6) return;
     if (this.footsteps.length >= 48) {
       this.footsteps.shift();
     }
 
-    const tx = clamp(Math.floor(actor.x), 0, map.width - 1);
-    const ty = clamp(Math.floor(actor.y), 0, map.height - 1);
-    const tileKind = tiles[ty * map.width + tx] ?? 'ground';
+    const tx = clamp(Math.round(tileFloatX), 0, cols - 1);
+    const ty = clamp(Math.round(tileFloatY), 0, rows - 1);
+    const tileId = worldMap[ty]?.[tx] ?? TILE.GRASS;
 
     let kind: FootstepEffect['kind'] = 'dust';
-    let colorHex = biome.groundHex;
+    let colorHex = '#d8ccb2';
     let maxAge = 0.55;
 
-    const aura = actor.style?.aura ?? 'none';
-    if (tileKind === 'shallow-water' || tileKind === 'deep-water' || tileKind === 'bridge') {
+    const aura = player.look.aura;
+    if (LIQUID_TILES.has(tileId) || tileId === TILE.BRIDGE) {
       kind = 'ripple';
-      colorHex = '#bceeff';
+      colorHex = tileId === TILE.LAVA ? '#fb923c' : '#bceeff';
       maxAge = 0.72;
-    } else if (tileKind === 'plaza' || (actor.role === 'player' && aura !== 'none')) {
-      kind = 'sparkle';
-      colorHex = aura !== 'none' ? AURA_BY_ID[aura].primaryHex : biome.accentHex;
+    } else if (isPlayer && aura !== 'none') {
+      kind = aura === 'blossom' ? 'petal' : 'sparkle';
+      colorHex = AURA_VISUALS[aura].primaryHex;
       maxAge = 0.65;
-    } else if (tileKind === 'flowerbed' || biome.id === 'starbloom-glade') {
+    } else if (
+      tileId === TILE.FLOWER ||
+      tileId === TILE.GROVE_GRASS ||
+      tileId === TILE.FAE_GRASS ||
+      currentBiomeId === 'grove' ||
+      currentBiomeId === 'faeveldt'
+    ) {
       kind = 'petal';
-      colorHex = biome.accentHex;
+      colorHex = tileId === TILE.GROVE_GRASS || tileId === TILE.FAE_GRASS ? '#f9a8d4' : '#fde047';
       maxAge = 0.68;
-    } else if (tileKind === 'sand') {
+    } else if (TALL_GRASS_TILES.has(tileId)) {
       kind = 'dust';
-      colorHex = '#e6cfa0';
-      maxAge = 0.5;
+      colorHex = tileId === TILE.SNOW_GRASS ? '#bae6fd' : '#86efac';
+      maxAge = 0.56;
+    } else if (tileId === TILE.RUNE_TRAIL || currentBiomeId === 'sanctum' || currentBiomeId === 'rift' || currentBiomeId === 'crater') {
+      kind = 'sparkle';
+      colorHex = '#7dd3fc';
+      maxAge = 0.62;
     }
 
     this.footsteps.push({
-      x: actor.x * map.tileSize,
-      y: actor.y * map.tileSize + 2,
+      x: (tileFloatX + 0.5) * tileSize,
+      y: (tileFloatY + 0.88) * tileSize,
       kind,
       age: 0,
       maxAge,
@@ -168,586 +271,792 @@ export class CharacterRigRenderer {
   }
 
   /**
-   * Emits a real-time 2D PointLight from the player's equipped Style Studio aura.
+   * Collects player's equipped Style Studio aura PointLight candidate.
    */
   collectPlayerAuraLight(
     state: OverworldSceneState,
-    out: PointLight[],
+    camCenterX: number,
+    camCenterY: number,
+    out: LightCandidate[],
   ): void {
-    const { player, map } = state;
-    const auraId = player.style?.aura ?? 'none';
-    if (auraId === 'none') return;
+    const { player, tileSize } = state;
+    const auraId = player.look.aura;
+    const meta = AURA_VISUALS[auraId];
+    if (!meta || !meta.lightRgb || auraId === 'none') return;
 
-    const meta = AURA_BY_ID[auraId];
-    if (!meta || !meta.lightRgb || !meta.lightRadius || !meta.lightIntensity) return;
-
-    out.push({
+    const wx = (player.x + 0.5) * tileSize;
+    const wy = (player.y + 0.45) * tileSize;
+    const dx = wx - camCenterX;
+    const dy = wy - camCenterY;
+    const light: PointLight = {
       id: `player-aura-${auraId}`,
-      x: player.x * map.tileSize,
-      y: player.y * map.tileSize - map.tileSize * 0.25,
+      x: wx,
+      y: wy,
       radius: meta.lightRadius,
       color: [...meta.lightRgb],
       intensity: meta.lightIntensity,
-      flickerSpeed: auraId === 'sky-thunder' ? 6.5 : auraId === 'ember-crown' ? 4.8 : 2.6,
-      flickerAmount: auraId === 'sky-thunder' ? 0.16 : 0.08,
-    });
+      flickerSpeed: auraId === 'lightning' ? 6.5 : 2.8,
+      flickerAmount: auraId === 'lightning' ? 0.16 : 0.08,
+    };
+    out.push({ light, distSq: dx * dx + dy * dy });
   }
 
   /**
-   * Emits soft glowing aura particles around the player via backend.drawParticle.
+   * Collects Y-sorted SpriteDrawCmds for NPCs, Rivals, Lead Follower, Player,
+   * and (when DOM canvas available) Y-sorted cosmetic overlay canvases for proper occlusion.
+   * Returns true if offscreen cosmetic canvases were emitted into outSprites.
    */
-  emitAuraParticles(backend: IRenderBackend, state: OverworldSceneState): void {
-    const { player, map, elapsedSeconds, reducedMotion } = state;
-    const auraId = player.style?.aura ?? 'none';
-    if (auraId === 'none') return;
+  collectSprites(
+    state: OverworldSceneState,
+    bounds: ViewTileBounds,
+    manifest: AtlasManifest | null,
+    outSprites: SpriteDrawCmd[],
+  ): boolean {
+    const { tileSize, npcs, rivals, follower, player, elapsedSeconds, reducedMotion } = state;
+    const t = reducedMotion ? 0 : elapsedSeconds;
 
-    const meta = AURA_BY_ID[auraId];
-    const [r, g, b] = meta.lightRgb ?? hexToRgb01(meta.primaryHex);
-    const [sr, sg, sb] = hexToRgb01(meta.secondaryHex);
-    const px = player.x * map.tileSize;
-    const py = player.y * map.tileSize - 10;
+    // 1. 23 NPCs
+    for (let i = 0; i < npcs.length; i++) {
+      const npc = npcs[i];
+      if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
+      const isWillow = npc.role === 'professor' || npc.id.includes('willow');
+      const regionId = isWillow
+        ? 'willow_idle'
+        : i % 2 === 0
+          ? 'willow_idle'
+          : 'ozias_idle';
+      const tintRgb = isWillow
+        ? null
+        : mixRgb([255, 255, 255], hexToRgb255(npc.accentHex || '#a855f7'), 0.34);
 
-    const count = reducedMotion ? 2 : 5;
-    for (let i = 0; i < count; i++) {
-      const ang = (elapsedSeconds * (reducedMotion ? 0.35 : 1.7) + (i * Math.PI * 2) / count);
-      const orbitR = 14 + (i % 2) * 5;
-      const ox = Math.cos(ang) * orbitR;
-      const oy = Math.sin(ang) * (orbitR * 0.46) - (auraId === 'ember-crown' ? ((elapsedSeconds * 16 + i * 7) % 18) : 0);
-      const useSec = i % 2 === 1;
-      backend.drawParticle({
-        x: px + ox,
-        y: py + oy,
-        radius: reducedMotion ? 6 : 8.5,
-        color: [useSec ? sr : r, useSec ? sg : g, useSec ? sb : b, reducedMotion ? 0.42 : 0.65],
-        softness: 0.78,
-        additive: true,
-      });
+      const dw = 32;
+      const dh = 40;
+      const dx = Math.round((npc.x + 0.5) * tileSize - dw * 0.5);
+      const dy = Math.round((npc.y + 0.94) * tileSize - dh);
+      outSprites.push(
+        buildSpriteCmd(manifest, 'characters', regionId, dx, dy, dw, dh, {
+          depth: (npc.y + 0.94) * tileSize,
+          ...(tintRgb ? { tint: [tintRgb[0] / 255, tintRgb[1] / 255, tintRgb[2] / 255, 1] } : {}),
+        }),
+      );
+    }
+
+    // 2. 17 Rivals
+    for (const rival of rivals) {
+      if (!isInBounds(rival.x, rival.y, bounds, 1)) continue;
+      const dw = 32;
+      const dh = 40;
+      const dx = Math.round((rival.x + 0.5) * tileSize - dw * 0.5);
+      const dy = Math.round((rival.y + 0.94) * tileSize - dh);
+      const [rr, rg, rb] = hexToRgb01(rival.accentHex || '#f43f5e');
+      outSprites.push(
+        buildSpriteCmd(manifest, 'characters', 'rival_idle', dx, dy, dw, dh, {
+          depth: (rival.y + 0.94) * tileSize,
+          rimColor: rival.defeated ? undefined : [rr, rg, rb, 0.52],
+        }),
+      );
+    }
+
+    // 3. Lead Pokémon Follower (animated GIF/PNG frames OR 'fallbacks' pixel archetype sprite)
+    if (follower) {
+      const bob = follower.moving
+        ? -Math.round(Math.abs(Math.sin(follower.walkCycle * Math.PI * 1.4)) * (reducedMotion ? 1 : 2.6))
+        : Math.round(Math.sin(t * 2.8) * 0.8);
+      const depth = (follower.y + 0.92) * tileSize;
+      const shinyRim: [number, number, number, number] | undefined = follower.isShiny
+        ? [1.0, 0.92, 0.42, 0.72]
+        : undefined;
+
+      const animFrame = follower.frames
+        ? SpriteAssetLoader.selectFrame(follower.frames, elapsedSeconds)
+        : null;
+
+      if (animFrame) {
+        const fw = animFrame.width || follower.frames?.width || 48;
+        const fh = animFrame.height || follower.frames?.height || 48;
+        const fit = Math.min(40 / Math.max(1, fw), 40 / Math.max(1, fh));
+        const dw = Math.max(18, Math.round(fw * fit));
+        const dh = Math.max(18, Math.round(fh * fit));
+        const dx = Math.round((follower.x + 0.5) * tileSize - dw * 0.5);
+        const dy = Math.round((follower.y + 0.94) * tileSize - dh + bob);
+        const baseFlip = follower.facing === 'right';
+        const flipX = follower.frames?.mirrorX ? !baseFlip : baseFlip;
+
+        outSprites.push({
+          source: animFrame,
+          dx,
+          dy,
+          dw,
+          dh,
+          flipX,
+          pixelCrisp: true,
+          depth,
+          rimColor: shinyRim,
+        });
+      } else {
+        const archetype: BodyArchetype =
+          follower.frames?.archetype ?? getSpeciesEntry(follower.speciesId).archetype;
+        const regionId = resolveFallbackArchetypeRegion(manifest, archetype);
+        const dw = 40;
+        const dh = 40;
+        const dx = Math.round((follower.x + 0.5) * tileSize - dw * 0.5);
+        const dy = Math.round((follower.y + 0.94) * tileSize - dh + bob);
+
+        outSprites.push(
+          buildSpriteCmd(manifest, 'fallbacks', regionId, dx, dy, dw, dh, {
+            flipX: follower.facing === 'right',
+            depth,
+            rimColor: shinyRim,
+          }),
+        );
+      }
+    }
+
+    // 4. Player (Violet / Ozias) + Y-sorted live Style Studio cosmetics
+    const playerBob = player.moving
+      ? -Math.round(Math.abs(Math.sin(player.walkCycle * Math.PI * 1.5)) * (reducedMotion ? 1 : 2.5))
+      : Math.round(Math.sin(t * 2.4) * 0.7);
+    const pDepth = (player.y + 0.94) * tileSize;
+    const pRegion = resolveCharacterRegion(manifest, player.trainerId, player.facing);
+    const pDx = Math.round((player.x + 0.5) * tileSize - 16);
+    const pDy = Math.round((player.y + 0.94) * tileSize - 40 + playerBob);
+    const auraMeta = AURA_VISUALS[player.look.aura];
+    const rimRgb =
+      player.look.aura !== 'none'
+        ? hexToRgb01(auraMeta.primaryHex)
+        : player.look.styleId !== 'default'
+          ? hexToRgb01(player.look.accent)
+          : null;
+
+    // Offscreen cosmetic layers (used in browsers so trees/cottages properly occlude cape & headgear)
+    let usedCanvasCosmetics = false;
+    if (typeof document !== 'undefined') {
+      if (!this.backCosmeticCanvas) this.backCosmeticCanvas = createScratchCanvas(48, 52);
+      if (!this.frontCosmeticCanvas) this.frontCosmeticCanvas = createScratchCanvas(48, 52);
+
+      if (this.backCosmeticCanvas && this.frontCosmeticCanvas) {
+        usedCanvasCosmetics = true;
+        const ox = Math.round((player.x + 0.5) * tileSize - 24);
+        const oy = Math.round((player.y + 0.94) * tileSize - 48 + playerBob);
+
+        // Back layer (cape when facing !== 'up')
+        const bCtx = this.backCosmeticCanvas.ctx;
+        bCtx.clearRect(0, 0, 48, 52);
+        if (player.look.cape && player.facing !== 'up') {
+          this.drawPixelCape(bCtx, 24, 48, player.facing, player.look, player.moving, player.walkCycle, t, reducedMotion);
+          outSprites.push({
+            source: this.backCosmeticCanvas.canvas,
+            dx: ox,
+            dy: oy,
+            dw: 48,
+            dh: 52,
+            pixelCrisp: true,
+            depth: pDepth - 0.05,
+          });
+        }
+
+        // Front layer (outfit trim, front cape if facing === 'up', 8 accessories, aura glints)
+        const fCtx = this.frontCosmeticCanvas.ctx;
+        fCtx.clearRect(0, 0, 48, 52);
+        this.drawPlayerFrontCosmetics(fCtx, 24, 48, player, t, reducedMotion);
+        outSprites.push({
+          source: this.frontCosmeticCanvas.canvas,
+          dx: ox,
+          dy: oy,
+          dw: 48,
+          dh: 52,
+          pixelCrisp: true,
+          depth: pDepth + 0.05,
+        });
+      }
+    }
+
+    outSprites.push(
+      buildSpriteCmd(manifest, 'characters', pRegion, pDx, pDy, 32, 40, {
+        depth: pDepth,
+        rimColor: rimRgb ? [rimRgb[0], rimRgb[1], rimRgb[2], 0.45] : undefined,
+      }),
+    );
+
+    return usedCanvasCosmetics;
+  }
+
+  /**
+   * Renders grounded contact shadows, rival readiness aura rings, player aura ground ring,
+   * terrain-aware footsteps, optional back cape (when not using offscreen canvas), and
+   * procedural pixel character fallbacks when atlases are unattached.
+   */
+  renderGroundUnderlays(
+    ctx: CanvasRenderingContext2D,
+    state: OverworldSceneState,
+    bounds: ViewTileBounds,
+    manifest: AtlasManifest | null,
+    usedCanvasCosmetics: boolean,
+  ): void {
+    const { tileSize, npcs, rivals, follower, player, elapsedSeconds, reducedMotion } = state;
+    const t = reducedMotion ? 0 : elapsedSeconds;
+    const hasChars = Boolean(manifest?.sheets?.characters);
+    const hasFallbacks = Boolean(manifest?.sheets?.fallbacks);
+    ctx.imageSmoothingEnabled = false;
+
+    // 1. Footsteps
+    this.renderFootsteps(ctx);
+
+    // 2. Player aura ground ring
+    if (player.look.aura !== 'none') {
+      this.drawAuraGroundRing(
+        ctx,
+        (player.x + 0.5) * tileSize,
+        (player.y + 0.9) * tileSize,
+        player.look.aura,
+        t,
+        reducedMotion,
+      );
+    }
+
+    // 3. NPCs shadows (+ fallback)
+    for (const npc of npcs) {
+      if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
+      const cx = (npc.x + 0.5) * tileSize;
+      const by = (npc.y + 0.92) * tileSize;
+      drawContactShadow(ctx, cx, by, 10, 4, 0.34);
+      if (!hasChars) {
+        this.drawFallbackHumanoid(ctx, cx, by, npc.accentHex || '#a855f7', '#fef3c7', 'down');
+      }
+    }
+
+    // 4. Rivals readiness aura rings + shadows (+ fallback)
+    for (const rival of rivals) {
+      if (!isInBounds(rival.x, rival.y, bounds, 1)) continue;
+      const cx = (rival.x + 0.5) * tileSize;
+      const by = (rival.y + 0.92) * tileSize;
+      drawReadinessAuraRing(
+        ctx,
+        cx,
+        by - 1,
+        tileSize * 0.52,
+        tileSize * 0.22,
+        rival.readinessTier,
+        t,
+        reducedMotion,
+        rival.defeated,
+      );
+      drawContactShadow(ctx, cx, by, 10.5, 4, 0.36);
+      if (!hasChars) {
+        this.drawFallbackHumanoid(ctx, cx, by, rival.accentHex || '#f43f5e', '#fde047', 'down');
+      }
+    }
+
+    // 5. Follower shadow (+ fallback)
+    if (follower) {
+      const fx = (follower.x + 0.5) * tileSize;
+      const fy = (follower.y + 0.92) * tileSize;
+      drawContactShadow(ctx, fx, fy, 10, 3.8, 0.32);
+      const hasFrames = Boolean(follower.frames && follower.frames.frames.length > 0);
+      if (!hasFrames && !hasFallbacks) {
+        this.drawFallbackFollower(ctx, follower, fx, fy, t);
+      }
+    }
+
+    // 6. Player shadow (+ back cape fallback if Node Vitest without DOM canvas + character fallback)
+    const px = (player.x + 0.5) * tileSize;
+    const py = (player.y + 0.92) * tileSize;
+    drawContactShadow(ctx, px, py, 11, 4.2, 0.36);
+
+    const playerBob = player.moving
+      ? -Math.round(Math.abs(Math.sin(player.walkCycle * Math.PI * 1.5)) * (reducedMotion ? 1 : 2.5))
+      : Math.round(Math.sin(t * 2.4) * 0.7);
+
+    if (!usedCanvasCosmetics && player.look.cape && player.facing !== 'up') {
+      this.drawPixelCape(ctx, px, py + playerBob, player.facing, player.look, player.moving, player.walkCycle, t, reducedMotion);
+    }
+
+    if (!hasChars) {
+      this.drawFallbackHumanoid(
+        ctx,
+        px,
+        py + playerBob,
+        player.look.outfitPrimary,
+        player.look.outfitSecondary,
+        player.facing,
+      );
     }
   }
 
   /**
-   * Renders active footstep dust puffs, water ripples, petals, and starlight sparkles.
+   * Renders post-sprite character overlays:
+   * - Direct player cosmetics (when DOM offscreen canvas wasn't used)
+   * - NPC quest '!' floating pixel badges
+   * - Shiny follower pixel star sparkles
    */
+  renderPostSpriteOverlays(
+    ctx: CanvasRenderingContext2D,
+    state: OverworldSceneState,
+    bounds: ViewTileBounds,
+    usedCanvasCosmetics: boolean,
+  ): void {
+    const { tileSize, npcs, follower, player, elapsedSeconds, reducedMotion } = state;
+    const t = reducedMotion ? 0 : elapsedSeconds;
+    ctx.imageSmoothingEnabled = false;
+
+    // 1. Player front cosmetics fallback in Node / headless tests
+    if (!usedCanvasCosmetics) {
+      const playerBob = player.moving
+        ? -Math.round(Math.abs(Math.sin(player.walkCycle * Math.PI * 1.5)) * (reducedMotion ? 1 : 2.5))
+        : Math.round(Math.sin(t * 2.4) * 0.7);
+      const px = Math.round((player.x + 0.5) * tileSize);
+      const py = Math.round((player.y + 0.94) * tileSize + playerBob);
+      this.drawPlayerFrontCosmetics(ctx, px, py, player, t, reducedMotion);
+    }
+
+    // 2. NPC quest '!' pixel badges
+    for (const npc of npcs) {
+      if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
+      if (!npc.hasAvailableQuest) continue;
+      this.drawQuestExclamationBadge(ctx, npc, tileSize, t, reducedMotion);
+    }
+
+    // 3. Shiny follower pixel glints
+    if (follower?.isShiny) {
+      const fx = (follower.x + 0.5) * tileSize;
+      const fy = (follower.y + 0.45) * tileSize;
+      for (let i = 0; i < 2; i++) {
+        const ang = t * 2.6 + i * Math.PI;
+        const gx = Math.round(fx + Math.cos(ang) * 14);
+        const gy = Math.round(fy + Math.sin(ang) * 8);
+        ctx.fillStyle = '#fff59d';
+        drawFourPointStar(ctx, gx, gy, 4, 1.4, t);
+        ctx.fill();
+      }
+    }
+  }
+
+  /**
+   * Emits soft glowing particles for player's equipped Style Studio aura and shiny follower.
+   */
+  emitCharacterParticles(backend: IRenderBackend, state: OverworldSceneState): void {
+    const { player, follower, tileSize, elapsedSeconds, reducedMotion } = state;
+    const auraId = player.look.aura;
+
+    if (auraId !== 'none') {
+      const meta = AURA_VISUALS[auraId];
+      const [r, g, b] = hexToRgb01(meta.primaryHex);
+      const [sr, sg, sb] = hexToRgb01(meta.secondaryHex);
+      const px = (player.x + 0.5) * tileSize;
+      const py = (player.y + 0.5) * tileSize;
+      const count = reducedMotion ? 2 : 5;
+
+      for (let i = 0; i < count; i++) {
+        const ang = elapsedSeconds * (reducedMotion ? 0.35 : 1.8) + (i * Math.PI * 2) / count;
+        const orbitR = 14 + (i % 2) * 5;
+        const ox = Math.cos(ang) * orbitR;
+        const oy =
+          Math.sin(ang) * (orbitR * 0.48) -
+          (auraId === 'hearts' || auraId === 'blossom' ? ((elapsedSeconds * 12 + i * 6) % 16) : 0);
+        const useSec = i % 2 === 1;
+        backend.drawParticle({
+          x: px + ox,
+          y: py + oy,
+          radius: reducedMotion ? 5.5 : 7.8,
+          color: [useSec ? sr : r, useSec ? sg : g, useSec ? sb : b, reducedMotion ? 0.42 : 0.68],
+          softness: 0.78,
+          additive: auraId !== 'blossom',
+        });
+      }
+    }
+
+    if (follower?.isShiny) {
+      const fx = (follower.x + 0.5) * tileSize;
+      const fy = (follower.y + 0.45) * tileSize;
+      const count = reducedMotion ? 1 : 3;
+      for (let i = 0; i < count; i++) {
+        const ang = elapsedSeconds * 2.2 + (i * Math.PI * 2) / count;
+        backend.drawParticle({
+          x: fx + Math.cos(ang) * 14,
+          y: fy + Math.sin(ang) * 7,
+          radius: 5.5,
+          color: [1.0, 0.94, 0.52, 0.7],
+          softness: 0.75,
+          additive: true,
+        });
+      }
+    }
+  }
+
   renderFootsteps(ctx: CanvasRenderingContext2D): void {
     for (const f of this.footsteps) {
       const t = clamp(f.age / Math.max(0.01, f.maxAge), 0, 1);
       const alpha = (1 - t) * 0.75;
 
       if (f.kind === 'ripple') {
-        const r = 4 + t * 14;
+        const r = 4 + t * 12;
         strokeEllipse(ctx, f.x, f.y, r, r * 0.48, hexRgba(f.colorHex, alpha), 1.4);
       } else if (f.kind === 'sparkle') {
-        const size = (1 - Math.abs(t - 0.35)) * 5.2;
+        const size = (1 - Math.abs(t - 0.35)) * 4.8;
         ctx.fillStyle = hexRgba(f.colorHex, alpha);
-        drawFourPointStar(ctx, f.x, f.y - t * 9, Math.max(1.5, size), Math.max(0.6, size * 0.36), t * 2);
+        drawFourPointStar(ctx, f.x, f.y - t * 8, Math.max(1.5, size), Math.max(0.6, size * 0.35), t * 2);
         ctx.fill();
       } else if (f.kind === 'petal') {
-        fillEllipse(
-          ctx,
-          f.x + Math.sin(t * 6) * 4,
-          f.y - t * 6,
-          2.8,
-          1.8,
-          hexRgba(f.colorHex, alpha),
-        );
+        ctx.fillStyle = hexRgba(f.colorHex, alpha);
+        ctx.fillRect(Math.round(f.x + Math.sin(t * 6) * 3) - 1, Math.round(f.y - t * 6) - 1, 3, 2);
       } else {
-        const r = 3 + t * 5.5;
-        ctx.fillStyle = hexRgba(f.colorHex, alpha * 0.68);
-        ctx.beginPath();
-        ctx.arc(f.x - t * 3, f.y - t * 5, r * 0.65, 0, Math.PI * 2);
-        ctx.arc(f.x + t * 3, f.y - t * 4, r * 0.55, 0, Math.PI * 2);
-        ctx.fill();
+        const r = 2 + Math.round(t * 3);
+        ctx.fillStyle = hexRgba(f.colorHex, alpha * 0.7);
+        ctx.fillRect(Math.round(f.x - t * 3 - r * 0.5), Math.round(f.y - t * 4), r, r);
+        ctx.fillRect(Math.round(f.x + t * 3), Math.round(f.y - t * 3), r, r);
       }
     }
   }
 
-  /**
-   * Renders an actor (player, follower, npc, or rival) with grounded shadow,
-   * directional multi-frame animation, and live Style Studio cosmetics.
-   */
-  renderActor(
+  private drawPlayerFrontCosmetics(
     ctx: CanvasRenderingContext2D,
-    actor: OverworldActor,
-    state: OverworldSceneState,
+    ax: number,
+    baseY: number,
+    player: OverworldPlayerState,
+    t: number,
+    reducedMotion: boolean,
   ): void {
-    const { tileSize } = state.map;
-    const ax = actor.x * tileSize;
-    const ay = actor.y * tileSize;
-    const t = state.reducedMotion ? state.elapsedSeconds * 0.2 : state.elapsedSeconds;
+    const { look, facing, moving, walkCycle } = player;
 
-    if (actor.role === 'follower') {
-      this.drawFollowerRig(ctx, actor, ax, ay, t, state.reducedMotion);
+    // Cape front shoulder drape when facing up
+    if (look.cape && facing === 'up') {
+      this.drawPixelCape(ctx, ax, baseY, facing, look, moving, walkCycle, t, reducedMotion);
+    }
+
+    // 10 Outfit style crisp pixel scarf, sash, & emblem trim
+    this.drawOutfitStyleTrim(ctx, ax, baseY, facing, look);
+
+    // 8 Crisp pixel headgear accessories
+    this.drawPixelAccessory(ctx, ax, baseY - 26, facing, look.accessory, look, t, reducedMotion);
+
+    // 6 Animated pixel aura sparkle accents
+    if (look.aura !== 'none') {
+      this.drawPixelAuraAccents(ctx, ax, baseY - 18, look.aura, t, reducedMotion);
+    }
+  }
+
+  private drawOutfitStyleTrim(
+    ctx: CanvasRenderingContext2D,
+    ax: number,
+    baseY: number,
+    facing: Direction,
+    look: ResolvedTrainerLook,
+  ): void {
+    const primary = look.outfitPrimary;
+    const secondary = look.outfitSecondary;
+    const torsoTop = baseY - 20;
+
+    // Crisp pixel scarf/collar & belt sash colored by the 10 Style Studio palettes
+    if (facing === 'up') {
+      ctx.fillStyle = primary;
+      ctx.fillRect(ax - 6, torsoTop + 1, 12, 3);
+      ctx.fillStyle = secondary;
+      ctx.fillRect(ax - 5, torsoTop + 8, 10, 2);
       return;
     }
 
-    this.drawHumanoidRig(ctx, actor, ax, ay, t, state.reducedMotion);
+    // Collar / scarf accent
+    ctx.fillStyle = primary;
+    ctx.fillRect(ax - 6, torsoTop, 12, 3);
+    ctx.fillStyle = secondary;
+    ctx.fillRect(ax - 2, torsoTop + 2, 4, 3);
+
+    // Side sash tail & waist belt
+    ctx.fillStyle = secondary;
+    ctx.fillRect(ax - 6, torsoTop + 8, 12, 2);
+    if (look.styleId !== 'default') {
+      // Distinctive style chest clasp & coat hem accent
+      ctx.fillStyle = look.accent;
+      ctx.fillRect(ax - 1, torsoTop + 4, 2, 3);
+      ctx.fillStyle = primary;
+      ctx.fillRect(ax - 6, torsoTop + 10, 3, 4);
+      ctx.fillRect(ax + 3, torsoTop + 10, 3, 4);
+    }
   }
 
-  private drawHumanoidRig(
+  private drawPixelCape(
     ctx: CanvasRenderingContext2D,
-    actor: OverworldActor,
     ax: number,
-    ay: number,
+    baseY: number,
+    facing: Direction,
+    look: ResolvedTrainerLook,
+    moving: boolean,
+    walkCycle: number,
     t: number,
     reducedMotion: boolean,
   ): void {
-    const style = actor.style ?? DEFAULT_STYLE;
-    const isPlayer = actor.role === 'player';
-    const isRival = actor.role === 'rival';
-
-    const stridePhase = actor.moving ? actor.walkCycle * Math.PI * 1.5 : 0;
-    const stride = actor.moving ? Math.sin(stridePhase) : 0;
-    const bob = actor.moving
-      ? -Math.abs(Math.sin(stridePhase)) * (reducedMotion ? 1.0 : 2.6)
-      : Math.sin(t * 2.4 + ax * 0.05) * (reducedMotion ? 0 : 0.7);
-
-    // Aura underlay ring for player
-    if (isPlayer && style.aura !== 'none') {
-      this.drawAuraUnderlay(ctx, ax, ay, style.aura, t, reducedMotion);
-    }
-
-    // Grounded contact shadow
-    drawContactShadow(ctx, ax, ay + 1, 11.5, 4.4, 0.36);
-
-    // Resolve palette based on role & Style Studio outfit
-    let coatHex = '#3c5aa6';
-    let trimHex = '#ffd166';
-    let hairHex = '#352b54';
-    let skinHex = '#f5d4b8';
-    let bootsHex = '#3d2e2a';
-
-    if (isPlayer) {
-      const outfit = findMeta(STYLE_OUTFITS, style.outfit);
-      coatHex = outfit.primaryHex;
-      trimHex = style.primaryAccent || outfit.secondaryHex;
-    } else if (isRival) {
-      coatHex = actor.accentHex || '#843080';
-      trimHex = '#ff84d0';
-      hairHex = '#d0daf0';
-      bootsHex = '#2a223a';
-    } else {
-      coatHex = actor.accentHex || '#448876';
-      trimHex = '#daf2c0';
-      hairHex = '#844a34';
-      skinHex = '#eec6a8';
-    }
-
-    const coatRgb = hexToRgb255(coatHex);
-    const coatDark = rgb255ToStr(shadeRgb(coatRgb, 0.72));
-    const coatLight = rgb255ToStr(shadeRgb(coatRgb, 1.15, 10));
-    const dir = actor.facing;
-
-    // Velocity vector for flowing cape direction
-    const sample = this.actorSamples.get(actor.id);
-    const capeWave = Math.sin(t * (actor.moving ? 8.5 : 2.6) + stridePhase) * (reducedMotion ? 0.6 : 3.2);
-    const showCapeBehind = isPlayer && style.cape !== 'none' && dir !== 'up';
-    const showCapeInFront = isPlayer && style.cape !== 'none' && dir === 'up';
-
-    if (showCapeBehind) {
-      this.drawFlowingCape(ctx, ax, ay + bob, dir, style.cape, capeWave, stride, sample, false);
-    }
-
-    // Boots / legs with alternating walk stride
-    ctx.fillStyle = bootsHex;
-    if (dir === 'left' || dir === 'right') {
-      const f = dir === 'right' ? 1 : -1;
-      ctx.fillRect(ax - 3 + stride * 3.8 * f, ay - 9 + Math.min(0, stride * 2), 5, 9);
-      ctx.fillStyle = rgb255ToStr(shadeRgb(hexToRgb255(bootsHex), 0.78));
-      ctx.fillRect(ax - 2 - stride * 3.8 * f, ay - 9 - Math.min(0, stride * 2), 5, 9);
-    } else {
-      ctx.fillRect(ax - 6.5, ay - 9 - Math.max(0, stride * 2.2), 5, 9);
-      ctx.fillRect(ax + 1.5, ay - 9 - Math.max(0, -stride * 2.2), 5, 9);
-    }
-
-    // Torso / Coat silhouette tailored by Style Studio OutfitId
-    const torsoY = ay - 22 + bob;
-    const outfitId = isPlayer ? style.outfit : 'voyager';
-    if (outfitId === 'astral-robe') {
-      ctx.fillStyle = coatHex;
-      ctx.beginPath();
-      ctx.moveTo(ax - 7, torsoY);
-      ctx.lineTo(ax + 7, torsoY);
-      ctx.lineTo(ax + 10, torsoY + 15);
-      ctx.lineTo(ax - 10, torsoY + 15);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = trimHex;
-      ctx.fillRect(ax - 2, torsoY + 1, 4, 13);
-    } else {
-      ctx.fillStyle = coatHex;
-      roundedRectPath(ctx, ax - 7.5, torsoY, 15, 13.5, 3);
-      ctx.fill();
-      ctx.fillStyle = coatLight;
-      ctx.fillRect(ax - 5.5, torsoY + 1, 11, 3);
-      ctx.fillStyle = trimHex;
-      ctx.fillRect(ax - 7.5, torsoY + 9, 15, 2.2);
-      if (outfitId === 'ranger-coat' || outfitId === 'aegis-jacket') {
-        ctx.fillStyle = trimHex;
-        ctx.fillRect(ax - 1.5, torsoY + 2, 3, 7);
-      }
-    }
-
-    // Swinging arms
-    ctx.fillStyle = coatDark;
-    if (dir === 'left') {
-      ctx.fillRect(ax - 2 + stride * 2.4, torsoY + 2, 4, 9);
-    } else if (dir === 'right') {
-      ctx.fillRect(ax - 2 - stride * 2.4, torsoY + 2, 4, 9);
-    } else {
-      ctx.fillRect(ax - 10, torsoY + 2 + stride * 2, 3.2, 8.5);
-      ctx.fillRect(ax + 6.8, torsoY + 2 - stride * 2, 3.2, 8.5);
-    }
-
-    // Facing-up cape drapes cleanly over shoulders & torso
-    if (showCapeInFront) {
-      this.drawFlowingCape(ctx, ax, ay + bob, dir, style.cape, capeWave, stride, sample, true);
-    }
-
-    // Head & expressive face
-    const headY = torsoY - 7.5;
-    ctx.fillStyle = skinHex;
-    ctx.beginPath();
-    ctx.arc(ax, headY, 7.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Hair
-    ctx.fillStyle = hairHex;
-    if (dir === 'up') {
-      ctx.beginPath();
-      ctx.arc(ax, headY - 0.5, 7.6, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      ctx.beginPath();
-      ctx.arc(ax, headY - 2, 7.5, Math.PI, 0);
-      ctx.fill();
-      if (dir === 'down') {
-        ctx.fillRect(ax - 6.5, headY - 4, 3, 5);
-        ctx.fillRect(ax + 3.5, headY - 4, 3, 5);
-      } else if (dir === 'left') {
-        ctx.fillRect(ax + 1, headY - 4, 6, 7);
-      } else {
-        ctx.fillRect(ax - 7, headY - 4, 6, 7);
-      }
-    }
-
-    // Eyes
-    if (dir === 'down') {
-      ctx.fillStyle = '#1b1f38';
-      ctx.fillRect(ax - 3.6, headY - 0.5, 2, 2.8);
-      ctx.fillRect(ax + 1.6, headY - 0.5, 2, 2.8);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(ax - 3.3, headY - 0.5, 1, 1);
-      ctx.fillRect(ax + 1.9, headY - 0.5, 1, 1);
-    } else if (dir === 'left') {
-      ctx.fillStyle = '#1b1f38';
-      ctx.fillRect(ax - 4.4, headY - 0.5, 2, 2.8);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(ax - 4.2, headY - 0.5, 1, 1);
-    } else if (dir === 'right') {
-      ctx.fillStyle = '#1b1f38';
-      ctx.fillRect(ax + 2.4, headY - 0.5, 2, 2.8);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(ax + 2.6, headY - 0.5, 1, 1);
-    }
-
-    // Headgear (player Style Studio or default NPC/Rival hat)
-    if (isPlayer) {
-      this.drawHeadgear(ctx, ax, headY, dir, style.headgear, t);
-    } else if (isRival) {
-      // Sleek rival crest headband
-      ctx.fillStyle = '#6c2a76';
-      ctx.fillRect(ax - 7, headY - 6.5, 14, 3.2);
-      ctx.fillStyle = '#ff84d0';
-      ctx.fillRect(ax - 2, headY - 7, 4, 3.5);
-    }
-
-    // Aura overlay glints
-    if (isPlayer && style.aura !== 'none') {
-      this.drawAuraOverlay(ctx, ax, ay + bob, style.aura, t, reducedMotion);
-    }
-  }
-
-  private drawFlowingCape(
-    ctx: CanvasRenderingContext2D,
-    ax: number,
-    ay: number,
-    dir: Direction,
-    capeId: StyleLoadout['cape'],
-    wave: number,
-    stride: number,
-    sample: ActorMotionSample | undefined,
-    frontOverBack: boolean,
-  ): void {
-    if (capeId === 'none') return;
-    const meta = findMeta(STYLE_CAPES, capeId);
-    const velLagX = sample ? clamp(-sample.vx * 1.4, -7, 7) : 0;
-
-    let trailDirX = 0;
-    if (dir === 'left') trailDirX = 1;
-    else if (dir === 'right') trailDirX = -1;
-
-    const topY = ay - 21;
-    const botY = ay - 5 + Math.abs(stride) * 1.2;
-    const swayX = trailDirX * 8 + velLagX + wave;
+    const wave = reducedMotion
+      ? 0
+      : Math.round(Math.sin(t * (moving ? 8 : 2.6) + walkCycle * 2) * (moving ? 2.5 : 1.2));
+    const trail = facing === 'left' ? 3 : facing === 'right' ? -3 : 0;
+    const topY = baseY - 22;
+    const botY = baseY - 5;
 
     ctx.save();
-    if (capeId === 'zephyr-mantle') {
-      // Airy dual turquoise silk scarf streamers
-      ctx.fillStyle = meta.primaryHex;
-      ctx.beginPath();
-      ctx.moveTo(ax - 5, topY + 2);
-      ctx.quadraticCurveTo(ax + swayX * 0.7, topY + 9, ax + swayX * 1.25 - 3, botY + 2);
-      ctx.lineTo(ax + swayX * 1.25 + 3, botY + 2);
-      ctx.quadraticCurveTo(ax + swayX * 0.5, topY + 7, ax + 5, topY + 2);
-      ctx.closePath();
-      ctx.fill();
+    // 1px dark indigo outline + body + secondary luminous hem
+    ctx.fillStyle = '#18122e';
+    ctx.fillRect(ax - 9 + trail, topY + 1, 18, 6);
+    ctx.fillRect(ax - 11 + trail + wave, topY + 6, 22, botY - topY - 4);
 
-      ctx.fillStyle = meta.secondaryHex;
-      ctx.fillRect(ax + swayX * 1.15 - 2, botY - 1, 5, 2.5);
-    } else {
-      // Full billowing mantle/cloak
-      const halfTop = frontOverBack ? 7.5 : 8.5;
-      const halfBot = frontOverBack ? 10.5 : 12;
-      ctx.fillStyle = meta.primaryHex;
-      ctx.beginPath();
-      ctx.moveTo(ax - halfTop, topY + 2);
-      ctx.quadraticCurveTo(ax - halfBot + swayX * 0.4, (topY + botY) * 0.5, ax - halfBot + swayX, botY);
-      ctx.lineTo(ax + halfBot + swayX, botY);
-      ctx.quadraticCurveTo(ax + halfBot + swayX * 0.4, (topY + botY) * 0.5, ax + halfTop, topY + 2);
-      ctx.closePath();
-      ctx.fill();
+    ctx.fillStyle = look.outfitPrimary;
+    ctx.fillRect(ax - 8 + trail, topY + 2, 16, 6);
+    ctx.fillRect(ax - 10 + trail + wave, topY + 7, 20, botY - topY - 7);
 
-      // Glowing/accent hem trim
-      ctx.strokeStyle = meta.secondaryHex;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(ax - halfBot + swayX, botY);
-      ctx.lineTo(ax + halfBot + swayX, botY);
-      ctx.stroke();
-
-      // Starweave constellation specks
-      if (capeId === 'starweave') {
-        ctx.fillStyle = meta.secondaryHex;
-        ctx.fillRect(ax - 3 + swayX * 0.6, topY + 9, 2, 2);
-        ctx.fillRect(ax + 3 + swayX * 0.7, topY + 12, 2, 2);
-      }
-    }
+    // Luminous hem trim & star pin
+    ctx.fillStyle = look.outfitSecondary;
+    ctx.fillRect(ax - 10 + trail + wave, botY - 2, 20, 2);
+    ctx.fillStyle = '#fff9c4';
+    ctx.fillRect(ax - 1 + trail, topY + 3, 2, 2);
     ctx.restore();
   }
 
-  private drawHeadgear(
+  private drawPixelAccessory(
     ctx: CanvasRenderingContext2D,
     ax: number,
     headY: number,
-    dir: Direction,
-    headgear: StyleLoadout['headgear'],
+    facing: Direction,
+    accessory: TrainerAccessoryId,
+    look: ResolvedTrainerLook,
     t: number,
+    reducedMotion: boolean,
   ): void {
-    if (headgear === 'none') return;
-    const meta = findMeta(STYLE_HEADGEAR, headgear);
+    const dirOff = facing === 'left' ? -2 : facing === 'right' ? 2 : 0;
 
-    switch (headgear) {
-      case 'star-beret': {
-        const tilt = dir === 'left' ? -2 : dir === 'right' ? 2 : 1;
-        fillEllipse(ctx, ax + tilt, headY - 6.5, 9, 3.8, meta.primaryHex);
-        ctx.fillStyle = meta.secondaryHex;
-        drawFourPointStar(ctx, ax + tilt * 1.5, headY - 7, 3.4, 1.3, 0);
-        ctx.fill();
-        break;
-      }
-
-      case 'sky-goggles': {
-        // Aviator brass band & dual cyan lenses
-        ctx.fillStyle = meta.primaryHex;
-        ctx.fillRect(ax - 7.5, headY - 5.5, 15, 3);
-        if (dir !== 'up') {
-          ctx.fillStyle = meta.secondaryHex;
-          const off = dir === 'left' ? -2 : dir === 'right' ? 2 : 0;
-          ctx.beginPath();
-          ctx.arc(ax - 3 + off, headY - 4, 2.8, 0, Math.PI * 2);
-          ctx.arc(ax + 3 + off, headY - 4, 2.8, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(ax - 4 + off, headY - 5, 1.4, 1.4);
-          ctx.fillRect(ax + 2 + off, headY - 5, 1.4, 1.4);
-        }
-        break;
-      }
-
-      case 'lunar-circlet': {
-        ctx.strokeStyle = meta.primaryHex;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(ax, headY - 3, 7.6, Math.PI * 1.08, Math.PI * 1.92);
-        ctx.stroke();
-        // Hovering luminous crescent gem
-        const floatY = headY - 10 + Math.sin(t * 3.1) * 1.2;
-        ctx.fillStyle = meta.secondaryHex;
-        ctx.beginPath();
-        ctx.arc(ax, floatY, 3, 0, Math.PI * 2);
-        ctx.fill();
+    switch (accessory) {
+      case 'cap': {
+        ctx.fillStyle = '#18122e';
+        ctx.fillRect(ax - 8, headY - 12, 16, 6);
+        ctx.fillStyle = look.outfitPrimary === '#a855f7' ? '#ef4444' : look.outfitPrimary;
+        ctx.fillRect(ax - 7, headY - 11, 14, 4);
         ctx.fillStyle = '#ffffff';
-        ctx.beginPath();
-        ctx.arc(ax - 0.8, floatY - 0.8, 1.1, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.fillRect(ax - 6 + dirOff, headY - 8, 12, 2);
+        ctx.fillStyle = look.outfitSecondary;
+        ctx.fillRect(ax - 1 + dirOff, headY - 11, 2, 2);
         break;
       }
-
-      case 'shrine-visor': {
-        ctx.fillStyle = meta.primaryHex;
-        roundedRectPath(ctx, ax - 7.5, headY - 4, 15, 5, 2);
-        ctx.fill();
-        if (dir !== 'up') {
-          ctx.fillStyle = meta.secondaryHex;
-          const vx = dir === 'left' ? ax - 6.5 : dir === 'right' ? ax - 2 : ax - 5.5;
-          const vw = dir === 'down' ? 11 : 8.5;
-          ctx.fillRect(vx, headY - 2.6, vw, 2.2);
+      case 'crown': {
+        ctx.fillStyle = '#92400e';
+        ctx.fillRect(ax - 7, headY - 13, 14, 5);
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(ax - 6, headY - 12, 12, 4);
+        ctx.fillRect(ax - 6, headY - 15, 2, 3);
+        ctx.fillRect(ax - 1, headY - 16, 2, 4);
+        ctx.fillRect(ax + 4, headY - 15, 2, 3);
+        ctx.fillStyle = '#fef08a';
+        ctx.fillRect(ax - 1, headY - 15, 2, 2);
+        ctx.fillStyle = look.accent;
+        ctx.fillRect(ax - 1, headY - 11, 2, 2);
+        break;
+      }
+      case 'wizard': {
+        ctx.fillStyle = '#1e1b4b';
+        ctx.fillRect(ax - 10, headY - 9, 20, 3);
+        ctx.fillStyle = '#4338ca';
+        ctx.fillRect(ax - 9, headY - 9, 18, 2);
+        ctx.fillRect(ax - 6, headY - 14, 12, 5);
+        ctx.fillRect(ax - 4, headY - 18, 8, 4);
+        ctx.fillRect(ax - 1 + dirOff, headY - 21, 4, 3);
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(ax - 6, headY - 10, 12, 1);
+        break;
+      }
+      case 'headband': {
+        ctx.fillStyle = '#b91c1c';
+        ctx.fillRect(ax - 7, headY - 8, 14, 3);
+        ctx.fillStyle = '#fde047';
+        ctx.fillRect(ax - 1 + dirOff, headY - 9, 3, 3);
+        // Fluttering tail ribbons
+        const flutter = reducedMotion ? 0 : Math.round(Math.sin(t * 6) * 1.5);
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(ax + (facing === 'right' ? -10 : 7), headY - 7 + flutter, 3, 4);
+        break;
+      }
+      case 'goggles': {
+        ctx.fillStyle = '#78350f';
+        ctx.fillRect(ax - 7, headY - 9, 14, 3);
+        if (facing !== 'up') {
+          ctx.fillStyle = '#b45309';
+          ctx.fillRect(ax - 6 + dirOff, headY - 10, 5, 4);
+          ctx.fillRect(ax + 1 + dirOff, headY - 10, 5, 4);
+          ctx.fillStyle = '#38bdf8';
+          ctx.fillRect(ax - 5 + dirOff, headY - 9, 3, 2);
+          ctx.fillRect(ax + 2 + dirOff, headY - 9, 3, 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(ax - 5 + dirOff, headY - 9, 1, 1);
+          ctx.fillRect(ax + 2 + dirOff, headY - 9, 1, 1);
         }
         break;
       }
-    }
-  }
-
-  private drawAuraUnderlay(
-    ctx: CanvasRenderingContext2D,
-    ax: number,
-    ay: number,
-    auraId: StyleLoadout['aura'],
-    t: number,
-    reducedMotion: boolean,
-  ): void {
-    const meta = AURA_BY_ID[auraId];
-    const pulse = reducedMotion ? 1 : 0.92 + 0.08 * Math.sin(t * 4);
-    fillEllipse(ctx, ax, ay, 18 * pulse, 7.5 * pulse, hexRgba(meta.primaryHex, 0.24));
-    strokeEllipse(ctx, ax, ay, 16 * pulse, 6.8 * pulse, hexRgba(meta.secondaryHex, 0.72), 1.6);
-
-    if (auraId === 'sky-thunder') {
-      // Crackling electric ring notches
-      ctx.strokeStyle = meta.primaryHex;
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < 4; i++) {
-        const ang = t * (reducedMotion ? 0.4 : 2.8) + (i * Math.PI) / 2;
-        const x0 = ax + Math.cos(ang) * 14;
-        const y0 = ay + Math.sin(ang) * 5.8;
-        ctx.beginPath();
-        ctx.moveTo(x0, y0);
-        ctx.lineTo(x0 + Math.cos(ang) * 4, y0 - 4);
-        ctx.stroke();
+      case 'halo': {
+        const floatY = reducedMotion ? 0 : Math.round(Math.sin(t * 3.4) * 1.5);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(ax - 7, headY - 16 + floatY, 14, 3);
+        ctx.fillStyle = '#fef08a';
+        ctx.fillRect(ax - 6, headY - 16 + floatY, 12, 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(ax - 3, headY - 16 + floatY, 6, 1);
+        break;
+      }
+      case 'visor': {
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(ax - 7, headY - 7, 14, 4);
+        if (facing !== 'up') {
+          ctx.fillStyle = '#22d3ee';
+          ctx.fillRect(ax - 6 + dirOff, headY - 6, 12, 2);
+          ctx.fillStyle = '#e0f2fe';
+          ctx.fillRect(ax - 4 + dirOff, headY - 6, 3, 1);
+        }
+        break;
+      }
+      case 'antlers': {
+        // Woodland antlers & sakura blossoms
+        ctx.fillStyle = '#78350f';
+        ctx.fillRect(ax - 6, headY - 13, 2, 5);
+        ctx.fillRect(ax - 9, headY - 16, 4, 2);
+        ctx.fillRect(ax + 4, headY - 13, 2, 5);
+        ctx.fillRect(ax + 5, headY - 16, 4, 2);
+        ctx.fillStyle = '#f472b6';
+        ctx.fillRect(ax - 8, headY - 12, 4, 4);
+        ctx.fillRect(ax + 4, headY - 12, 4, 4);
+        ctx.fillStyle = '#fff1f2';
+        ctx.fillRect(ax - 7, headY - 11, 2, 2);
+        ctx.fillRect(ax + 5, headY - 11, 2, 2);
+        break;
       }
     }
   }
 
-  private drawAuraOverlay(
+  private drawAuraGroundRing(
     ctx: CanvasRenderingContext2D,
     ax: number,
     ay: number,
-    auraId: StyleLoadout['aura'],
+    auraId: TrainerAuraId,
     t: number,
     reducedMotion: boolean,
   ): void {
-    const meta = AURA_BY_ID[auraId];
-    const count = reducedMotion ? 2 : 3;
-    for (let i = 0; i < count; i++) {
-      const ang = t * (reducedMotion ? 0.5 : 2.4) + (i * Math.PI * 2) / count;
-      const ox = Math.cos(ang) * 14;
-      const oy = ay - 14 + Math.sin(ang) * 5;
-      ctx.fillStyle = hexRgba(i % 2 === 0 ? meta.primaryHex : meta.secondaryHex, 0.88);
-      drawFourPointStar(ctx, ax + ox, oy, 3.6, 1.4, ang);
-      ctx.fill();
+    const meta = AURA_VISUALS[auraId];
+    const pulse = reducedMotion ? 1 : 0.92 + 0.08 * Math.sin(t * 4);
+    fillEllipse(ctx, ax, ay, 17 * pulse, 7 * pulse, hexRgba(meta.primaryHex, 0.24));
+    strokeEllipse(ctx, ax, ay, 15 * pulse, 6.4 * pulse, hexRgba(meta.secondaryHex, 0.78), 1.5);
+
+    if (auraId === 'lightning') {
+      ctx.fillStyle = meta.secondaryHex;
+      for (let i = 0; i < 4; i++) {
+        const ang = (reducedMotion ? 0 : t * 3.2) + (i * Math.PI) / 2;
+        const sx = Math.round(ax + Math.cos(ang) * 14);
+        const sy = Math.round(ay + Math.sin(ang) * 6);
+        ctx.fillRect(sx, sy - 3, 2, 4);
+      }
     }
   }
 
-  private drawFollowerRig(
+  private drawPixelAuraAccents(
     ctx: CanvasRenderingContext2D,
-    actor: OverworldActor,
     ax: number,
-    ay: number,
+    cy: number,
+    auraId: TrainerAuraId,
     t: number,
     reducedMotion: boolean,
   ): void {
-    const species = getSpecies(actor.speciesId ?? 133);
-    const primaryType = actor.primaryType ?? species.primaryType;
-    const typePal = TYPE_PALETTES[primaryType];
-    const furHex = actor.speciesId === 133 ? '#e8bd78' : species.palette[0] || typePal.primary;
-    const trimHex = actor.speciesId === 133 ? '#fff0c4' : species.palette[2] || typePal.glow;
-    const darkHex = actor.speciesId === 133 ? '#6b472d' : typePal.dark;
+    const meta = AURA_VISUALS[auraId];
+    const count = reducedMotion ? 2 : 4;
+    for (let i = 0; i < count; i++) {
+      const ang = (reducedMotion ? 0 : t * 2.4) + (i * Math.PI * 2) / count;
+      const ox = Math.round(Math.cos(ang) * 15);
+      const oy = Math.round(Math.sin(ang) * 6);
+      const col = i % 2 === 0 ? meta.primaryHex : meta.secondaryHex;
+      ctx.fillStyle = hexRgba(col, 0.92);
 
-    const stride = actor.moving ? Math.sin(actor.walkCycle * Math.PI * 1.6) : 0;
-    const floatMode = species.archetype === 'ethereal' || species.archetype === 'avian';
-    const bob = floatMode
-      ? Math.sin(t * 3.4) * (reducedMotion ? 0.6 : 2.6) - 3
-      : actor.moving
-        ? -Math.abs(stride) * (reducedMotion ? 0.8 : 2.4)
-        : Math.sin(t * 2.8) * (reducedMotion ? 0 : 0.8);
-
-    drawContactShadow(ctx, ax, ay + 1, 9.5, 3.8, 0.32);
-
-    const dir = actor.facing;
-    const bodyY = ay - 10 + bob;
-
-    // Fluffy / elemental tail
-    const tailWag = Math.sin(t * 5.2) * (reducedMotion ? 0.4 : 2.2);
-    const tailOx = dir === 'left' ? 8 : dir === 'right' ? -8 : 0;
-    const tailOy = dir === 'down' ? -4 : 1;
-    fillEllipse(ctx, ax + tailOx + tailWag * 0.4, bodyY + tailOy, 5.2, 4, trimHex);
-
-    // Paws / feet
-    if (!floatMode) {
-      ctx.fillStyle = darkHex;
-      ctx.fillRect(ax - 6, ay - 5 - Math.max(0, stride * 2), 3.5, 5);
-      ctx.fillRect(ax + 2.5, ay - 5 - Math.max(0, -stride * 2), 3.5, 5);
+      if (auraId === 'hearts') {
+        // Tiny 3x3 pixel heart
+        ctx.fillRect(ax + ox - 1, cy + oy - 1, 1, 2);
+        ctx.fillRect(ax + ox + 1, cy + oy - 1, 1, 2);
+        ctx.fillRect(ax + ox, cy + oy, 1, 2);
+      } else if (auraId === 'lightning') {
+        ctx.fillRect(ax + ox, cy + oy - 2, 2, 3);
+        ctx.fillRect(ax + ox - 1, cy + oy, 2, 2);
+      } else if (auraId === 'blossom') {
+        ctx.fillRect(ax + ox - 1, cy + oy, 3, 2);
+      } else {
+        // stars / cosmic
+        drawFourPointStar(ctx, ax + ox, cy + oy, 3.2, 1.2, ang);
+        ctx.fill();
+      }
     }
+  }
 
-    // Body + collar mane
-    fillEllipse(ctx, ax, bodyY, 8.2, 6.4, furHex);
-    fillEllipse(ctx, ax, bodyY - 2, 6.2, 3.8, trimHex);
+  private drawQuestExclamationBadge(
+    ctx: CanvasRenderingContext2D,
+    npc: OverworldNpcNode,
+    tileSize: number,
+    t: number,
+    reducedMotion: boolean,
+  ): void {
+    const cx = Math.round((npc.x + 0.5) * tileSize);
+    const bob = reducedMotion ? 0 : Math.round(Math.sin(t * 4.5 + npc.x) * 2);
+    const by = Math.round((npc.y - 0.58) * tileSize + bob);
 
-    // Head & expressive ears / crest
-    const headY = bodyY - 7.5;
-    ctx.fillStyle = furHex;
-    ctx.beginPath();
-    ctx.arc(ax, headY, 6.4, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    ctx.fillRect(cx - 5, by - 7, 10, 12);
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(cx - 5, by - 7, 10, 12);
 
-    // Archetype ears/crest
-    if (species.archetype === 'quadruped' || species.archetype === 'biped') {
-      ctx.fillStyle = furHex;
-      ctx.beginPath();
-      ctx.moveTo(ax - 5.5, headY - 2);
-      ctx.lineTo(ax - 8, headY - 11);
-      ctx.lineTo(ax - 1.5, headY - 5.5);
-      ctx.closePath();
-      ctx.fill();
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(cx - 1, by - 5, 2, 5);
+    ctx.fillRect(cx - 1, by + 2, 2, 2);
+  }
 
-      ctx.beginPath();
-      ctx.moveTo(ax + 5.5, headY - 2);
-      ctx.lineTo(ax + 8, headY - 11);
-      ctx.lineTo(ax + 1.5, headY - 5.5);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.fillStyle = darkHex;
-      ctx.fillRect(ax - 7.2, headY - 10.5, 2.6, 2.6);
-      ctx.fillRect(ax + 4.6, headY - 10.5, 2.6, 2.6);
-    } else if (species.archetype === 'crystalline' || species.archetype === 'draconic') {
-      ctx.fillStyle = trimHex;
-      ctx.beginPath();
-      ctx.moveTo(ax - 3, headY - 5);
-      ctx.lineTo(ax, headY - 12);
-      ctx.lineTo(ax + 3, headY - 5);
-      ctx.closePath();
-      ctx.fill();
+  private drawFallbackHumanoid(
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    baseY: number,
+    primaryHex: string,
+    secondaryHex: string,
+    facing: Direction,
+  ): void {
+    const x = Math.round(cx);
+    const y = Math.round(baseY);
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(x - 5, y - 8, 4, 8);
+    ctx.fillRect(x + 1, y - 8, 4, 8);
+    ctx.fillStyle = primaryHex;
+    ctx.fillRect(x - 7, y - 21, 14, 13);
+    ctx.fillStyle = secondaryHex;
+    ctx.fillRect(x - 6, y - 13, 12, 3);
+    ctx.fillStyle = '#f6d4b8';
+    ctx.fillRect(x - 6, y - 32, 12, 11);
+    ctx.fillStyle = '#3b2458';
+    ctx.fillRect(x - 6, y - 34, 12, 4);
+    if (facing !== 'up') {
+      const ex = facing === 'left' ? -2 : facing === 'right' ? 2 : 0;
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(x - 3 + ex, y - 27, 2, 2);
+      ctx.fillRect(x + 1 + ex, y - 27, 2, 2);
     }
+  }
 
-    // Directional eyes
-    if (dir !== 'up') {
-      const ex = dir === 'left' ? -2.2 : dir === 'right' ? 2.2 : 0;
-      ctx.fillStyle = '#181c36';
-      ctx.fillRect(ax - 3.2 + ex, headY - 0.5, 1.8, 2.4);
-      ctx.fillRect(ax + 1.4 + ex, headY - 0.5, 1.8, 2.4);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(ax - 3 + ex, headY - 0.5, 0.9, 0.9);
-      ctx.fillRect(ax + 1.6 + ex, headY - 0.5, 0.9, 0.9);
+  private drawFallbackFollower(
+    ctx: CanvasRenderingContext2D,
+    follower: OverworldFollowerState,
+    fx: number,
+    fy: number,
+    t: number,
+  ): void {
+    const pal = TYPE_PALETTES[follower.type] ?? TYPE_PALETTES.normal;
+    const x = Math.round(fx);
+    const y = Math.round(fy + Math.sin(t * 3) * 1.5);
+    const bodyHex = follower.isShiny ? '#fde047' : pal.primary;
+    const trimHex = follower.isShiny ? '#fff8c4' : pal.glow;
+
+    fillEllipse(ctx, x, y - 10, 9, 7, bodyHex);
+    fillEllipse(ctx, x, y - 18, 7, 6, bodyHex);
+    ctx.fillStyle = trimHex;
+    ctx.fillRect(x - 4, y - 14, 8, 3);
+    if (follower.facing !== 'up') {
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(x - 3, y - 19, 2, 2);
+      ctx.fillRect(x + 1, y - 19, 2, 2);
     }
   }
 }
