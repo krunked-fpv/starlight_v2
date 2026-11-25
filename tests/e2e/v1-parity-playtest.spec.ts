@@ -245,12 +245,25 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     await expect(page.getByTestId('nav-skyhop')).toBeHidden();
 
     // BUG-12: Walk up onto Healing Fountain (7,13) via (7,14) and verify heal
-    await page.keyboard.down('ArrowUp');
-    await page.waitForFunction(() => (window.__STARLIGHT_DEBUG__?.getState().playerPos.y ?? 15) <= 14, undefined, { timeout: 5_000 });
-    await page.keyboard.up('ArrowUp');
-    await page.keyboard.down('ArrowLeft');
-    await page.waitForFunction(() => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 8) <= 7, undefined, { timeout: 5_000 });
-    await page.keyboard.up('ArrowLeft');
+    for (let step = 0; step < 8; step += 1) {
+      const pos = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
+      if (pos.x === 7 && pos.y === 14) break;
+      const key = pos.y > 14 ? 'ArrowUp' : pos.y < 14 ? 'ArrowDown' : pos.x > 7 ? 'ArrowLeft' : 'ArrowRight';
+      await page.keyboard.down(key);
+      try {
+        await page.waitForFunction(
+          ({ sx, sy }) => {
+            const p = window.__STARLIGHT_DEBUG__?.getState().playerPos;
+            return Boolean(p && (p.x !== sx || p.y !== sy));
+          },
+          { sx: pos.x, sy: pos.y },
+          { timeout: 3_000 },
+        );
+      } finally {
+        await page.keyboard.up(key);
+      }
+    }
+    await expect(page.getByTestId('interact-pill')).toBeVisible();
     await expect(page.getByTestId('interact-pill')).toContainText(/Fountain/i);
     await page.getByTestId('interact-pill').click();
     await expect(page.getByTestId('toast-banner')).toContainText(/Fountain|restored/i);

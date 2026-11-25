@@ -62,6 +62,8 @@ interface HybridLayerTarget {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
   tex: WebGLTexture;
+  uploadedWidth: number;
+  uploadedHeight: number;
 }
 
 interface RenderTargetFBO {
@@ -385,7 +387,7 @@ export class WebGL2Backend implements IRenderBackend {
     const rawDpr =
       dpr ?? (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1);
     const effectiveDpr = this._capabilities.isSoftwareRasterizer
-      ? (safeW <= 1440 ? 0.85 : 0.72)
+      ? (safeW <= 1440 ? 0.58 : 0.5)
       : clamp(rawDpr, 1, this.dprCap);
 
     this.cssWidth = safeW;
@@ -976,7 +978,7 @@ export class WebGL2Backend implements IRenderBackend {
     const canvas = document.createElement('canvas');
     canvas.width = this.pixelWidth;
     canvas.height = this.pixelHeight;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
     if (!ctx) {
       return null;
     }
@@ -1000,7 +1002,7 @@ export class WebGL2Backend implements IRenderBackend {
       gl.UNSIGNED_BYTE,
       new Uint8Array([0, 0, 0, 0]),
     );
-    return { canvas, ctx, tex };
+    return { canvas, ctx, tex, uploadedWidth: 1, uploadedHeight: 1 };
   }
 
   private resizeHybridLayer(layer: HybridLayerTarget | null, width: number, height: number): void {
@@ -1424,11 +1426,21 @@ export class WebGL2Backend implements IRenderBackend {
       ctx.restore();
     }
 
-    // Upload offscreen 2D canvas into WebGL2 texture
+    // Upload offscreen 2D canvas into WebGL2 texture (reuse existing allocation via texSubImage2D when dimensions match)
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    if (
+      layer.uploadedWidth === canvas.width &&
+      layer.uploadedHeight === canvas.height &&
+      typeof gl.texSubImage2D === 'function'
+    ) {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+      layer.uploadedWidth = canvas.width;
+      layer.uploadedHeight = canvas.height;
+    }
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.fallbackNormalTex);

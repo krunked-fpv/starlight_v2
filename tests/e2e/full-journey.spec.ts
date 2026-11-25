@@ -230,20 +230,25 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       // 3c. Warp to safe spawn (8, 15), step precisely to (7, 14) right below Healing Fountain (7, 13), and heal
       await page.getByTestId('warp-safe').click();
       await expect(page.getByTestId('toast-banner')).toContainText('Starlight Village');
-      await page.keyboard.down('ArrowUp');
-      await page.waitForFunction(
-        () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.y ?? 15) <= 14,
-        undefined,
-        { timeout: 5_000 },
-      );
-      await page.keyboard.up('ArrowUp');
-      await page.keyboard.down('ArrowLeft');
-      await page.waitForFunction(
-        () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 8) <= 7,
-        undefined,
-        { timeout: 5_000 },
-      );
-      await page.keyboard.up('ArrowLeft');
+      for (let step = 0; step < 8; step += 1) {
+        const pos = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
+        if (pos.x === 7 && pos.y === 14) break;
+        const key = pos.y > 14 ? 'ArrowUp' : pos.y < 14 ? 'ArrowDown' : pos.x > 7 ? 'ArrowLeft' : 'ArrowRight';
+        await page.keyboard.down(key);
+        try {
+          await page.waitForFunction(
+            ({ sx, sy }) => {
+              const p = window.__STARLIGHT_DEBUG__?.getState().playerPos;
+              return Boolean(p && (p.x !== sx || p.y !== sy));
+            },
+            { sx: pos.x, sy: pos.y },
+            { timeout: 3_000 },
+          );
+        } finally {
+          await page.keyboard.up(key);
+        }
+      }
+      await expect(page.getByTestId('interact-pill')).toBeVisible();
       await expect(page.getByTestId('interact-pill')).toContainText('Starlight Healing Fountain');
       await page.getByTestId('interact-pill').click();
       await expect(page.getByTestId('toast-banner')).toContainText('Starlight Healing Fountain');

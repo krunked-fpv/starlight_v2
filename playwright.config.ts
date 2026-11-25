@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 const runtimeEnv =
   (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 const isCI = Boolean(runtimeEnv.CI);
+const port = Number(runtimeEnv.STARLIGHT_PORT || 4173);
 
 export default defineConfig({
   testDir: './tests',
@@ -16,7 +17,7 @@ export default defineConfig({
   workers: 1,
   reporter: isCI ? [['list'], ['github']] : 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4173/starlight_v2/',
+    baseURL: `http://127.0.0.1:${port}/starlight_v2/`,
     browserName: 'chromium',
     viewport: { width: 1366, height: 768 },
     trace: 'retain-on-failure',
@@ -32,7 +33,8 @@ export default defineConfig({
   },
   webServer: {
     command: 'node tests/redteam/subpath-server.mjs',
-    url: 'http://127.0.0.1:4173/starlight_v2/',
+    env: { PORT: String(port) },
+    url: `http://127.0.0.1:${port}/starlight_v2/`,
     reuseExistingServer: !isCI,
     timeout: 30_000,
   },

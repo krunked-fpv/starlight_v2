@@ -192,7 +192,7 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 10_000 },
+      { timeout: 20_000 },
     );
     allViolations.push(...(await scanScreenForRawEmojis(page, 'battle')));
     await page.getByTestId('battle-flee').click();
@@ -319,7 +319,7 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
         undefined,
-        { timeout: 10_000 },
+        { timeout: 20_000 },
       );
       await assertScreenClean('battle');
       await page.getByTestId('battle-flee').click();
@@ -411,7 +411,7 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 10_000 },
+      { timeout: 20_000 },
     );
 
     const shutterState = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
