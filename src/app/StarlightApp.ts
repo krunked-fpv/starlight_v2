@@ -1,43 +1,51 @@
 import type {
   ActiveScreen,
   AtlasManifest,
+  BadgeToastState,
+  BallKind,
   BattleSceneState,
   BiomeId,
+  DialogueModalState,
+  DojoBadgeEntry,
+  DojoEvolutionItem,
+  DrawerTab,
   EncounterTier,
   FrameStats,
   GameSettings,
-  OverworldActor,
-  OverworldLandmark,
-  OverworldMapData,
+  IconId,
   OverworldSceneState,
   RendererCapabilities,
+  RendererMode,
   SaveHydrationResult,
   SkyHopState,
   StarlightSaveState,
-  TrainerProfile,
+  TacticalBriefingData,
+  TrainerAccessoryId,
+  TrainerAuraId,
+  TrainerId,
+  TrainerStyleId,
   UIBridgeCallbacks,
+  UIRenderSnapshot,
 } from '../contracts';
 import {
-  attemptStarBallCapture,
-  awardVictoryRewards,
-  BADGE_DEFINITIONS,
-  BIOME_DESCRIPTORS,
-  chooseEnemyMove,
-  computeTacticalBriefing,
-  createBattleState,
-  createInitialSkyHopState,
-  executeBattleMove,
-  getOverworldMap,
-  getSpecies,
+  BIOMES,
+  CHESTS,
+  DojoBattleController,
+  DojoOverworldSim,
+  DojoSkyHopController,
+  FIELD_QUESTS,
+  NPCS,
+  SpriteAssetLoader,
+  StarlightAudioController,
+  StarlightStorageBridge,
+  formatCleanGameText,
+  getAllBadges,
+  getAllEvolutionItems,
+  getSpeciesEntry,
   hydrateSaveState,
-  MOVES_BY_ID,
   persistSaveState,
-  ProceduralAudioSynth,
-  resolveMoves,
-  startSkyHopRun,
-  stepSkyHop,
-  triggerSkyHopFlap,
-  triggerSkyHopStarDash,
+  stripEmojis,
+  type BattleActionOutcome,
 } from '../core';
 import { createRenderEngine, type RenderEngine } from '../graphics/engine';
 import { OverworldRenderer } from '../graphics/overworld';
@@ -48,11 +56,12 @@ import { CelestialUIController, LivingTitleRenderer } from '../ui';
 export interface StarlightDebugHandle {
   getState: () => {
     screen: ActiveScreen;
+    activeDrawerTab: DrawerTab;
     backend: string;
     capabilities: RendererCapabilities;
     frameStats: FrameStats;
     hydrationSource: SaveHydrationResult['source'];
-    activeSlot: 'slot0' | 'slot1';
+    activeTrainerId: TrainerId | null;
     biomeId: BiomeId;
     playerPos: { x: number; y: number };
     grassDisplacements: number;
@@ -63,19 +72,87 @@ export interface StarlightDebugHandle {
     battleShutterDuration: number;
     skyhopScore: number;
     manifestLoaded: boolean;
+    spriteCacheVersion: number;
   };
   simulateContextLoss: () => boolean;
-  switchRenderer: (mode: 'auto' | 'webgl2' | 'canvas2d') => Promise<string>;
-  navigateScreen: (screen: ActiveScreen) => void;
+  switchRenderer: (mode: RendererMode) => Promise<string>;
+  navigateScreen: (screen: ActiveScreen, drawerTab?: DrawerTab) => void;
+  selectTrainer: (trainerId: TrainerId) => void;
+  chooseStarter: (speciesId: number) => void;
+  warpBiome: (biomeId: BiomeId) => void;
   travelBiome: (biomeId: BiomeId) => void;
-  triggerEncounter: (tier: EncounterTier) => void;
+  triggerEncounter: (tier: EncounterTier, options?: { biomeId?: BiomeId; forceSpeciesId?: number; shrineId?: string; rivalId?: string }) => void;
+  openSkyHop: () => void;
   forceSave: () => Promise<void>;
+  renderEngine?: unknown;
 }
 
 declare global {
   interface Window {
     __STARLIGHT_DEBUG__?: StarlightDebugHandle;
   }
+}
+
+const BIOME_BGM_MAP: Record<BiomeId, string> = {
+  village: 'village',
+  forest: 'forest',
+  water: 'water',
+  peak: 'peak',
+  cave: 'cave',
+  desert: 'desert',
+  grove: 'grove',
+  marsh: 'marsh',
+  volcano: 'volcano',
+  reef: 'reef',
+  ruins: 'ruins',
+  canyon: 'canyon',
+  sanctum: 'sanctum',
+  rift: 'rift',
+  highlands: 'highlands',
+  faeveldt: 'faeveldt',
+  crater: 'crater',
+  atoll: 'atoll',
+};
+
+function isDrawerScreen(screen: ActiveScreen): boolean {
+  return screen === 'pokedex' || screen === 'badges' || screen === 'style-studio';
+}
+
+function isEditableElement(target: EventTarget | null): boolean {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toUpperCase();
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+}
+
+function buildRewardTags(
+  rewards: Record<string, unknown> | undefined | null,
+  evolutionItemNames: ReadonlyMap<string, string>,
+): Array<{ iconId: IconId; label: string }> {
+  if (!rewards || typeof rewards !== 'object') return [];
+  const tags: Array<{ iconId: IconId; label: string }> = [];
+  const pushNum = (key: string, iconId: IconId, singular: string, plural: string) => {
+    const val = Number(rewards[key] ?? 0);
+    if (Number.isFinite(val) && val > 0) {
+      tags.push({ iconId, label: `+${val} ${val === 1 ? singular : plural}` });
+    }
+  };
+  pushNum('starShards', 'icon-star-shard', 'Star Shard', 'Star Shards');
+  pushNum('potions', 'icon-potion', 'Potion', 'Potions');
+  pushNum('greatBalls', 'icon-greatball', 'Great Ball', 'Great Balls');
+  pushNum('starBalls', 'icon-starball', 'Star Ball', 'Star Balls');
+  pushNum('cheerCharges', 'icon-cheer-heart', 'Cheer Charge', 'Cheer Charges');
+
+  const gems = rewards.gems;
+  if (gems && typeof gems === 'object') {
+    for (const [gemId, qty] of Object.entries(gems as Record<string, unknown>)) {
+      const count = Number(qty ?? 0);
+      if (count > 0) {
+        const name = stripEmojis(evolutionItemNames.get(gemId) ?? gemId);
+        tags.push({ iconId: 'icon-gem', label: `+${count} ${name}` });
+      }
+    }
+  }
+  return tags;
 }
 
 export class StarlightApp {
@@ -85,26 +162,37 @@ export class StarlightApp {
   private readonly titleRenderer = new LivingTitleRenderer();
   private readonly skyHopRenderer = new SkyHopRenderer();
   private readonly ui = new CelestialUIController();
-  private readonly audio = new ProceduralAudioSynth();
+  private readonly audio = new StarlightAudioController();
+  private readonly badges: DojoBadgeEntry[] = getAllBadges();
+  private readonly evolutionItems: DojoEvolutionItem[] = getAllEvolutionItems();
+  private readonly evolutionItemNames: Map<string, string> = new Map(
+    this.evolutionItems.map((item) => [item.id, item.name]),
+  );
 
-  private save!: StarlightSaveState;
+  private storage!: StarlightStorageBridge;
+  private sprites!: SpriteAssetLoader;
+  private overworldSim!: DojoOverworldSim;
+  private battleController!: DojoBattleController;
+  private skyHopController!: DojoSkyHopController;
+
   private hydrationSource: SaveHydrationResult['source'] = 'fresh-default';
   private screen: ActiveScreen = 'title';
-  private map!: OverworldMapData;
-  private overworldState!: OverworldSceneState;
-  private battleState!: BattleSceneState;
-  private skyHopState!: SkyHopState;
+  private activeDrawerTab: DrawerTab = 'pokedex';
   private manifest: AtlasManifest | null = null;
+  private briefing: TacticalBriefingData | null = null;
+  private dialogue: DialogueModalState | null = null;
   private selectedPokedexId = 25;
   private toastMessage: string | null = null;
   private toastUntil = 0;
-  private forceOfflineRig = false;
+  private badgeToast: BadgeToastState | null = null;
   private autosaveAccum = 0;
-  private stepAccum = 0;
-  private wildEncounterCooldown = 2.5;
-  private battleTurnTimer: ReturnType<typeof setTimeout> | null = null;
+  private audioUnlocked = false;
+  private currentBgmTheme = '';
+
   private readonly pressedKeys = new Set<string>();
   private touchMoveVec = { dx: 0, dy: 0 };
+  private touchMoveTimeout: ReturnType<typeof setTimeout> | null = null;
+
   private readonly contextEvents: Array<{
     type: string;
     previousBackend: string;
@@ -113,996 +201,1457 @@ export class StarlightApp {
   }> = [];
 
   private canvasEl!: HTMLCanvasElement;
+  private stageShellEl: HTMLElement | null = null;
   private uiRootEl!: HTMLElement;
-  private resizeHandler: (() => void) | null = null;
+
+  private unsubContext: (() => void) | null = null;
+  private unsubSprites: (() => void) | null = null;
   private keyDownHandler: ((e: KeyboardEvent) => void) | null = null;
   private keyUpHandler: ((e: KeyboardEvent) => void) | null = null;
-  private unsubContext: (() => void) | null = null;
+  private blurHandler: (() => void) | null = null;
+  private unlockAudioHandler: (() => void) | null = null;
+  private stagePointerDownHandler: ((e: PointerEvent) => void) | null = null;
 
   async boot(): Promise<void> {
     const canvas = document.getElementById('starlight-canvas') as HTMLCanvasElement | null;
-    const uiRoot = document.getElementById('ui-layer');
+    const uiRoot = document.getElementById('ui-layer') as HTMLElement | null;
     if (!canvas || !uiRoot) {
-      throw new Error('Starlight v2 root DOM elements (#starlight-canvas, #ui-layer) are missing.');
+      throw new Error('Missing #starlight-canvas or #ui-layer root elements.');
     }
+
     this.canvasEl = canvas;
+    this.stageShellEl = document.getElementById('stage-shell');
     this.uiRootEl = uiRoot;
 
-    // Parse extra debug/offline query flags
     const params = new URLSearchParams(window.location.search);
-    this.forceOfflineRig = params.get('offlineRig') === '1' || params.get('offlineRig') === 'true';
+    const forceOfflineRig = params.get('offlineRig') === '1' || params.get('offlineRig') === 'true';
 
-    // Share stylized offline elemental art rig synthesizer across UI, Title, Style Studio, and Sky-Hop
-    const rigSynth = this.battleRenderer.getOfflineRigSynthesizer();
-    this.titleRenderer.setRigSynthesizer(rigSynth);
-    this.ui.setRigSynthesizer(rigSynth);
-    this.skyHopRenderer.setRigSynthesizer(rigSynth);
+    // 1. Lossless non-destructive save hydration (schemaVersion 3, starlight_pokemon_save_v1 priority)
+    const hydrated = await hydrateSaveState();
+    this.hydrationSource = hydrated.source;
+    this.storage = new StarlightStorageBridge(hydrated.state);
 
-    // 1. Load zero-emoji SVG icon sprite sheet + hydrate v1/v2 saves in parallel
-    const [, hydration] = await Promise.all([
-      this.loadSvgSpriteSheet(),
-      hydrateSaveState(),
-    ]);
-    this.save = hydration.state;
-    this.hydrationSource = hydration.source;
-    this.audio.setAudioConfig(this.save.settings.audioMuted, this.save.settings.masterVolume);
+    // 2. Core C:\dojo gameplay modules + CORS-safe animated sprite loader
+    this.sprites = new SpriteAssetLoader({ forceOffline: forceOfflineRig });
+    this.overworldSim = new DojoOverworldSim(this.storage, this.sprites);
+    this.battleController = new DojoBattleController(this.storage, this.sprites);
+    this.skyHopController = new DojoSkyHopController(this.storage, this.sprites);
 
-    // 2. Initialize Hybrid WebGL2 / Canvas2D Render Engine
+    // 3. Apply initial settings (audio, reduced motion, CRT)
+    const settings = this.storage.getSettings();
+    this.audio.setMuted(settings.audioMuted);
+    this.audio.setMasterVolume(settings.masterVolume);
+    this.applyDocumentPreferences(settings);
+
+    // 4. Initialize dual WebGL2 / Canvas2D render engine
     await this.engine.init(this.canvasEl, {
-      preferredMode: this.save.settings.rendererOverride,
-      reducedMotion: this.save.settings.reducedMotion,
-      crtMode: this.save.settings.crtMode,
+      preferredMode: settings.rendererOverride,
+      reducedMotion: settings.reducedMotion,
+      crtMode: settings.crtMode,
     });
 
     this.unsubContext = this.engine.onContextEvent((ev) => {
-      this.contextEvents.push(ev);
+      this.contextEvents.push({
+        type: ev.type,
+        previousBackend: ev.previousBackend,
+        activeBackend: ev.activeBackend,
+        reason: ev.reason,
+      });
+      if (this.contextEvents.length > 24) {
+        this.contextEvents.shift();
+      }
       if (ev.type === 'lost') {
-        this.showToast(`GPU context lost — seamlessly switched to ${ev.activeBackend.toUpperCase()} renderer.`);
+        this.showToast('Graphics recovered seamlessly on Canvas2D.');
       } else if (ev.type === 'restored') {
-        this.showToast('GPU context restored cleanly.');
+        this.showToast('WebGL2 hardware graphics restored.');
       }
     });
 
-    // 3. Load deterministic baked procedural atlases relative to document.baseURI
+    // 5. Load baked HD-2D pixel atlases & arenas from relative subpath `./atlases/manifest.json`
     try {
-      const manifestUrl = new URL('./atlases/manifest.json', document.baseURI).toString();
-      this.manifest = await this.engine.loadManifest(manifestUrl);
-      this.overworldRenderer.attachAtlas(this.manifest);
+      this.manifest = await this.engine.loadManifest('./atlases/manifest.json');
     } catch {
-      this.overworldRenderer.attachAtlas(null);
+      this.manifest = null;
     }
 
-    // 4. Initialize World, Battle, and Sky-Hop runtime states for active profile
-    this.rebuildProfileRuntimeStates(this.activeProfile());
+    const getArenaImg = (id: BiomeId | 'skyhop') => this.engine.getArenaImage(id);
+    const getSheetImg = (sheetId: string) => this.engine.getSheetImage(sheetId);
+    const getCachedSprite = (speciesId: number, back?: boolean, shiny?: boolean) =>
+      this.sprites.getCached(speciesId, { back: Boolean(back), shiny: Boolean(shiny) });
 
-    // 5. Mount Celestial Glass UI
-    this.ui.mount(this.uiRootEl, this.buildUICallbacks());
+    this.overworldRenderer.attachAtlas(this.manifest);
+    this.battleRenderer.attachAssets(this.manifest, getArenaImg, getSheetImg);
 
-    // 6. Bind viewport resize & keyboard controls
-    this.bindInputAndResize();
+    const rigSynth = this.battleRenderer.getOfflineRigSynthesizer();
+    this.titleRenderer.setRigSynthesizer(rigSynth);
+    this.titleRenderer.attachAssets(this.manifest, getArenaImg, getSheetImg);
 
-    // 7. Register offline PWA Service Worker cleanly
+    this.skyHopRenderer.setRigSynthesizer(rigSynth);
+    this.skyHopRenderer.attachAssets(this.manifest, getArenaImg, getSheetImg);
+
+    this.ui.setRigSynthesizer(rigSynth);
+    this.ui.attachAssets(this.manifest, getSheetImg, getCachedSprite);
+
+    // Refresh follower/UI automatically whenever an animated sprite decodes
+    this.unsubSprites = this.sprites.onUpdate(() => {
+      this.overworldSim.refreshState();
+    });
+
+    // Preload title preview sprites & starters asynchronously (never blocks boot)
+    this.preloadKeySprites();
+
+    // 6. Mount Celestial Pixel-Glass UI shell
+    this.ui.mount(this.uiRootEl, this.createUIBridgeCallbacks());
+
+    // 7. Attach global keyboard, pointer tap-to-walk, and audio unlock handlers
+    this.bindInputHandlers();
+    this.exposeDebugHandle();
     this.registerServiceWorker();
 
-    // 8. Expose debug & adversarial test verification bridge
-    this.exposeDebugHandle();
+    if (hydrated.source === 'dojo-v1-migrated' || hydrated.source === 'legacy-v1-migrated') {
+      this.showToast('Imported your Starlight Island adventure save.');
+    }
 
-    // 9. Start locked 60 FPS game & render loop (dt clamped <= 50ms inside RenderEngine)
+    // 8. Sync initial UI frame & launch locked-dt 60 FPS loop
+    this.syncUI();
     this.engine.startLoop((dtSeconds, elapsedSeconds, backend) => {
       this.tick(dtSeconds, elapsedSeconds, backend);
     });
+  }
 
-    if (this.hydrationSource === 'v1-migrated') {
-      this.showToast('Legacy Starlight v1 save migrated cleanly with 100% continuity.');
+  private preloadKeySprites(): void {
+    const save = this.storage.toV3SaveState();
+    const ids = new Set<number>([1, 4, 7, 25]);
+    for (const tid of ['violet', 'ozias'] as const) {
+      const lead = save.profiles[tid]?.team?.[0];
+      if (lead?.speciesId) ids.add(lead.speciesId);
     }
-  }
-
-  private activeProfile(): TrainerProfile {
-    return this.save.profiles[this.save.activeSlot];
-  }
-
-  private async loadSvgSpriteSheet(): Promise<void> {
-    const host = document.getElementById('svg-sprite-host');
-    if (!host) return;
-    try {
-      const url = new URL('./icons/starlight-icons.svg', document.baseURI).toString();
-      const res = await fetch(url);
-      if (res.ok) {
-        host.innerHTML = await res.text();
-      }
-    } catch {
-      // Non-fatal fallback if icons unavailable in isolated tests
+    for (const id of ids) {
+      void this.sprites.loadSpeciesSprite(id, { back: false, shiny: false });
     }
   }
 
   private registerServiceWorker(): void {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    const isSecure =
-      window.location.protocol === 'https:' ||
+    const isLocalOrSecure =
+      window.isSecureContext ||
       window.location.hostname === 'localhost' ||
       window.location.hostname === '127.0.0.1';
-    if (!isSecure) return;
-    const swUrl = new URL('./sw.js', document.baseURI).toString();
-    void navigator.serviceWorker.register(swUrl).catch(() => {
-      // Non-fatal in sandboxed or headless preview environments
+    if (!isLocalOrSecure) return;
+    void navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
+      // Safe no-op in unsupported or blocked contexts
     });
   }
 
-  private rebuildProfileRuntimeStates(profile: TrainerProfile): void {
-    this.map = getOverworldMap(profile.biomeId);
-    const biome = BIOME_DESCRIPTORS[profile.biomeId];
-    const lead = profile.party[0];
-    const leadSpecies = getSpecies(lead?.speciesId ?? 25);
-    this.selectedPokedexId = leadSpecies.id;
+  private applyDocumentPreferences(settings: GameSettings): void {
+    const root = document.documentElement;
+    root.classList.toggle('crt-active', Boolean(settings.crtMode));
+    root.classList.toggle('reduced-motion', Boolean(settings.reducedMotion));
+    root.setAttribute('data-crt', String(Boolean(settings.crtMode)));
+    root.setAttribute('data-reduced-motion', String(Boolean(settings.reducedMotion)));
 
-    const player: OverworldActor = {
-      id: 'player',
-      role: 'player',
-      name: profile.name,
-      x: Math.max(1.5, Math.min(this.map.width - 1.5, profile.x)),
-      y: Math.max(2.5, Math.min(this.map.height - 2.5, profile.y)),
-      facing: profile.facing,
-      moving: false,
-      walkCycle: 0,
-      style: profile.style,
-      accentHex: profile.style.primaryAccent,
-    };
+    if (this.uiRootEl) {
+      this.uiRootEl.setAttribute('data-reduced-motion', String(Boolean(settings.reducedMotion)));
+    }
 
-    const follower: OverworldActor = {
-      id: 'follower',
-      role: 'follower',
-      name: leadSpecies.name,
-      x: Math.max(1.5, player.x - 1.15),
-      y: player.y + 0.1,
-      facing: profile.facing,
-      moving: false,
-      walkCycle: 0,
-      speciesId: leadSpecies.id,
-      primaryType: leadSpecies.primaryType,
-      accentHex: leadSpecies.palette[0],
-    };
-
-    const npcs: OverworldActor[] = [
-      {
-        id: 'rival-vance',
-        role: 'rival',
-        name: profile.slotId === 'slot0' ? 'Orion' : 'Lyra',
-        x: 16.5,
-        y: 9.2,
-        facing: 'left',
-        moving: false,
-        walkCycle: 0,
-        accentHex: '#ff7b47',
-        dialoguePrompt: 'Challenge Rival Duel',
-      },
-      {
-        id: 'prof-celeste',
-        role: 'npc',
-        name: 'Prof. Celeste',
-        x: 10.5,
-        y: 9.4,
-        facing: 'right',
-        moving: false,
-        walkCycle: 0,
-        accentHex: '#7be8ff',
-        dialoguePrompt: 'Inspect 1,025 Pokédex',
-      },
-    ];
-
-    const shrineLandmark =
-      this.map.landmarks.find((l) => l.kind === 'shrine') ??
-      this.map.landmarks.find((l) => l.kind === 'starfall') ??
-      this.map.landmarks[0];
-
-    this.overworldState = {
-      biome,
-      map: this.map,
-      player,
-      follower,
-      npcs,
-      timeOfDay: biome.id === 'starlight-village' ? 0.78 : 0.62,
-      elapsedSeconds: 0,
-      reducedMotion: this.save.settings.reducedMotion,
-      activeWayfindingTarget: shrineLandmark
-        ? {
-            x: shrineLandmark.tileX + shrineLandmark.widthTiles * 0.5,
-            y: shrineLandmark.tileY + shrineLandmark.heightTiles * 0.5,
-            label: shrineLandmark.label,
-            kind: shrineLandmark.kind,
-          }
-        : null,
-      nearbyInteraction: null,
-    };
-
-    this.syncLandmarkStates();
-    this.overworldRenderer.resetEffects();
-
-    // Standby battle state so UI snapshots always carry a valid BattleSceneState
-    this.battleState = createBattleState(profile, profile.biomeId, 'wild', {
-      reducedMotion: this.save.settings.reducedMotion,
-      forceOfflineRig: this.forceOfflineRig,
-    });
-    this.battleState.active = false;
-    this.battleState.shutter.active = false;
-    this.battleState.phase = 'command';
-
-    this.skyHopState = createInitialSkyHopState(profile, this.save.settings.reducedMotion);
-  }
-
-  private syncLandmarkStates(): void {
-    const profile = this.activeProfile();
-    for (const lm of this.map.landmarks) {
-      if (lm.kind === 'chest') {
-        lm.activated = profile.openedChests.includes(lm.id);
-      } else if (lm.kind === 'shrine') {
-        lm.activated = profile.clearedShrines.includes(lm.id);
-      }
+    const crtEl = document.getElementById('crt-overlay');
+    if (crtEl) {
+      crtEl.classList.toggle('is-active', Boolean(settings.crtMode));
     }
   }
 
-  private buildUICallbacks(): UIBridgeCallbacks {
-    return {
-      onSelectProfile: (slotId) => {
-        this.audio.playUiClick();
-        this.save.activeSlot = slotId;
-        this.rebuildProfileRuntimeStates(this.activeProfile());
-        void persistSaveState(this.save);
-      },
-      onEnterWorld: (slotId) => {
-        this.audio.playUiClick();
-        if (slotId && slotId !== this.save.activeSlot) {
-          this.save.activeSlot = slotId;
-          this.rebuildProfileRuntimeStates(this.activeProfile());
-        }
-        this.screen = 'overworld';
-        this.showToast(`Welcome to ${this.overworldState.biome.name}, ${this.activeProfile().name}!`);
-        void persistSaveState(this.save);
-      },
-      onNavigateScreen: (targetScreen) => {
-        this.audio.playUiClick();
-        if (targetScreen === 'skyhop') {
-          this.skyHopState.active = true;
-          this.skyHopState.highScore = this.activeProfile().skyHopHighScore;
-        } else {
-          this.skyHopState.active = false;
-          this.skyHopState.running = false;
-        }
-        this.screen = targetScreen;
-      },
-      onTravelBiome: (biomeId) => {
-        this.audio.playUiClick();
-        this.travelToBiome(biomeId);
-      },
-      onTriggerEncounter: (tier) => {
-        this.audio.playUiClick();
-        this.startBattleEncounter(tier);
-      },
-      onInteractNearby: () => {
-        this.audio.playUiClick();
-        this.interactWithNearby();
-      },
-      onBattleMove: (moveId) => {
-        this.handlePlayerBattleMove(moveId);
-      },
-      onBattleThrowStarBall: () => {
-        this.handleStarBallThrow();
-      },
-      onBattleUsePotion: () => {
-        this.handleBattlePotion();
-      },
-      onBattleFlee: () => {
-        this.audio.playUiClick();
-        this.exitBattleToOverworld('Returned safely to the overworld.');
-      },
-      onBattleToggleOfflineRig: () => {
-        this.audio.playUiClick();
-        this.forceOfflineRig = !this.forceOfflineRig;
-        this.battleState.forceOfflineRig = this.forceOfflineRig;
-        this.battleState.player.useOfflineRig = true;
-        this.battleState.enemy.useOfflineRig = true;
-        this.showToast(
-          this.forceOfflineRig
-            ? 'Offline Elemental Art Rig showcase active.'
-            : 'Standard high-DPI sprite + offline art rig parity mode.',
-        );
-      },
-      onBattleTriggerEvolution: () => {
-        this.handleBattleEvolution();
-      },
-      onSelectPokedexSpecies: (speciesId) => {
-        this.audio.playUiClick();
-        this.selectedPokedexId = Math.max(1, Math.min(1025, speciesId));
-      },
-      onPlaySpeciesCry: (speciesId) => {
-        this.selectedPokedexId = speciesId;
-        this.audio.playSpeciesCry(speciesId);
-      },
-      onUpdateStyle: (patch) => {
-        this.audio.playUiClick();
-        const profile = this.activeProfile();
-        profile.style = { ...profile.style, ...patch };
-        this.overworldState.player.style = profile.style;
-        if (patch.aura && patch.aura !== 'none' && !profile.badges.includes('badge-stylist')) {
-          profile.badges.push('badge-stylist');
-        }
-        profile.updatedAt = Date.now();
-        void persistSaveState(this.save);
-        this.showToast('Style Studio look updated live in the overworld.');
-      },
-      onUpdateSettings: (patch) => {
-        this.audio.playUiClick();
-        void this.applySettingsPatch(patch);
-      },
-      onStartSkyHop: () => {
-        this.audio.playSkyHopDash();
-        startSkyHopRun(this.skyHopState, this.activeProfile());
-        this.screen = 'skyhop';
-      },
-      onSkyHopFlap: () => {
-        this.audio.playUiClick();
-        triggerSkyHopFlap(this.skyHopState);
-      },
-      onSkyHopStarDash: () => {
-        if (triggerSkyHopStarDash(this.skyHopState)) {
-          this.audio.playSkyHopDash();
-        }
-      },
-      onMoveInput: (dx, dy) => {
-        this.touchMoveVec = { dx, dy };
-      },
-      onForceSave: () => {
-        this.audio.playUiClick();
-        const profile = this.activeProfile();
-        profile.updatedAt = Date.now();
-        void persistSaveState(this.save);
-        this.showToast('Starlight v2 journey saved locally.');
-      },
-    };
+  private ensureAudioUnlocked(): void {
+    if (this.audioUnlocked) return;
+    this.audioUnlocked = true;
+    this.audio.unlock();
+    this.syncBgmForCurrentScreen();
   }
 
-  private async applySettingsPatch(patch: Partial<GameSettings>): Promise<void> {
-    const prevRenderer = this.save.settings.rendererOverride;
-    this.save.settings = { ...this.save.settings, ...patch };
-    this.audio.setAudioConfig(this.save.settings.audioMuted, this.save.settings.masterVolume);
-    this.overworldState.reducedMotion = this.save.settings.reducedMotion;
-    this.battleState.reducedMotion = this.save.settings.reducedMotion;
-    this.skyHopState.reducedMotion = this.save.settings.reducedMotion;
-    this.engine.activeBackend.setReducedMotion(this.save.settings.reducedMotion);
-    this.engine.activeBackend.setCrtMode(this.save.settings.crtMode);
-
-    if (patch.rendererOverride && patch.rendererOverride !== prevRenderer) {
-      const nextKind = await this.engine.switchBackend(patch.rendererOverride, 'user-setting');
-      this.engine.activeBackend.setReducedMotion(this.save.settings.reducedMotion);
-      this.engine.activeBackend.setCrtMode(this.save.settings.crtMode);
-      this.showToast(`Renderer switched to ${nextKind.toUpperCase()}.`);
-    }
-    await persistSaveState(this.save);
-  }
-
-  private travelToBiome(biomeId: BiomeId): void {
-    const profile = this.activeProfile();
-    profile.biomeId = biomeId;
-    const nextMap = getOverworldMap(biomeId);
-    profile.x = nextMap.spawnX;
-    profile.y = nextMap.spawnY;
-    profile.updatedAt = Date.now();
-    this.rebuildProfileRuntimeStates(profile);
-    this.screen = 'overworld';
-    this.showToast(`Arrived at ${BIOME_DESCRIPTORS[biomeId].name}.`);
-    void persistSaveState(this.save);
-  }
-
-  private startBattleEncounter(tier: EncounterTier): void {
-    if (this.battleTurnTimer) {
-      clearTimeout(this.battleTurnTimer);
-      this.battleTurnTimer = null;
-    }
-    const profile = this.activeProfile();
-    // Ensure lead has vitality if fainted
-    if (profile.party.every((m) => m.hp <= 0) && profile.party[0]) {
-      profile.party[0].hp = profile.party[0].maxHp;
-      profile.party[0].composure = 100;
-    }
-    this.battleState = createBattleState(profile, profile.biomeId, tier, {
-      reducedMotion: this.save.settings.reducedMotion,
-      forceOfflineRig: this.forceOfflineRig,
-    });
-    this.battleRenderer.triggerShutter(tier, this.save.settings.reducedMotion);
-    this.battleRenderer.triggerCameraCue(this.battleState.cameraCue);
-    this.screen = 'battle';
-    this.audio.playSpeciesCry(this.battleState.enemy.species.id);
-    void persistSaveState(this.save);
-  }
-
-  private handlePlayerBattleMove(moveId: string): void {
-    if (this.screen !== 'battle' || this.battleState.phase !== 'command') return;
-    const move = MOVES_BY_ID[moveId] ?? MOVES_BY_ID['starlight-pulse'];
-    const profile = this.activeProfile();
-
-    this.battleState.phase = 'animating';
-    this.battleState.player.lungeOffset = 1;
-    this.battleState.arenaLightingType = move.type;
-    this.battleState.arenaLightingPulse = 1;
-
-    const outcome = executeBattleMove(
-      this.battleState.player.member,
-      this.battleState.enemy.member,
-      move,
-      'player',
-    );
-    this.battleState.enemy.status = this.battleState.enemy.member.status;
-    this.battleState.enemy.composureRatio =
-      this.battleState.enemy.member.composure / this.battleState.enemy.member.maxComposure;
-    this.battleState.player.composureRatio =
-      this.battleState.player.member.composure / this.battleState.player.member.maxComposure;
-
-    if (outcome.damage > 0) {
-      this.battleState.enemy.hitFlash = 1;
-      this.battleState.enemy.recoilOffset = 1;
-      this.battleState.hitStopRemaining =
-        this.save.settings.reducedMotion ? 0 : outcome.cameraCue === 'heavyHit' ? 0.085 : 0.045;
-      this.audio.playBattleHit(outcome.cameraCue === 'heavyHit');
+  private syncBgmForCurrentScreen(): void {
+    if (!this.audioUnlocked) return;
+    let targetTheme = 'title';
+    if (this.screen === 'title' || this.screen === 'starter') {
+      targetTheme = 'title';
+    } else if (this.screen === 'skyhop') {
+      targetTheme = 'arcade';
+    } else if (this.screen === 'battle') {
+      const bState = this.battleController.getState();
+      targetTheme = bState.isBoss ? 'boss' : 'battle';
     } else {
-      this.audio.playUiClick();
+      const biomeId = this.overworldSim.getState().currentBiomeId;
+      targetTheme = BIOME_BGM_MAP[biomeId] ?? 'overworld';
     }
-
-    if (outcome.composureBroken && !profile.badges.includes('badge-composure')) {
-      profile.badges.push('badge-composure');
+    if (targetTheme !== this.currentBgmTheme) {
+      this.currentBgmTheme = targetTheme;
+      this.audio.playBGM(targetTheme);
     }
-
-    this.battleRenderer.triggerVfx({
-      type: move.type,
-      fromSide: 'player',
-      targetSide: move.category === 'status' ? 'player' : 'enemy',
-      power: move.power || 60,
-      effectiveness: outcome.effectiveness,
-      composureBroken: outcome.composureBroken,
-      duration: this.save.settings.reducedMotion ? 0.45 : 0.85,
-    });
-    this.battleRenderer.triggerCameraCue(outcome.cameraCue);
-    this.battleState.cameraCue = outcome.cameraCue;
-    this.battleState.cameraCueElapsed = 0;
-    this.battleState.statusMessage = outcome.message;
-
-    if (outcome.defeatedTarget) {
-      this.battleTurnTimer = setTimeout(() => {
-        const rewardMsg = awardVictoryRewards(profile, this.battleState);
-        this.battleState.phase = 'victory';
-        this.battleState.statusMessage = rewardMsg;
-        this.syncLandmarkStates();
-        void persistSaveState(this.save);
-      }, this.save.settings.reducedMotion ? 260 : 620);
-      return;
-    }
-
-    // Schedule Enemy Counterattack
-    this.battleTurnTimer = setTimeout(() => {
-      if (this.screen !== 'battle' || !this.battleState.active) return;
-      const foeMove = chooseEnemyMove(this.battleState);
-      this.battleState.enemy.lungeOffset = 1;
-      this.battleState.arenaLightingType = foeMove.type;
-      this.battleState.arenaLightingPulse = 0.85;
-
-      const foeOutcome = executeBattleMove(
-        this.battleState.enemy.member,
-        this.battleState.player.member,
-        foeMove,
-        'enemy',
-      );
-      this.battleState.player.status = this.battleState.player.member.status;
-      this.battleState.player.composureRatio =
-        this.battleState.player.member.composure / this.battleState.player.member.maxComposure;
-      this.battleState.enemy.composureRatio =
-        this.battleState.enemy.member.composure / this.battleState.enemy.member.maxComposure;
-
-      if (foeOutcome.damage > 0) {
-        this.battleState.player.hitFlash = 1;
-        this.battleState.player.recoilOffset = 1;
-        this.audio.playBattleHit(foeOutcome.cameraCue === 'heavyHit');
-      }
-
-      this.battleRenderer.triggerVfx({
-        type: foeMove.type,
-        fromSide: 'enemy',
-        targetSide: foeMove.category === 'status' ? 'enemy' : 'player',
-        power: foeMove.power || 55,
-        effectiveness: foeOutcome.effectiveness,
-        composureBroken: foeOutcome.composureBroken,
-        duration: this.save.settings.reducedMotion ? 0.42 : 0.78,
-      });
-      this.battleRenderer.triggerCameraCue(foeOutcome.cameraCue);
-      this.battleState.cameraCue = foeOutcome.cameraCue;
-      this.battleState.cameraCueElapsed = 0;
-      this.battleState.statusMessage = foeOutcome.message;
-      this.battleState.turnNumber += 1;
-
-      if (foeOutcome.defeatedTarget) {
-        this.battleState.phase = 'defeat';
-        this.battleState.statusMessage = `${this.battleState.player.species.name} fell back! Healing at Starlight Fountain restores full poise.`;
-        this.battleState.player.member.hp = Math.max(1, Math.round(this.battleState.player.member.maxHp * 0.25));
-      } else {
-        this.battleState.phase = 'command';
-      }
-      void persistSaveState(this.save);
-    }, this.save.settings.reducedMotion ? 320 : 760);
   }
 
-  private handleStarBallThrow(): void {
-    if (this.screen !== 'battle' || this.battleState.phase !== 'command') return;
-    const profile = this.activeProfile();
-    this.battleState.phase = 'capturing';
-    this.battleState.enemy.captureProgress = 0.01;
-    this.battleState.cameraCue = 'starBall';
-    this.battleState.cameraCueElapsed = 0;
-    this.battleRenderer.triggerCameraCue('starBall');
-    this.battleState.statusMessage = 'Launching celestial Star Ball...';
-    this.audio.playStarBallCapture();
-
-    const result = attemptStarBallCapture(profile, this.battleState);
-    this.battleTurnTimer = setTimeout(() => {
-      if (this.screen !== 'battle') return;
-      this.battleState.enemy.captureProgress = undefined;
-      this.battleState.statusMessage = result.message;
-      if (result.caught) {
-        this.battleState.phase = 'victory';
-        if (result.starRankAwarded >= 5 && !profile.badges.includes('badge-prism')) {
-          profile.badges.push('badge-prism');
-        }
-      } else {
-        this.battleState.phase = 'command';
-      }
-      void persistSaveState(this.save);
-    }, this.save.settings.reducedMotion ? 360 : 980);
+  private showToast(message: string, durationMs = 2800): void {
+    const clean = stripEmojis(message).trim();
+    if (!clean) return;
+    this.toastMessage = clean;
+    this.toastUntil = Date.now() + durationMs;
   }
 
-  private handleBattlePotion(): void {
-    if (this.screen !== 'battle' || this.battleState.phase !== 'command') return;
-    const profile = this.activeProfile();
-    if (profile.inventory.potions <= 0 && profile.inventory.superPotions <= 0) {
-      this.battleState.statusMessage = 'No Potions left in your pack!';
-      return;
-    }
-    const useSuper = profile.inventory.superPotions > 0;
-    if (useSuper) profile.inventory.superPotions -= 1;
-    else profile.inventory.potions -= 1;
-
-    const lead = this.battleState.player.member;
-    const heal = useSuper ? Math.round(lead.maxHp * 0.65) : Math.round(lead.maxHp * 0.4);
-    lead.hp = Math.min(lead.maxHp, lead.hp + heal);
-    lead.composure = Math.min(lead.maxComposure, lead.composure + 35);
-    lead.status = 'none';
-    this.battleState.player.status = 'none';
-    this.battleState.player.composureRatio = lead.composure / lead.maxComposure;
-    this.battleState.statusMessage = `${this.battleState.player.species.name} restored +${heal} HP & Composure!`;
-    this.audio.playUiClick();
-    void persistSaveState(this.save);
-  }
-
-  private handleBattleEvolution(): void {
-    if (this.screen !== 'battle') return;
-    const profile = this.activeProfile();
-    const lead = this.battleState.player.member;
-    const current = this.battleState.player.species;
-    const nextId = current.evolvesTo ?? (current.id === 25 ? 26 : current.id === 133 ? 196 : current.id);
-    const nextSpecies = getSpecies(nextId);
-
-    this.battleState.phase = 'evolving';
-    this.battleState.evolutionTarget = nextSpecies;
-    this.battleState.cameraCue = 'evolution';
-    this.battleState.cameraCueElapsed = 0;
-    this.battleRenderer.triggerCameraCue('evolution');
-    this.battleState.statusMessage =
-      nextId !== current.id
-        ? `Starlight Evolution! ${current.name} is ascending into ${nextSpecies.name}!`
-        : `${current.name} resonates with Starlight Ascension (+1 Star Rank & Max Composure)!`;
-    this.audio.playStarBallCapture();
-
-    this.battleTurnTimer = setTimeout(() => {
-      if (this.screen !== 'battle') return;
-      lead.speciesId = nextSpecies.id;
-      lead.starRank = Math.min(5, lead.starRank + 1);
-      lead.composure = lead.maxComposure;
-      lead.maxHp += 10;
-      lead.hp = lead.maxHp;
-      this.battleState.player.species = nextSpecies;
-      this.battleState.player.composureRatio = 1;
-      profile.pokedex[nextSpecies.id] = {
-        seen: true,
-        caught: true,
-        starRank: lead.starRank,
-        bond: Math.max(lead.bond, 90),
-        shiny: lead.shiny,
-        timesEncountered: (profile.pokedex[nextSpecies.id]?.timesEncountered ?? 0) + 1,
-      };
-      this.overworldState.follower.speciesId = nextSpecies.id;
-      this.overworldState.follower.name = nextSpecies.name;
-      this.overworldState.follower.primaryType = nextSpecies.primaryType;
-      this.battleState.phase = 'command';
-      this.battleState.evolutionTarget = undefined;
-      this.battleState.statusMessage = `${nextSpecies.name} radiates renewed Starlight energy!`;
-      void persistSaveState(this.save);
-    }, this.save.settings.reducedMotion ? 400 : 1050);
-  }
-
-  private exitBattleToOverworld(toast: string): void {
-    if (this.battleTurnTimer) {
-      clearTimeout(this.battleTurnTimer);
-      this.battleTurnTimer = null;
-    }
-    this.battleState.active = false;
-    this.screen = 'overworld';
-    this.showToast(toast);
-    void persistSaveState(this.save);
-  }
-
-  private interactWithNearby(): void {
-    const profile = this.activeProfile();
-    const target = this.overworldState.nearbyInteraction;
-    if (!target) {
-      this.showToast('Walk closer to a Shrine, Fountain, Chest, Starfall node, or Companion to interact.');
-      return;
-    }
-
-    if ('role' in target) {
-      if (target.role === 'rival') {
-        this.startBattleEncounter('rival');
-      } else {
-        this.screen = 'pokedex';
-      }
-      return;
-    }
-
-    const lm: OverworldLandmark = target;
-    switch (lm.kind) {
-      case 'fountain':
-        for (const m of profile.party) {
-          m.hp = m.maxHp;
-          m.composure = m.maxComposure;
-          m.status = 'none';
-        }
-        this.showToast('Starlight Healing Fountain restored full party HP, Status & Composure!');
-        break;
-      case 'shrine':
-        this.startBattleEncounter('shrine');
-        break;
-      case 'chest':
-        if (profile.openedChests.includes(lm.id)) {
-          this.showToast('This treasure chest has already been claimed.');
-        } else {
-          profile.openedChests.push(lm.id);
-          profile.inventory.starBalls += 3;
-          profile.inventory.superPotions += 2;
-          profile.inventory.starShards += 35;
-          lm.activated = true;
-          this.showToast('Opened chest: +3 Star Balls, +2 Super Potions, +35 Star Shards!');
-        }
-        break;
-      case 'starfall':
-        profile.inventory.starShards += 20;
-        if (!profile.badges.includes('badge-starfall')) {
-          profile.badges.push('badge-starfall');
-        }
-        this.startBattleEncounter('rare');
-        break;
-      case 'studio':
-        this.screen = 'style-studio';
-        break;
-      case 'observatory':
-        this.screen = 'pokedex';
-        break;
-      case 'signpost':
-      case 'cottage':
-      case 'dock':
-      default:
-        this.showToast(`${lm.label}${lm.subtitle ? ` — ${lm.subtitle}` : ''}`);
-        break;
-    }
-    void persistSaveState(this.save);
-  }
-
-  private bindInputAndResize(): void {
-    this.resizeHandler = () => {
-      this.engine.resize();
+  private triggerBadgeToast(badgeIds: string[] | undefined): void {
+    if (!badgeIds || badgeIds.length === 0) return;
+    const firstId = badgeIds[0];
+    const badge = this.badges.find((b) => b.id === firstId);
+    if (!badge) return;
+    this.badgeToast = {
+      badgeId: badge.id,
+      name: badge.name,
+      description: badge.description,
+      iconId: badge.iconId as IconId,
+      remainingSec: 4.0,
     };
-    window.addEventListener('resize', this.resizeHandler, { passive: true });
+  }
+
+  private createUIBridgeCallbacks(): UIBridgeCallbacks {
+    return {
+      onSelectTrainer: (trainerId: TrainerId) => {
+        this.ensureAudioUnlocked();
+        this.audio.playMenuBlip(660);
+        this.handleSelectTrainer(trainerId);
+      },
+
+      onChooseStarter: (speciesId: number) => {
+        this.ensureAudioUnlocked();
+        this.handleChooseStarter(speciesId);
+      },
+
+      onNavigateScreen: (screen: ActiveScreen, drawerTab?: DrawerTab) => {
+        this.ensureAudioUnlocked();
+        this.audio.playMenuBlip(540);
+        this.handleNavigateScreen(screen, drawerTab);
+      },
+
+      onOpenBriefingForBiome: (biomeId?: BiomeId) => {
+        this.ensureAudioUnlocked();
+        this.audio.playMenuBlip(580);
+        const targetBiome = biomeId ?? this.overworldSim.getState().currentBiomeId;
+        this.briefing = this.overworldSim.buildTacticalBriefing('biome', targetBiome, targetBiome);
+        this.dialogue = null;
+        this.screen = 'briefing';
+        this.syncUI();
+      },
+
+      onConfirmBriefing: () => {
+        this.ensureAudioUnlocked();
+        this.handleConfirmBriefing();
+      },
+
+      onDismissBriefing: () => {
+        this.audio.playMenuBlip(420);
+        this.briefing = null;
+        this.screen = 'overworld';
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onAdvanceDialogue: () => {
+        this.ensureAudioUnlocked();
+        this.audio.playMenuBlip(560);
+        if (!this.dialogue) return;
+        if (this.dialogue.currentIndex + 1 < this.dialogue.lines.length) {
+          this.dialogue = {
+            ...this.dialogue,
+            currentIndex: this.dialogue.currentIndex + 1,
+          };
+        } else {
+          const action = this.dialogue.onConfirmAction;
+          this.dialogue = null;
+          if (action) action();
+        }
+        this.syncUI();
+      },
+
+      onDismissDialogue: () => {
+        this.audio.playMenuBlip(420);
+        this.dialogue = null;
+        this.syncUI();
+      },
+
+      onWarpSafeZone: () => {
+        this.ensureAudioUnlocked();
+        this.audio.playHealChime();
+        this.storage.manager.healTeam(true);
+        this.overworldSim.warpToSafeZone();
+        this.briefing = null;
+        this.dialogue = null;
+        this.screen = 'overworld';
+        this.showToast('Warped to Starlight Village and healed your team.');
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onWarpFarmZone: () => {
+        this.ensureAudioUnlocked();
+        this.audio.playMenuBlip(620);
+        const res = this.overworldSim.warpToFarmZone();
+        this.briefing = null;
+        this.dialogue = null;
+        this.screen = 'overworld';
+        this.showToast(`Warped to recommended zone: ${res.biomeName}.`);
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onWarpBiome: (biomeId: BiomeId) => {
+        this.ensureAudioUnlocked();
+        this.audio.playMenuBlip(620);
+        this.handleWarpBiome(biomeId);
+      },
+
+      onInteractNearby: () => {
+        this.ensureAudioUnlocked();
+        this.handleInteractNearby();
+      },
+
+      onTriggerEncounter: (tier: EncounterTier) => {
+        this.ensureAudioUnlocked();
+        this.handleStartBattle({
+          biomeId: this.overworldSim.getState().currentBiomeId,
+          tier,
+        });
+      },
+
+      onBattleMove: (moveId: string) => {
+        this.ensureAudioUnlocked();
+        const outcome = this.battleController.performMove(moveId);
+        this.applyBattleOutcome(outcome);
+      },
+
+      onBattleThrowBall: (kind: BallKind) => {
+        this.ensureAudioUnlocked();
+        const outcome = this.battleController.throwBall(kind);
+        this.applyBattleOutcome(outcome);
+      },
+
+      onBattleUsePotion: () => {
+        this.ensureAudioUnlocked();
+        const outcome = this.battleController.usePotion();
+        this.applyBattleOutcome(outcome);
+      },
+
+      onBattleSwitchMember: (teamIdx: number) => {
+        this.ensureAudioUnlocked();
+        const outcome = this.battleController.switchTeamMember(teamIdx);
+        this.applyBattleOutcome(outcome);
+      },
+
+      onBattleFlee: () => {
+        this.ensureAudioUnlocked();
+        const outcome = this.battleController.flee();
+        this.applyBattleOutcome(outcome);
+        if (outcome.battleEnded === 'fled') {
+          this.overworldSim.applyPostEscapeGrace();
+          this.overworldSim.syncFromProfile();
+          this.screen = 'overworld';
+          this.syncBgmForCurrentScreen();
+          this.showToast('Escaped safely.');
+          this.syncUI();
+        }
+      },
+
+      onBattleToggleOfflineRig: () => {
+        this.ensureAudioUnlocked();
+        const nowOffline = this.battleController.toggleOfflineRig();
+        this.audio.playMenuBlip(nowOffline ? 460 : 620);
+        this.showToast(nowOffline ? 'Offline Pixel Rig preview enabled.' : 'Live animated sprites enabled.');
+        this.syncUI();
+      },
+
+      onBattleConfirmEvolution: () => {
+        this.ensureAudioUnlocked();
+        const outcome = this.battleController.confirmEvolution();
+        this.applyBattleOutcome(outcome);
+      },
+
+      onBattleCloseResult: () => {
+        this.ensureAudioUnlocked();
+        this.battleController.closeBattle();
+        this.overworldSim.syncFromProfile();
+        this.screen = 'overworld';
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onSelectPokedexSpecies: (speciesId: number) => {
+        this.ensureAudioUnlocked();
+        this.selectedPokedexId = Math.max(1, Math.min(1025, Math.round(speciesId)));
+        void this.sprites.loadSpeciesSprite(this.selectedPokedexId, { back: false, shiny: false });
+        this.audio.playMenuBlip(600);
+        this.syncUI();
+      },
+
+      onPlaySpeciesCry: (speciesId: number) => {
+        this.ensureAudioUnlocked();
+        const id = Math.max(1, Math.min(1025, Math.round(speciesId)));
+        this.selectedPokedexId = id;
+        this.audio.playSpeciesCry(id);
+        this.syncUI();
+      },
+
+      onSetLeadPokemon: (teamIdx: number) => {
+        this.ensureAudioUnlocked();
+        if (this.storage.manager.setLeadPokemon(teamIdx)) {
+          this.audio.playMenuBlip(700);
+          this.overworldSim.refreshState();
+          this.showToast('Updated your Lead Partner.');
+          this.syncUI();
+        }
+      },
+
+      onSwapTeamWithBox: (teamIdx: number, boxIdx: number) => {
+        this.ensureAudioUnlocked();
+        if (this.storage.manager.swapTeamWithBox(teamIdx, boxIdx)) {
+          this.audio.playMenuBlip(640);
+          this.overworldSim.refreshState();
+          this.showToast('Swapped party and box Pokémon.');
+          this.syncUI();
+        }
+      },
+
+      onDepositToBox: (teamIdx: number) => {
+        this.ensureAudioUnlocked();
+        if (this.storage.manager.depositToBox(teamIdx)) {
+          this.audio.playMenuBlip(520);
+          this.overworldSim.refreshState();
+          this.showToast('Moved Pokémon to Storage Box.');
+          this.syncUI();
+        } else {
+          this.showToast('Keep at least one partner in your active party.');
+        }
+      },
+
+      onWithdrawFromBox: (boxIdx: number) => {
+        this.ensureAudioUnlocked();
+        if (this.storage.manager.withdrawFromBox(boxIdx)) {
+          this.audio.playMenuBlip(680);
+          this.overworldSim.refreshState();
+          this.showToast('Added Pokémon to your active party.');
+          this.syncUI();
+        } else {
+          this.showToast('Your active team is already full (6 max).');
+        }
+      },
+
+      onUpgradePokemon: (uid: string) => {
+        this.ensureAudioUnlocked();
+        const res = this.storage.manager.upgradePokemon(uid);
+        if (res?.upgraded) {
+          this.audio.playBadgeFanfare();
+          this.overworldSim.refreshState();
+          this.showToast(`Star-Rank upgraded to Tier ${res.newTier}!`);
+          this.syncUI();
+        } else {
+          this.showToast(stripEmojis(res?.reason || 'Not enough Star Shards for upgrade.'));
+        }
+      },
+
+      onCheerPokemon: (uid: string) => {
+        this.ensureAudioUnlocked();
+        const res = this.storage.manager.cheerPokemon(uid);
+        if (res?.cheered) {
+          this.audio.playHealChime();
+          this.overworldSim.refreshState();
+          this.showToast('Buddy Cheer boosted bond and recovered HP!');
+          this.syncUI();
+        } else {
+          this.showToast(stripEmojis(res?.reason || 'Walk more steps to recharge Buddy Cheer!'));
+        }
+      },
+
+      onHealPokemonWithPotion: (uid: string) => {
+        this.ensureAudioUnlocked();
+        const res = this.storage.manager.healPokemonWithPotion(uid);
+        if (res?.healed) {
+          this.audio.playHealChime();
+          this.overworldSim.refreshState();
+          this.showToast(`Restored ${res.amount ?? 0} HP with a Potion.`);
+          this.syncUI();
+        } else {
+          this.showToast(stripEmojis(res?.reason || 'Cannot use Potion right now.'));
+        }
+      },
+
+      onEvolvePokemon: (uid: string, toSpeciesId: number, itemKey?: string) => {
+        this.ensureAudioUnlocked();
+        const res = this.storage.manager.evolvePokemon(uid, toSpeciesId, itemKey ?? null);
+        if (res?.evolution) {
+          this.audio.playEvolveFanfare();
+          this.overworldSim.refreshState();
+          this.triggerBadgeToast(res.newBadges?.map((b: { id: string }) => b.id));
+          this.showToast(`Evolved into ${stripEmojis(res.evolution.newName)}!`);
+          this.syncUI();
+        } else {
+          this.showToast('Evolution requirements not met yet.');
+        }
+      },
+
+      onRenamePokemon: (uid: string, nickname: string) => {
+        this.ensureAudioUnlocked();
+        const clean = stripEmojis(nickname).trim().slice(0, 16);
+        this.storage.manager.setPokemonNickname(uid, clean);
+        this.overworldSim.refreshState();
+        this.showToast(clean ? `Renamed partner to ${clean}.` : 'Restored default species name.');
+        this.syncUI();
+      },
+
+      onUpdateAppearance: (patch) => {
+        this.ensureAudioUnlocked();
+        if (typeof patch.nickname === 'string') {
+          this.storage.manager.setTrainerNickname(stripEmojis(patch.nickname));
+        }
+        const stylePatch: Partial<{
+          styleId: TrainerStyleId;
+          accessory: TrainerAccessoryId;
+          cape: boolean;
+          aura: TrainerAuraId;
+        }> = {};
+        if (patch.styleId !== undefined) stylePatch.styleId = patch.styleId;
+        if (patch.accessory !== undefined) stylePatch.accessory = patch.accessory;
+        if (patch.cape !== undefined) stylePatch.cape = patch.cape;
+        if (patch.aura !== undefined) stylePatch.aura = patch.aura;
+        if (Object.keys(stylePatch).length > 0) {
+          this.storage.manager.updateAppearance(stylePatch);
+        }
+        this.audio.playMenuBlip(640);
+        this.overworldSim.refreshState();
+        this.syncUI();
+      },
+
+      onUpdateSettings: (patch: Partial<GameSettings>) => {
+        this.ensureAudioUnlocked();
+        void this.handleUpdateSettings(patch);
+      },
+
+      onResetTrainerProgress: (trainerId: TrainerId) => {
+        this.ensureAudioUnlocked();
+        this.storage.manager.resetTrainerProgress(trainerId);
+        this.overworldSim.syncFromProfile();
+        this.battleController.closeBattle();
+        this.skyHopController.close();
+        this.briefing = null;
+        this.dialogue = null;
+        if (this.storage.manager.getActiveTrainerId() === trainerId) {
+          this.screen = 'starter';
+        }
+        this.showToast(`Reset ${trainerId === 'ozias' ? 'Ozias' : 'Violet'}'s adventure progress.`);
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onResetAllProgress: () => {
+        this.ensureAudioUnlocked();
+        this.storage.manager.resetAllProgress();
+        this.overworldSim.syncFromProfile();
+        this.battleController.closeBattle();
+        this.skyHopController.close();
+        this.briefing = null;
+        this.dialogue = null;
+        this.screen = 'title';
+        this.showToast('Reset all Starlight v2 profiles.');
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onOpenSkyHop: () => {
+        this.ensureAudioUnlocked();
+        this.handleOpenSkyHop();
+      },
+
+      onStartSkyHop: () => {
+        this.ensureAudioUnlocked();
+        const started = this.skyHopController.startNewRun();
+        if (started) {
+          this.audio.playArcadeBoost();
+        } else {
+          this.showToast('Out of Arcade Charges — buy one with Star Shards or walk/battle more!');
+        }
+        this.syncUI();
+      },
+
+      onBuySkyHopCharge: () => {
+        this.ensureAudioUnlocked();
+        if (this.skyHopController.buyChargeWithShards()) {
+          this.audio.playChestOpen();
+          this.showToast('Purchased +1 Sky-Hop Arcade Charge!');
+        } else {
+          this.showToast('Need more Star Shards to buy a charge.');
+        }
+        this.syncUI();
+      },
+
+      onToggleSkyHopPause: () => {
+        this.skyHopController.togglePause();
+        this.audio.playMenuBlip(480);
+        this.syncUI();
+      },
+
+      onSkyHopInputY: (normY: number | null) => {
+        this.skyHopController.setPointerNormY(normY);
+      },
+
+      onSkyHopKeyDir: (dir: 'up' | 'down', held: boolean) => {
+        this.skyHopController.setKeyDir(dir, held);
+      },
+
+      onSkyHopStarDash: () => {
+        this.ensureAudioUnlocked();
+        if (this.skyHopController.activateDash()) {
+          this.audio.playArcadeBoost();
+        }
+      },
+
+      onCloseSkyHop: () => {
+        this.skyHopController.close();
+        this.overworldSim.refreshState();
+        this.screen = 'overworld';
+        this.syncBgmForCurrentScreen();
+        this.syncUI();
+      },
+
+      onMoveInput: (dx: number, dy: number) => {
+        this.ensureAudioUnlocked();
+        if (this.screen !== 'overworld' || this.dialogue) return;
+        this.touchMoveVec = { dx, dy };
+        if (this.touchMoveTimeout) clearTimeout(this.touchMoveTimeout);
+        if (dx !== 0 || dy !== 0) {
+          const stepEv = this.overworldSim.stepDirection(dx, dy);
+          this.handleOverworldStepEvent(stepEv);
+          this.touchMoveTimeout = setTimeout(() => {
+            this.touchMoveVec = { dx: 0, dy: 0 };
+          }, 180);
+        }
+      },
+
+      onTapWorldCanvas: (canvasX: number, canvasY: number, width: number, height: number) => {
+        this.ensureAudioUnlocked();
+        this.handleTapWorldCanvas(canvasX, canvasY, width, height);
+      },
+
+      onForceSave: () => {
+        this.storage.saveSync();
+        this.audio.playMenuBlip(740);
+        this.showToast('Adventure saved.');
+        this.syncUI();
+      },
+    };
+  }
+
+  private handleSelectTrainer(trainerId: TrainerId): void {
+    this.storage.manager.selectTrainer(trainerId);
+    const profile = this.storage.getActiveProfileJSON();
+    this.overworldSim.syncFromProfile();
+    this.briefing = null;
+    this.dialogue = null;
+
+    if (!profile || !profile.starterId || profile.team.length === 0) {
+      this.screen = 'starter';
+    } else {
+      this.screen = 'overworld';
+      const lead = profile.team[0];
+      if (lead) {
+        this.selectedPokedexId = lead.speciesId;
+        void this.sprites.loadSpeciesSprite(lead.speciesId, { back: false, shiny: Boolean(lead.isShiny) });
+      }
+    }
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
+  }
+
+  private handleChooseStarter(speciesId: number): void {
+    const active = this.storage.manager.getActiveTrainerId();
+    if (!active) {
+      this.storage.manager.selectTrainer('violet');
+    }
+    this.storage.manager.chooseStarter(speciesId);
+    this.storage.manager.healTeam(true);
+    this.overworldSim.syncFromProfile();
+    this.selectedPokedexId = speciesId;
+    void this.sprites.loadSpeciesSprite(speciesId, { back: false, shiny: false });
+    void this.sprites.loadSpeciesSprite(speciesId, { back: true, shiny: false });
+
+    const sp = getSpeciesEntry(speciesId);
+    this.audio.playVictoryFanfare();
+    this.screen = 'overworld';
+    this.showToast(`${sp.name} joined your Starlight journey!`);
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
+  }
+
+  private handleNavigateScreen(screen: ActiveScreen, drawerTab?: DrawerTab): void {
+    if (isDrawerScreen(screen)) {
+      if (drawerTab) {
+        this.activeDrawerTab = drawerTab;
+      } else if (screen === 'badges') {
+        this.activeDrawerTab = 'badges';
+      } else if (screen === 'style-studio') {
+        this.activeDrawerTab = 'style';
+      } else {
+        this.activeDrawerTab = 'pokedex';
+      }
+      if (this.activeDrawerTab === 'pokedex') {
+        void this.sprites.loadSpeciesSprite(this.selectedPokedexId, { back: false, shiny: false });
+      }
+    }
+    if (screen === 'skyhop') {
+      this.handleOpenSkyHop();
+      return;
+    }
+    if (screen === 'overworld') {
+      this.briefing = null;
+      this.dialogue = null;
+      if (this.battleController.isActive()) {
+        this.battleController.closeBattle();
+      }
+      if (this.skyHopController.getState().active) {
+        this.skyHopController.close();
+      }
+      this.overworldSim.refreshState();
+    }
+    if (screen === 'title') {
+      this.briefing = null;
+      this.dialogue = null;
+      this.battleController.closeBattle();
+      this.skyHopController.close();
+    }
+    this.screen = screen;
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
+  }
+
+  private handleWarpBiome(biomeId: BiomeId): void {
+    this.overworldSim.warpToBiome(biomeId);
+    this.briefing = null;
+    this.dialogue = null;
+    this.screen = 'overworld';
+    const biomeName = stripEmojis(BIOMES[biomeId]?.name ?? biomeId);
+    this.showToast(`Arrived at ${biomeName}.`);
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
+  }
+
+  private handleOpenSkyHop(): void {
+    if (!this.storage.manager.getActiveTrainerId()) {
+      this.storage.manager.selectTrainer('violet');
+    }
+    this.briefing = null;
+    this.dialogue = null;
+    this.skyHopController.open();
+    this.screen = 'skyhop';
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
+  }
+
+  private handleConfirmBriefing(): void {
+    const b = this.briefing;
+    if (!b) return;
+    this.briefing = null;
+
+    if (b.kind === 'shrine' || b.kind === 'shrine-trial') {
+      this.handleStartBattle({
+        biomeId: b.biomeId,
+        tier: b.kind,
+        shrineId: b.targetId,
+      });
+      return;
+    }
+    if (b.kind === 'rival') {
+      this.handleStartBattle({
+        biomeId: b.biomeId,
+        tier: 'rival',
+        rivalId: b.targetId,
+      });
+      return;
+    }
+
+    // Biome scouting briefing -> launch a wild encounter in that biome (or forest if village)
+    const targetBiome: BiomeId = b.biomeId === 'village' ? 'forest' : b.biomeId;
+    this.handleStartBattle({
+      biomeId: targetBiome,
+      tier: 'wild',
+    });
+  }
+
+  private handleStartBattle(options: {
+    biomeId: BiomeId;
+    tier: EncounterTier;
+    shrineId?: string;
+    rivalId?: string;
+    depthTier?: number;
+    isRarePatch?: boolean;
+    forceSpeciesId?: number;
+  }): void {
+    if (!this.storage.manager.getActiveTrainerId()) {
+      this.storage.manager.selectTrainer('violet');
+    }
+    const profile = this.storage.getActiveProfileJSON();
+    if (!profile || profile.team.length === 0) {
+      this.storage.manager.chooseStarter(25);
+    }
+
+    const reducedMotion = this.storage.getSettings().reducedMotion;
+    this.battleController.startEncounter({
+      ...options,
+      reducedMotion,
+      forceOfflineRig: this.sprites.isForceOffline(),
+    });
+    this.battleRenderer.triggerShutter(options.tier, reducedMotion);
+    this.audio.playEncounterStinger();
+    this.briefing = null;
+    this.dialogue = null;
+    this.screen = 'battle';
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
+  }
+
+  private applyBattleOutcome(outcome: BattleActionOutcome): void {
+    const reducedMotion = this.storage.getSettings().reducedMotion;
+    for (const ev of outcome.vfxEvents) {
+      this.battleRenderer.triggerVfx({
+        type: ev.type,
+        fromSide: ev.fromSide,
+        targetSide: ev.targetSide,
+        power: ev.power,
+        effectiveness: ev.effectiveness,
+        category: ev.category,
+        composureBraced: ev.composureBraced,
+        isCrit: ev.isCrit,
+        duration: reducedMotion ? Math.min(0.28, ev.duration) : ev.duration,
+      });
+    }
+
+    if (outcome.moveSfxId) {
+      this.audio.playMoveSfx(outcome.moveSfxId, outcome.moveSfxFx);
+    }
+    for (const sfx of outcome.sfx) {
+      if (sfx === 'hit') this.audio.playHit(false);
+      else if (sfx === 'super-hit') this.audio.playHit(true);
+      else if (sfx === 'heal') this.audio.playHealChime();
+      else if (sfx === 'catch-throw') this.audio.playCatchThrow();
+      else if (sfx === 'catch-success') this.audio.playCatchSuccess();
+      else if (sfx === 'victory') this.audio.playVictoryFanfare();
+      else if (sfx === 'badge') this.audio.playBadgeFanfare();
+      else if (sfx === 'evolve') this.audio.playEvolveFanfare();
+    }
+
+    if (outcome.newBadgeIds && outcome.newBadgeIds.length > 0) {
+      this.triggerBadgeToast(outcome.newBadgeIds);
+    }
+    this.syncUI();
+  }
+
+  private handleInteractNearby(): void {
+    if (this.dialogue) {
+      if (this.dialogue.currentIndex + 1 < this.dialogue.lines.length) {
+        this.dialogue = { ...this.dialogue, currentIndex: this.dialogue.currentIndex + 1 };
+      } else {
+        const cb = this.dialogue.onConfirmAction;
+        this.dialogue = null;
+        if (cb) cb();
+      }
+      this.audio.playMenuBlip(560);
+      this.syncUI();
+      return;
+    }
+
+    const nearby = this.overworldSim.resolveNearbyInteractable();
+    if (!nearby) return;
+
+    if (nearby.kind === 'secret-arcade') {
+      if (this.storage.manager.isArcadeUnlocked()) {
+        this.handleOpenSkyHop();
+        return;
+      }
+      const res = this.storage.manager.recordSecretKnock();
+      this.overworldSim.refreshState();
+      if (res?.unlocked) {
+        this.audio.playBadgeFanfare();
+        this.dialogue = {
+          speaker: 'Secret Star Emblem',
+          title: 'Starlight Sky-Hop Unlocked!',
+          lines: [
+            'The three starlight chimes resonate together and reveal a hidden arcade portal!',
+            'Step inside anytime from here or the bottom dock to play Starlight Sky-Hop.',
+          ],
+          currentIndex: 0,
+          actionLabel: 'Enter Sky-Hop',
+          onConfirmAction: () => this.handleOpenSkyHop(),
+        };
+      } else {
+        this.audio.playMenuBlip(740 + (res?.knocks ?? 1) * 110);
+        this.dialogue = {
+          speaker: 'Mysterious Star Emblem',
+          lines: [
+            `A glowing constellation chimed softly on the village wall (${res?.knocks ?? 1}/3 knocks).`,
+          ],
+          currentIndex: 0,
+        };
+      }
+      this.syncUI();
+      return;
+    }
+
+    if (nearby.kind === 'fountain') {
+      this.storage.manager.healTeam(true);
+      this.overworldSim.refreshState();
+      this.audio.playHealChime();
+      this.showToast('Starlight Healing Fountain restored your entire team and refilled Potions!');
+      this.syncUI();
+      return;
+    }
+
+    if (nearby.kind === 'shrine') {
+      const sh = this.overworldSim.getState().shrines.find((s) => s.id === nearby.id);
+      const kind = sh?.cleared ? 'shrine-trial' : 'shrine';
+      this.briefing = this.overworldSim.buildTacticalBriefing(kind, nearby.id, sh?.biomeId);
+      this.audio.playMenuBlip(640);
+      this.screen = 'briefing';
+      this.syncUI();
+      return;
+    }
+
+    if (nearby.kind === 'rival') {
+      const rv = this.overworldSim.getState().rivals.find((r) => r.id === nearby.id);
+      this.briefing = this.overworldSim.buildTacticalBriefing('rival', nearby.id, rv?.biomeId);
+      this.audio.playMenuBlip(640);
+      this.screen = 'briefing';
+      this.syncUI();
+      return;
+    }
+
+    if (nearby.kind === 'chest') {
+      const rawChest = Object.values(CHESTS).find((c) => c.id === nearby.id);
+      if (rawChest && this.storage.manager.markChestOpened(rawChest.id)) {
+        if (rawChest.rewards) {
+          this.storage.manager.addRewards(rawChest.rewards, false);
+        }
+        const newBadges = this.storage.manager.evaluateBadges(true) || [];
+        this.triggerBadgeToast(newBadges.map((b: { id: string }) => b.id));
+        this.audio.playChestOpen();
+        this.overworldSim.refreshState();
+        this.dialogue = {
+          speaker: stripEmojis(rawChest.label || 'Starlight Treasure Chest'),
+          lines: [
+            formatCleanGameText(rawChest.message || 'You opened the Starlight Treasure Chest!'),
+          ],
+          currentIndex: 0,
+          rewardTags: buildRewardTags(rawChest.rewards, this.evolutionItemNames),
+        };
+        this.syncUI();
+      }
+      return;
+    }
+
+    if (nearby.kind === 'npc') {
+      const rawNpc = Object.values(NPCS).find((n) => n.id === nearby.id);
+      if (!rawNpc) return;
+      this.storage.manager.markNpcTalked(rawNpc.id);
+      const profileLive = this.storage.manager.getActiveProfile();
+      const quest = FIELD_QUESTS.find((q) => q.npcId === rawNpc.id) ?? null;
+      const doneSet = new Set<string>(profileLive?.questsCompleted ?? []);
+
+      const isWillow = rawNpc.id.includes('willow') || rawNpc.name.toLowerCase().includes('willow');
+      const portrait: DialogueModalState['speakerPortrait'] = isWillow ? 'willow' : undefined;
+
+      if (quest && !doneSet.has(quest.id)) {
+        const ready = typeof quest.check === 'function' ? Boolean(quest.check(profileLive)) : false;
+        if (ready) {
+          const qRes = this.storage.manager.completeQuest(quest.id, quest.rewards);
+          this.audio.playBadgeFanfare();
+          this.triggerBadgeToast(qRes?.newBadges?.map((b: { id: string }) => b.id));
+          this.overworldSim.refreshState();
+          const lines = (quest.completeDialogue?.length
+            ? quest.completeDialogue
+            : [`Quest complete: ${quest.title}! Thank you, {player}!`]
+          ).map((l) => formatCleanGameText(l, { profile: profileLive }));
+          this.dialogue = {
+            speaker: stripEmojis(rawNpc.name),
+            speakerPortrait: portrait,
+            title: stripEmojis(quest.title),
+            lines,
+            currentIndex: 0,
+            rewardTags: buildRewardTags(quest.rewards, this.evolutionItemNames),
+          };
+          this.syncUI();
+          return;
+        }
+
+        const progressLine = typeof quest.progress === 'function'
+          ? stripEmojis(quest.progress(profileLive))
+          : stripEmojis(quest.description);
+        const rawLines = quest.introDialogue?.length
+          ? quest.introDialogue
+          : quest.reminderDialogue?.length
+            ? quest.reminderDialogue
+            : [quest.description];
+        const lines = [
+          ...rawLines.map((l) => formatCleanGameText(l, { profile: profileLive })),
+          `Progress: ${progressLine}`,
+        ];
+        this.audio.playMenuBlip(580);
+        this.overworldSim.refreshState();
+        this.dialogue = {
+          speaker: stripEmojis(rawNpc.name),
+          speakerPortrait: portrait,
+          title: stripEmojis(quest.title),
+          lines,
+          currentIndex: 0,
+        };
+        this.syncUI();
+        return;
+      }
+
+      const rawLines = rawNpc.dialogue?.length
+        ? rawNpc.dialogue
+        : rawNpc.lines?.length
+          ? rawNpc.lines
+          : rawNpc.greeting
+            ? [rawNpc.greeting]
+            : ['Welcome to Starlight Island, {player}!'];
+      this.audio.playMenuBlip(560);
+      this.overworldSim.refreshState();
+      this.dialogue = {
+        speaker: stripEmojis(rawNpc.name),
+        speakerPortrait: portrait,
+        lines: rawLines.map((l) => formatCleanGameText(l, { profile: profileLive })),
+        currentIndex: 0,
+      };
+      this.syncUI();
+      return;
+    }
+
+    if (nearby.kind === 'signpost') {
+      const sign = this.overworldSim.getState().signposts.find((s) => s.id === nearby.id);
+      if (sign) {
+        this.audio.playMenuBlip(520);
+        this.dialogue = {
+          speaker: sign.title,
+          lines: [sign.text],
+          currentIndex: 0,
+        };
+        this.syncUI();
+      }
+    }
+  }
+
+  private handleTapWorldCanvas(canvasX: number, canvasY: number, width: number, height: number): void {
+    if (this.screen !== 'overworld' || this.dialogue) return;
+    if (width <= 0 || height <= 0) return;
+
+    const ow = this.overworldSim.getState();
+    const mapPxW = ow.cols * ow.tileSize;
+    const mapPxH = ow.rows * ow.tileSize;
+    const rawCenterX = (ow.player.x + 0.5) * ow.tileSize;
+    const rawCenterY = (ow.player.y + 0.5) * ow.tileSize;
+
+    const clampedCenterX = mapPxW <= width
+      ? mapPxW * 0.5
+      : Math.max(width * 0.5, Math.min(mapPxW - width * 0.5, rawCenterX));
+    const clampedCenterY = mapPxH <= height
+      ? mapPxH * 0.5
+      : Math.max(height * 0.5, Math.min(mapPxH - height * 0.5, rawCenterY));
+
+    const camX = clampedCenterX - width * 0.5;
+    const camY = clampedCenterY - height * 0.5;
+
+    const tileX = Math.max(0, Math.min(ow.cols - 1, Math.floor((camX + canvasX) / ow.tileSize)));
+    const tileY = Math.max(0, Math.min(ow.rows - 1, Math.floor((camY + canvasY) / ow.tileSize)));
+
+    // If tapping directly on or adjacent to an active nearby interactable, interact cleanly
+    if (Math.hypot(tileX - ow.player.tileX, tileY - ow.player.tileY) <= 1.2) {
+      const nearby = this.overworldSim.resolveNearbyInteractable();
+      if (nearby && Math.hypot(nearby.x - tileX, nearby.y - tileY) <= 1.2) {
+        this.handleInteractNearby();
+        return;
+      }
+    }
+
+    const path = this.overworldSim.setBfsTarget(tileX, tileY);
+    if (path.length > 0) {
+      this.audio.playMenuBlip(600);
+    }
+  }
+
+  private handleOverworldStepEvent(ev: ReturnType<DojoOverworldSim['update']>): void {
+    if (!ev || !ev.moved) return;
+    this.audio.playStep(ev.onGrass);
+
+    if (ev.discoveryPicked) {
+      this.audio.playChestOpen();
+      const label =
+        ev.discoveryPicked.kind === 'starShard'
+          ? '+2 Star Shards'
+          : ev.discoveryPicked.kind === 'potion'
+            ? '+1 Potion'
+            : ev.discoveryPicked.kind === 'greatBall'
+              ? '+1 Great Ball'
+              : '+1 Buddy Cheer';
+      this.showToast(`Found hidden treasure: ${label}!`);
+    } else if (ev.stepArcadeChargeEarned) {
+      this.showToast('Earned +1 Sky-Hop Arcade Charge from exploring!');
+    } else if (ev.stepCheerEarned) {
+      this.showToast('Buddy Cheer recharged!');
+    }
+
+    if (ev.biomeChanged) {
+      this.syncBgmForCurrentScreen();
+    }
+
+    if (ev.wildEncounterTriggered) {
+      this.handleStartBattle({
+        biomeId: ev.wildEncounterTriggered.biomeId,
+        tier: ev.wildEncounterTriggered.isRarePatch ? 'rare' : 'wild',
+        depthTier: ev.wildEncounterTriggered.depthTier,
+        isRarePatch: ev.wildEncounterTriggered.isRarePatch,
+      });
+    }
+  }
+
+  private async handleUpdateSettings(patch: Partial<GameSettings>): Promise<void> {
+    const prev = this.storage.getSettings();
+    const next = this.storage.updateSettings(patch);
+
+    this.audio.setMuted(next.audioMuted);
+    this.audio.setMasterVolume(next.masterVolume);
+    this.applyDocumentPreferences(next);
+    this.engine.activeBackend.setReducedMotion(next.reducedMotion);
+    this.engine.activeBackend.setCrtMode(next.crtMode);
+
+    if (patch.rendererOverride !== undefined && patch.rendererOverride !== prev.rendererOverride) {
+      await this.engine.switchBackend(patch.rendererOverride, 'User preference updated');
+    }
+
+    this.overworldSim.refreshState();
+    this.syncUI();
+  }
+
+  private bindInputHandlers(): void {
+    this.unlockAudioHandler = () => {
+      this.ensureAudioUnlocked();
+    };
+    window.addEventListener('pointerdown', this.unlockAudioHandler, { passive: true });
+    window.addEventListener('keydown', this.unlockAudioHandler, { passive: true });
+
+    this.stagePointerDownHandler = (e: PointerEvent) => {
+      if (this.screen !== 'overworld' || this.dialogue) return;
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      const canvas = this.engine.getCanvas() ?? this.canvasEl;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      this.handleTapWorldCanvas(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height);
+    };
+    (this.stageShellEl ?? this.canvasEl).addEventListener('pointerdown', this.stagePointerDownHandler);
 
     this.keyDownHandler = (e: KeyboardEvent) => {
-      const targetTag = (e.target as HTMLElement | null)?.tagName;
-      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || targetTag === 'SELECT') return;
-
-      const key = e.key.toLowerCase();
-      this.pressedKeys.add(key);
+      if (isEditableElement(e.target)) return;
+      const code = e.code;
 
       if (this.screen === 'skyhop') {
-        if (key === ' ' || key === 'arrowup' || key === 'w') {
+        if (code === 'ArrowUp' || code === 'KeyW') {
           e.preventDefault();
-          if (!this.skyHopState.running) {
-            startSkyHopRun(this.skyHopState, this.activeProfile());
-          } else {
-            triggerSkyHopFlap(this.skyHopState);
+          this.skyHopController.setKeyDir('up', true);
+        } else if (code === 'ArrowDown' || code === 'KeyS') {
+          e.preventDefault();
+          this.skyHopController.setKeyDir('down', true);
+        } else if (code === 'Space') {
+          e.preventDefault();
+          if (this.skyHopController.activateDash()) {
+            this.audio.playArcadeBoost();
           }
-        } else if (key === 'shift' || key === 'd' || key === 'arrowright') {
-          if (triggerSkyHopStarDash(this.skyHopState)) {
-            this.audio.playSkyHopDash();
-          }
-        } else if (key === 'escape') {
-          this.skyHopState.active = false;
-          this.skyHopState.running = false;
+        } else if (code === 'KeyP' || code === 'Escape') {
+          e.preventDefault();
+          this.skyHopController.togglePause();
+          this.syncUI();
+        }
+        return;
+      }
+
+      if (code === 'Escape') {
+        if (this.dialogue) {
+          this.dialogue = null;
+          this.syncUI();
+        } else if (isDrawerScreen(this.screen) || this.screen === 'settings' || this.screen === 'briefing') {
+          this.briefing = null;
           this.screen = 'overworld';
+          this.syncBgmForCurrentScreen();
+          this.syncUI();
         }
         return;
       }
 
       if (this.screen === 'overworld') {
-        if (key === 'e' || key === 'enter' || key === ' ') {
+        if (
+          code === 'ArrowUp' ||
+          code === 'ArrowDown' ||
+          code === 'ArrowLeft' ||
+          code === 'ArrowRight' ||
+          code === 'KeyW' ||
+          code === 'KeyA' ||
+          code === 'KeyS' ||
+          code === 'KeyD'
+        ) {
           e.preventDefault();
-          this.interactWithNearby();
-        } else if (key === 'b') {
-          this.screen = 'briefing';
-        } else if (key === 'p') {
-          this.screen = 'pokedex';
+          this.pressedKeys.add(code);
+          return;
         }
-        return;
-      }
-
-      if (key === 'escape' && (this.screen === 'pokedex' || this.screen === 'badges' || this.screen === 'style-studio' || this.screen === 'briefing')) {
-        this.screen = 'overworld';
+        if (code === 'Space' || code === 'Enter' || code === 'KeyE') {
+          e.preventDefault();
+          this.handleInteractNearby();
+          return;
+        }
+        if (code === 'KeyB' && !this.dialogue) {
+          e.preventDefault();
+          this.briefing = this.overworldSim.buildTacticalBriefing(
+            'biome',
+            this.overworldSim.getState().currentBiomeId,
+          );
+          this.screen = 'briefing';
+          this.syncUI();
+          return;
+        }
+        if ((code === 'KeyM' || code === 'KeyP') && !this.dialogue) {
+          e.preventDefault();
+          this.activeDrawerTab = 'pokedex';
+          this.screen = 'pokedex';
+          this.syncUI();
+        }
       }
     };
 
     this.keyUpHandler = (e: KeyboardEvent) => {
-      this.pressedKeys.delete(e.key.toLowerCase());
+      const code = e.code;
+      this.pressedKeys.delete(code);
+      if (code === 'ArrowUp' || code === 'KeyW') {
+        this.skyHopController.setKeyDir('up', false);
+      } else if (code === 'ArrowDown' || code === 'KeyS') {
+        this.skyHopController.setKeyDir('down', false);
+      }
+    };
+
+    this.blurHandler = () => {
+      this.pressedKeys.clear();
+      this.touchMoveVec = { dx: 0, dy: 0 };
+      this.skyHopController.setKeyDir('up', false);
+      this.skyHopController.setKeyDir('down', false);
     };
 
     window.addEventListener('keydown', this.keyDownHandler);
     window.addEventListener('keyup', this.keyUpHandler);
+    window.addEventListener('blur', this.blurHandler);
   }
 
-  private updateOverworldMovement(dtSeconds: number): void {
+  private resolveHeldDirection(): { dx: number; dy: number } {
     let dx = this.touchMoveVec.dx;
     let dy = this.touchMoveVec.dy;
-    if (this.pressedKeys.has('arrowleft') || this.pressedKeys.has('a')) dx -= 1;
-    if (this.pressedKeys.has('arrowright') || this.pressedKeys.has('d')) dx += 1;
-    if (this.pressedKeys.has('arrowup') || this.pressedKeys.has('w')) dy -= 1;
-    if (this.pressedKeys.has('arrowdown') || this.pressedKeys.has('s')) dy += 1;
-
-    const player = this.overworldState.player;
-    const follower = this.overworldState.follower;
-    const len = Math.hypot(dx, dy);
-
-    if (len > 0.05) {
-      const nx = dx / len;
-      const ny = dy / len;
-      const speed = 4.6; // tiles per second
-      const candX = player.x + nx * speed * dtSeconds;
-      const candY = player.y + ny * speed * dtSeconds;
-
-      if (Math.abs(nx) > Math.abs(ny)) {
-        player.facing = nx < 0 ? 'left' : 'right';
-      } else {
-        player.facing = ny < 0 ? 'up' : 'down';
-      }
-
-      // Check seamless neighbor biome crossings at map borders
-      if (candY < 1.2 && this.map.neighbors.up) {
-        this.travelToBiome(this.map.neighbors.up);
-        return;
-      }
-      if (candY > this.map.height - 1.2 && this.map.neighbors.down) {
-        this.travelToBiome(this.map.neighbors.down);
-        return;
-      }
-      if (candX < 1.2 && this.map.neighbors.left) {
-        this.travelToBiome(this.map.neighbors.left);
-        return;
-      }
-      if (candX > this.map.width - 1.2 && this.map.neighbors.right) {
-        this.travelToBiome(this.map.neighbors.right);
-        return;
-      }
-
-      const clampedX = Math.max(1.4, Math.min(this.map.width - 1.4, candX));
-      const clampedY = Math.max(1.8, Math.min(this.map.height - 1.4, candY));
-      const tile = this.map.tiles[Math.floor(clampedY) * this.map.width + Math.floor(clampedX)];
-      if (tile !== 'cliff' && tile !== 'deep-water') {
-        player.x = clampedX;
-        player.y = clampedY;
-      }
-
-      player.moving = true;
-      player.walkCycle += dtSeconds * 8.5;
-
-      const profile = this.activeProfile();
-      profile.x = player.x;
-      profile.y = player.y;
-      profile.facing = player.facing;
-
-      this.stepAccum += dtSeconds;
-      if (this.stepAccum > 0.32) {
-        this.stepAccum = 0;
-        this.audio.playFootstep(tile === 'shallow-water' || tile === 'bridge');
-      }
-
-      // Tall-grass wild encounter chance
-      if (tile === 'tall-grass') {
-        this.wildEncounterCooldown -= dtSeconds;
-        if (this.wildEncounterCooldown <= 0 && Math.random() < dtSeconds * 0.45) {
-          this.wildEncounterCooldown = 6.5;
-          this.startBattleEncounter('wild');
-          return;
-        }
-      }
-    } else {
-      player.moving = false;
-    }
-
-    // Smooth partner follower trailing behind the trainer
-    const targetDist = 1.15;
-    const fdx = player.x - follower.x;
-    const fdy = player.y - follower.y;
-    const dist = Math.hypot(fdx, fdy);
-    if (dist > targetDist) {
-      const pull = Math.min(dist - targetDist, 4.4 * dtSeconds);
-      follower.x += (fdx / dist) * pull;
-      follower.y += (fdy / dist) * pull;
-      follower.moving = true;
-      follower.walkCycle += dtSeconds * 8.0;
-      follower.facing =
-        Math.abs(fdx) > Math.abs(fdy)
-          ? (fdx < 0 ? 'left' : 'right')
-          : (fdy < 0 ? 'up' : 'down');
-    } else {
-      follower.moving = false;
-    }
-
-    // Detect closest interactable landmark or NPC within 2.3 tiles
-    let closest: OverworldLandmark | OverworldActor | null = null;
-    let bestDist = 2.35;
-    for (const lm of this.map.landmarks) {
-      const cx = lm.tileX + lm.widthTiles * 0.5;
-      const cy = lm.tileY + lm.heightTiles * 0.5;
-      const d = Math.hypot(player.x - cx, player.y - cy);
-      if (d < bestDist) {
-        bestDist = d;
-        closest = lm;
-      }
-    }
-    for (const npc of this.overworldState.npcs) {
-      const d = Math.hypot(player.x - npc.x, player.y - npc.y);
-      if (d < bestDist) {
-        bestDist = d;
-        closest = npc;
-      }
-    }
-    this.overworldState.nearbyInteraction = closest;
+    if (this.pressedKeys.has('ArrowLeft') || this.pressedKeys.has('KeyA')) dx -= 1;
+    if (this.pressedKeys.has('ArrowRight') || this.pressedKeys.has('KeyD')) dx += 1;
+    if (this.pressedKeys.has('ArrowUp') || this.pressedKeys.has('KeyW')) dy -= 1;
+    if (this.pressedKeys.has('ArrowDown') || this.pressedKeys.has('KeyS')) dy += 1;
+    return { dx: Math.sign(dx), dy: Math.sign(dy) };
   }
 
-  private tick(
-    dtSeconds: number,
-    elapsedSeconds: number,
-    backend: RenderEngine['activeBackend'],
-  ): void {
-    const profile = this.activeProfile();
-    profile.playtimeSeconds += dtSeconds;
+  private tick(dtSeconds: number, elapsedSeconds: number, backend: RenderEngine['activeBackend']): void {
+    const settings = this.storage.getSettings();
 
-    if (this.toastMessage && performance.now() > this.toastUntil) {
+    // Expire toasts cleanly
+    if (this.toastMessage && Date.now() >= this.toastUntil) {
       this.toastMessage = null;
     }
-
-    // Begin render frame for the active backend (WebGL2 or Canvas2D)
-    backend.beginFrame(elapsedSeconds, dtSeconds);
-
-    // Update & render active presentation domain
-    if (this.screen === 'title') {
-      this.titleRenderer.update(dtSeconds, this.save.settings.reducedMotion);
-      this.titleRenderer.render(backend, this.save, this.save.settings.reducedMotion);
-    } else if (this.screen === 'battle') {
-      this.battleState.reducedMotion = this.save.settings.reducedMotion;
-      this.battleState.forceOfflineRig = this.forceOfflineRig;
-      if (this.battleState.phase === 'capturing' && this.battleState.enemy.captureProgress !== undefined) {
-        this.battleState.enemy.captureProgress = Math.min(1, this.battleState.enemy.captureProgress + dtSeconds * 1.15);
+    if (this.badgeToast) {
+      this.badgeToast = {
+        ...this.badgeToast,
+        remainingSec: this.badgeToast.remainingSec - dtSeconds,
+      };
+      if (this.badgeToast.remainingSec <= 0) {
+        this.badgeToast = null;
       }
-      this.battleRenderer.update(this.battleState, dtSeconds);
-      this.battleRenderer.render(backend, this.battleState);
-    } else if (this.screen === 'skyhop') {
-      this.skyHopState.reducedMotion = this.save.settings.reducedMotion;
-      const stepRes = stepSkyHop(this.skyHopState, dtSeconds, profile);
-      if (stepRes.collectedShard) this.audio.playUiClick();
-      if (stepRes.hitHazard) this.audio.playBattleHit(true);
-      this.skyHopRenderer.update(this.skyHopState, dtSeconds);
-      this.skyHopRenderer.render(backend, this.skyHopState);
-    } else {
-      // Overworld renders continuously underneath HUD & overlay modals (Briefing, Pokédex, Badges, Style Studio)
-      if (this.screen === 'overworld') {
-        this.updateOverworldMovement(dtSeconds);
-      }
-      this.overworldState.elapsedSeconds = elapsedSeconds;
-      this.overworldState.reducedMotion = this.save.settings.reducedMotion;
-      this.overworldRenderer.update(this.overworldState, dtSeconds);
-      this.overworldRenderer.render(backend, this.overworldState);
     }
 
-    // Flush & composite all render passes (lighting, water, bloom, LUT, CRT) and collect live frame stats
-    const frameStats = backend.endFrame();
-
-    // Periodic autosave every 12 seconds
+    // Periodic background autosave (every 15 seconds)
     this.autosaveAccum += dtSeconds;
-    if (this.autosaveAccum >= 12) {
+    if (this.autosaveAccum >= 15) {
       this.autosaveAccum = 0;
-      profile.updatedAt = Date.now();
-      void persistSaveState(this.save);
+      this.storage.saveSync();
     }
 
-    // Sync Celestial Glass UI snapshot
-    const briefing = computeTacticalBriefing(profile, profile.biomeId, this.map);
-    const cryWaveform = this.audio.getCryWaveformSnapshot(this.selectedPokedexId, elapsedSeconds * 2.2);
-    const availableMoves = resolveMoves(this.battleState.player.member.moves);
+    // Scene update & render dispatch
+    if (this.screen === 'title' || this.screen === 'starter') {
+      this.titleRenderer.update(dtSeconds, settings.reducedMotion);
+      backend.beginFrame(elapsedSeconds, dtSeconds);
+      this.titleRenderer.render(backend, this.storage.toV3SaveState(), settings.reducedMotion);
+      backend.endFrame();
+    } else if (this.screen === 'battle') {
+      this.battleController.update(dtSeconds);
+      const bState = this.battleController.getState();
+      this.battleRenderer.update(bState, dtSeconds);
+      backend.beginFrame(elapsedSeconds, dtSeconds);
+      this.battleRenderer.render(backend, bState);
+      backend.endFrame();
+    } else if (this.screen === 'skyhop') {
+      const ev = this.skyHopController.update(dtSeconds);
+      const sState = this.skyHopController.getState();
+      if (ev.collectedStar) this.audio.playArcadeStar(sState.combo);
+      if (ev.healedHeart) this.audio.playHealChime();
+      if (ev.hitHazard) this.audio.playArcadeBump();
+      if (ev.runEnded) this.audio.playVictoryFanfare();
+      this.skyHopRenderer.update(sState, dtSeconds);
+      backend.beginFrame(elapsedSeconds, dtSeconds);
+      this.skyHopRenderer.render(backend, sState);
+      backend.endFrame();
+    } else {
+      const held = this.screen === 'overworld' && !this.dialogue
+        ? this.resolveHeldDirection()
+        : { dx: 0, dy: 0 };
+      const stepEv = this.overworldSim.update(dtSeconds, held);
+      if (stepEv) this.handleOverworldStepEvent(stepEv);
+      const owState = this.overworldSim.getState();
+      this.overworldRenderer.update(owState, dtSeconds);
+      backend.beginFrame(elapsedSeconds, dtSeconds);
+      this.overworldRenderer.render(backend, owState);
+      backend.endFrame();
+    }
 
-    this.ui.sync({
+    this.syncUI();
+  }
+
+  private buildSnapshot(): UIRenderSnapshot {
+    const save = this.storage.toV3SaveState();
+    const profile = this.storage.getActiveProfileJSON();
+    return {
       screen: this.screen,
-      save: this.save,
+      activeDrawerTab: this.activeDrawerTab,
+      save,
       profile,
-      overworld: this.overworldState,
-      battle: this.battleState,
-      skyhop: this.skyHopState,
-      briefing,
-      badges: BADGE_DEFINITIONS,
-      capabilities: backend.capabilities,
-      frameStats,
+      overworld: this.overworldSim.getState(),
+      battle: this.battleController.getState(),
+      skyhop: this.skyHopController.getState(),
+      briefing: this.briefing,
+      dialogue: this.dialogue,
+      badges: this.badges,
+      evolutionItems: this.evolutionItems,
+      capabilities: this.engine.activeBackend.capabilities,
+      frameStats: this.engine.getStats(),
       toastMessage: this.toastMessage,
+      badgeToast: this.badgeToast,
       selectedPokedexId: this.selectedPokedexId,
-      cryWaveform,
-      availableMoves,
-    });
-  }
-
-  private showToast(msg: string): void {
-    this.toastMessage = msg;
-    this.toastUntil = performance.now() + 3400;
-  }
-
-  private exposeDebugHandle(): void {
-    window.__STARLIGHT_DEBUG__ = {
-      getState: () => ({
-        screen: this.screen,
-        backend: this.engine.activeBackend.kind,
-        capabilities: this.engine.activeBackend.capabilities,
-        frameStats: this.engine.getStats(),
-        hydrationSource: this.hydrationSource,
-        activeSlot: this.save.activeSlot,
-        biomeId: this.activeProfile().biomeId,
-        playerPos: { x: this.overworldState.player.x, y: this.overworldState.player.y },
-        grassDisplacements: this.overworldRenderer.getDisplacementCount(),
-        contextEvents: [...this.contextEvents],
-        save: this.save,
-        battleActive: this.battleState.active,
-        battlePhase: this.battleState.phase,
-        battleShutterDuration: this.battleState.shutter.duration,
-        skyhopScore: this.skyHopState.score,
-        manifestLoaded: this.manifest !== null,
-      }),
-      simulateContextLoss: () => this.engine.simulateContextLoss(),
-      switchRenderer: (mode) => this.engine.switchBackend(mode, 'debug-bridge'),
-      navigateScreen: (screen) => {
-        this.screen = screen;
-        if (screen === 'skyhop') this.skyHopState.active = true;
-      },
-      travelBiome: (biomeId) => this.travelToBiome(biomeId),
-      triggerEncounter: (tier) => this.startBattleEncounter(tier),
-      forceSave: async () => {
-        this.activeProfile().updatedAt = Date.now();
-        await persistSaveState(this.save);
-      },
+      cryWaveform: this.audio.getCryWaveformSnapshot(this.selectedPokedexId),
+      spriteCacheVersion: this.sprites.getVersion(),
     };
   }
 
+  private syncUI(): void {
+    this.ui.sync(this.buildSnapshot());
+  }
+
+  private exposeDebugHandle(): void {
+    const existingRenderEngine = (window.__STARLIGHT_DEBUG__ as { renderEngine?: unknown } | undefined)?.renderEngine;
+
+    const handle: StarlightDebugHandle = {
+      renderEngine: existingRenderEngine,
+      getState: () => {
+        const save = this.storage.toV3SaveState();
+        const ow = this.overworldSim.getState();
+        const b = this.battleController.getState();
+        const sh = this.skyHopController.getState();
+        return {
+          screen: this.screen,
+          activeDrawerTab: this.activeDrawerTab,
+          backend: this.engine.activeBackend.kind,
+          capabilities: this.engine.activeBackend.capabilities,
+          frameStats: this.engine.getStats(),
+          hydrationSource: this.hydrationSource,
+          activeTrainerId: save.activeTrainerId,
+          biomeId: ow.currentBiomeId,
+          playerPos: { x: ow.player.tileX, y: ow.player.tileY },
+          grassDisplacements: this.overworldRenderer.getDisplacementCount(),
+          contextEvents: [...this.contextEvents],
+          save,
+          battleActive: b.active,
+          battlePhase: b.phase,
+          battleShutterDuration: b.shutter.duration,
+          skyhopScore: sh.score,
+          manifestLoaded: this.manifest !== null,
+          spriteCacheVersion: this.sprites.getVersion(),
+        };
+      },
+      simulateContextLoss: () => this.engine.simulateContextLoss(),
+      switchRenderer: async (mode: RendererMode) => {
+        const res = await this.engine.switchBackend(mode, 'Debug switchRenderer');
+        this.storage.updateSettings({ rendererOverride: mode });
+        this.syncUI();
+        return res;
+      },
+      navigateScreen: (screen: ActiveScreen, drawerTab?: DrawerTab) => {
+        this.handleNavigateScreen(screen, drawerTab);
+      },
+      selectTrainer: (trainerId: TrainerId) => {
+        this.handleSelectTrainer(trainerId);
+      },
+      chooseStarter: (speciesId: number) => {
+        this.handleChooseStarter(speciesId);
+      },
+      warpBiome: (biomeId: BiomeId) => {
+        if (BIOMES[biomeId]) {
+          this.handleWarpBiome(biomeId);
+        }
+      },
+      travelBiome: (biomeId: BiomeId) => {
+        if (BIOMES[biomeId]) {
+          this.handleWarpBiome(biomeId);
+        }
+      },
+      triggerEncounter: (tier: EncounterTier, options) => {
+        this.handleStartBattle({
+          biomeId: options?.biomeId ?? this.overworldSim.getState().currentBiomeId,
+          tier,
+          forceSpeciesId: options?.forceSpeciesId,
+          shrineId: options?.shrineId,
+          rivalId: options?.rivalId,
+        });
+      },
+      openSkyHop: () => {
+        this.handleOpenSkyHop();
+      },
+      forceSave: async () => {
+        await persistSaveState(this.storage.toV3SaveState());
+      },
+    };
+
+    window.__STARLIGHT_DEBUG__ = handle;
+  }
+
   dispose(): void {
-    if (this.battleTurnTimer) clearTimeout(this.battleTurnTimer);
-    if (this.resizeHandler) window.removeEventListener('resize', this.resizeHandler);
+    this.engine.stopLoop();
+    this.unsubContext?.();
+    this.unsubSprites?.();
+    this.unsubContext = null;
+    this.unsubSprites = null;
+
+    if (this.touchMoveTimeout) {
+      clearTimeout(this.touchMoveTimeout);
+      this.touchMoveTimeout = null;
+    }
+    if (this.unlockAudioHandler) {
+      window.removeEventListener('pointerdown', this.unlockAudioHandler);
+      window.removeEventListener('keydown', this.unlockAudioHandler);
+    }
+    if (this.stagePointerDownHandler) {
+      (this.stageShellEl ?? this.canvasEl)?.removeEventListener('pointerdown', this.stagePointerDownHandler);
+    }
     if (this.keyDownHandler) window.removeEventListener('keydown', this.keyDownHandler);
     if (this.keyUpHandler) window.removeEventListener('keyup', this.keyUpHandler);
-    if (this.unsubContext) this.unsubContext();
+    if (this.blurHandler) window.removeEventListener('blur', this.blurHandler);
+
+    this.audio.stopBGM();
     this.ui.dispose();
     this.engine.dispose();
   }
 }
+
+export type { OverworldSceneState, SkyHopState };
