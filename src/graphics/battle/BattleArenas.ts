@@ -129,8 +129,8 @@ export function computeBattleStageLayout(width: number, height: number): BattleS
   if (isPortrait) {
     // Frame both combatants cleanly inside the unobstructed upper-middle portrait window
     // (below top enemy nameplate ~0..12% and above bottom player card + move deck ~54..100%)
-    const playerSize = minDim * 0.30;
-    const enemySize = minDim * 0.255;
+    const playerSize = minDim * 0.315;
+    const enemySize = minDim * 0.27;
     const enemyPadY = h * 0.315;
     const playerPadY = h * 0.475;
 
@@ -144,24 +144,24 @@ export function computeBattleStageLayout(width: number, height: number): BattleS
       playerPad: {
         x: w * 0.26,
         y: playerPadY,
-        rx: Math.round(w * 0.16),
-        ry: Math.round(h * 0.022),
+        rx: Math.round(w * 0.17),
+        ry: Math.round(h * 0.024),
         spriteCy: playerPadY - playerSize * 0.45,
         size: playerSize,
       },
       enemyPad: {
         x: w * 0.74,
         y: enemyPadY,
-        rx: Math.round(w * 0.135),
-        ry: Math.round(h * 0.018),
+        rx: Math.round(w * 0.145),
+        ry: Math.round(h * 0.020),
         spriteCy: enemyPadY - enemySize * 0.45,
         size: enemySize,
       },
     };
   }
 
-  const playerSize = minDim * 0.285;
-  const enemySize = minDim * 0.24;
+  const playerSize = minDim * 0.31;
+  const enemySize = minDim * 0.268;
   const playerPadY = h * 0.705;
   const enemyPadY = h * 0.575;
 
@@ -175,16 +175,16 @@ export function computeBattleStageLayout(width: number, height: number): BattleS
     playerPad: {
       x: w * 0.27,
       y: playerPadY,
-      rx: Math.round(w * 0.125),
-      ry: Math.round(h * 0.044),
+      rx: Math.round(w * 0.132),
+      ry: Math.round(h * 0.046),
       spriteCy: playerPadY - playerSize * 0.45,
       size: playerSize,
     },
     enemyPad: {
       x: w * 0.725,
       y: enemyPadY,
-      rx: Math.round(w * 0.105),
-      ry: Math.round(h * 0.036),
+      rx: Math.round(w * 0.114),
+      ry: Math.round(h * 0.039),
       spriteCy: enemyPadY - enemySize * 0.45,
       size: enemySize,
     },
@@ -583,6 +583,233 @@ function renderPixelFallbackBackdrop(
   ctx.restore();
 }
 
+interface FocalSeparationTuning {
+  veilHex: string;
+  veilAlpha: number;
+  backlightHex: string;
+  backlightAlpha: number;
+}
+
+function getFocalSeparationTuning(arena: BattleArenaDescriptor): FocalSeparationTuning {
+  switch (arena.biomeId) {
+    // High-glare / bright snowy, sandy, molten, prismatic arenas: stronger dark focal cushion
+    // so bright lava/snow/sand behind the fighter softens gently without removing the vista.
+    case 'volcano':
+      return { veilHex: '#120810', veilAlpha: 0.48, backlightHex: '#ffe8cc', backlightAlpha: 0.16 };
+    case 'peak':
+      return { veilHex: '#0b1836', veilAlpha: 0.42, backlightHex: '#dff8ff', backlightAlpha: 0.14 };
+    case 'desert':
+    case 'atoll':
+      return { veilHex: '#1a1224', veilAlpha: 0.40, backlightHex: '#fff3d6', backlightAlpha: 0.15 };
+    case 'water':
+    case 'reef':
+      return { veilHex: '#081b34', veilAlpha: 0.36, backlightHex: '#d4f6ff', backlightAlpha: 0.18 };
+    case 'crater':
+    case 'sanctum':
+      return { veilHex: '#0e1030', veilAlpha: 0.42, backlightHex: '#e8f0ff', backlightAlpha: 0.18 };
+    case 'canyon':
+      return { veilHex: '#180e1c', veilAlpha: 0.38, backlightHex: '#ffefc8', backlightAlpha: 0.18 };
+    // Lush / busy foliage arenas: balanced contrast cushion + crisp atmospheric mist glow
+    case 'forest':
+    case 'grove':
+    case 'faeveldt':
+      return { veilHex: '#09161d', veilAlpha: 0.34, backlightHex: '#eefbe8', backlightAlpha: 0.22 };
+    // Deep twilight / dark cavern arenas: subtle noise-softening cushion + clear moonlit backlight
+    // so dark silhouettes (Umbreon, Gengar, Onix, Darkrai) pop immediately off dark backgrounds.
+    case 'cave':
+    case 'rift':
+    case 'marsh':
+    case 'highlands':
+    case 'ruins':
+    case 'village':
+    default:
+      return { veilHex: '#090d22', veilAlpha: 0.30, backlightHex: '#dceeff', backlightAlpha: 0.26 };
+  }
+}
+
+function drawCombatZoneFocalSeparation(
+  ctx: CanvasRenderingContext2D,
+  pad: BattlePadAnchor,
+  tuning: FocalSeparationTuning,
+  pulse: number,
+): void {
+  const cx = pad.x;
+  const cy = pad.spriteCy - pad.size * 0.04;
+
+  // 1. Soft radial depth-of-field contrast-softening mist behind the combatant
+  // Gently quiets high-frequency arena clutter (lava falls, snow ridges, foliage, crystals)
+  // directly behind the Pokémon silhouette while keeping the full scenic arena intact.
+  const veilRx = pad.size * 0.96;
+  const veilRy = pad.size * 0.74;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(1, veilRy / Math.max(1, veilRx));
+  const veilGrad = ctx.createRadialGradient(0, 0, veilRx * 0.12, 0, 0, veilRx);
+  veilGrad.addColorStop(0, hexToRgba(tuning.veilHex, tuning.veilAlpha));
+  veilGrad.addColorStop(0.54, hexToRgba(tuning.veilHex, tuning.veilAlpha * 0.56));
+  veilGrad.addColorStop(0.82, hexToRgba(tuning.veilHex, tuning.veilAlpha * 0.18));
+  veilGrad.addColorStop(1, hexToRgba(tuning.veilHex, 0));
+  ctx.fillStyle = veilGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, veilRx, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // 2. Subtle studio-grade luminous rim-backlight directly behind upper torso/head
+  // Gives dark-colored Pokémon crisp separation even in caves, forests, and rifts.
+  const haloRx = pad.size * 0.54;
+  const haloRy = pad.size * 0.46;
+  const haloCy = pad.spriteCy - pad.size * 0.08;
+  const haloAlpha = clamp(tuning.backlightAlpha + pulse * 0.10, 0.10, 0.36);
+  ctx.save();
+  ctx.translate(cx, haloCy);
+  ctx.scale(1, haloRy / Math.max(1, haloRx));
+  const haloGrad = ctx.createRadialGradient(0, 0, haloRx * 0.08, 0, 0, haloRx);
+  haloGrad.addColorStop(0, hexToRgba(tuning.backlightHex, haloAlpha));
+  haloGrad.addColorStop(0.5, hexToRgba(tuning.backlightHex, haloAlpha * 0.42));
+  haloGrad.addColorStop(1, hexToRgba(tuning.backlightHex, 0));
+  ctx.fillStyle = haloGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, haloRx, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawCraftedBattlePlatform(
+  ctx: CanvasRenderingContext2D,
+  pad: BattlePadAnchor,
+  arena: BattleArenaDescriptor,
+  glowColor: string,
+  px: number,
+  pulse: number,
+  t: number,
+): void {
+  const deckBase = mixHex(arena.groundPrimaryHex, '#181e38', 0.28);
+  const deckLight = mixHex(arena.groundPrimaryHex, '#eef4ff', 0.22);
+  const skirtColor = mixHex(arena.groundSecondaryHex, '#0c1026', 0.55);
+  const rimHighlight = mixHex(glowColor, '#fff8e8', 0.38);
+  const inkBorder = 'rgba(7, 10, 24, 0.88)';
+
+  // 1. Subtle reflective pool / aura glow beneath platform on reflective arenas
+  if (arena.reflectionAlpha > 0.05) {
+    drawPixelSteppedDisc(
+      ctx,
+      pad.x,
+      pad.y + px * 2.5,
+      pad.rx * 1.12,
+      pad.ry * 1.24,
+      px,
+      hexToRgba(glowColor, arena.reflectionAlpha * (0.24 + pulse * 0.22)),
+    );
+  }
+
+  // 2. Deep grounded drop-shadow beneath platform skirt
+  drawPixelSteppedDisc(
+    ctx,
+    pad.x,
+    pad.y + px * 2.5,
+    pad.rx * 1.04,
+    pad.ry * 1.06,
+    px,
+    'rgba(5, 7, 20, 0.62)',
+  );
+
+  // 3. 3D-beveled lower platform rim/skirt (gives real pixel-art thickness & weight!)
+  drawPixelSteppedDisc(
+    ctx,
+    pad.x,
+    pad.y + px * 1.5,
+    pad.rx * 0.98,
+    pad.ry * 0.94,
+    px,
+    hexToRgba(skirtColor, 0.90),
+    inkBorder,
+  );
+
+  // 4. Main top battle deck surface
+  drawPixelSteppedDisc(
+    ctx,
+    pad.x,
+    pad.y,
+    pad.rx * 0.96,
+    pad.ry * 0.86,
+    px,
+    hexToRgba(deckBase, 0.84),
+    inkBorder,
+  );
+
+  // 5. Crisp inner lit plateau & subtle biome surface bevel
+  drawPixelSteppedDisc(
+    ctx,
+    pad.x,
+    pad.y - px * 0.4,
+    pad.rx * 0.84,
+    pad.ry * 0.68,
+    px,
+    hexToRgba(deckLight, 0.30),
+    hexToRgba(rimHighlight, 0.42 + pulse * 0.32),
+  );
+
+  // 6. Biome-crafted platform detail accents (all pixel-snapped!)
+  const snappedY = Math.round(pad.y / px) * px;
+  switch (arena.pedestalKind) {
+    case 'water-mirror': {
+      const ripple = 1 + Math.sin(t * 2.2) * 0.04;
+      drawPixelSteppedDisc(
+        ctx,
+        pad.x,
+        pad.y,
+        pad.rx * 0.68 * ripple,
+        pad.ry * 0.50 * ripple,
+        px,
+        'rgba(0, 0, 0, 0)',
+        hexToRgba('#b8f4ff', 0.44 + pulse * 0.25),
+      );
+      break;
+    }
+    case 'basalt-forge': {
+      // Glowing ember fissure notches on basalt rim
+      ctx.fillStyle = hexToRgba('#ff9f43', 0.68 + pulse * 0.28);
+      for (const sx of [-0.62, -0.22, 0.28, 0.66]) {
+        const ex = Math.round((pad.x + sx * pad.rx) / px) * px;
+        ctx.fillRect(ex, snappedY + px, px * 2, px);
+      }
+      break;
+    }
+    case 'crystal-dias':
+    case 'frost-mirror': {
+      // Specular crystalline glint dashes across upper deck
+      ctx.fillStyle = hexToRgba('#e8faff', 0.62 + pulse * 0.24);
+      const gx1 = Math.round((pad.x - pad.rx * 0.48) / px) * px;
+      const gx2 = Math.round((pad.x + pad.rx * 0.34) / px) * px;
+      ctx.fillRect(gx1, snappedY - px, px * 4, px);
+      ctx.fillRect(gx2, snappedY, px * 3, px);
+      break;
+    }
+    case 'moss-stone': {
+      // Tiny pixel grass/petal accents tucked around stone edge
+      ctx.fillStyle = hexToRgba(arena.accentHex, 0.65);
+      for (const sx of [-0.72, -0.35, 0.42, 0.72]) {
+        const mx = Math.round((pad.x + sx * pad.rx) / px) * px;
+        ctx.fillRect(mx, snappedY + (sx < 0 ? 0 : px), px * 2, px);
+      }
+      break;
+    }
+    case 'cobble-rune':
+    case 'astral-marble':
+    case 'sandstone-dais':
+    default: {
+      // Carved runic / masonry corner pips along horizontal axis
+      for (const sx of [-1, 1] as const) {
+        const rx = Math.round((pad.x + sx * pad.rx * 0.74) / px) * px;
+        ctx.fillStyle = hexToRgba(rimHighlight, 0.70 + pulse * 0.25);
+        ctx.fillRect(rx, snappedY, px * 2, px);
+      }
+      break;
+    }
+  }
+}
+
 function renderArenaPedestalsAndAtmosphere(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -599,65 +826,27 @@ function renderArenaPedestalsAndAtmosphere(
   const motion = reducedMotion ? 0.16 : 1.0;
   const t = time * motion;
   const glowColor = activeTintHex ? mixHex(arena.ambientGlowHex, activeTintHex, pulse * 0.65) : arena.ambientGlowHex;
+  const focalTuning = getFocalSeparationTuning(arena);
 
   ctx.save();
   ctx.imageSmoothingEnabled = false;
 
   // Elemental arena pulse lighting wash over stage during move impact
   if (activeTintHex && pulse > 0.02) {
-    ctx.fillStyle = hexToRgba(activeTintHex, pulse * 0.16);
+    ctx.fillStyle = hexToRgba(activeTintHex, pulse * 0.14);
     ctx.fillRect(0, 0, w, h);
   }
 
   applyCameraToContext(ctx, w, h, camera);
 
-  // Subtle reflective ground sheen + grounded pixel-art pedestals beneath both combatants
-  for (const pad of [layout.enemyPad, layout.playerPad]) {
-    const padFill = mixHex(arena.groundPrimaryHex, '#12162e', 0.38);
-    const padRim = mixHex(glowColor, '#ffffff', 0.22);
+  // 1. Atmospheric focal separation behind BOTH combat zones (preserves rich background while
+  // giving unmistakable figure-ground depth separation behind both Pokémon silhouettes!)
+  drawCombatZoneFocalSeparation(ctx, layout.enemyPad, focalTuning, pulse);
+  drawCombatZoneFocalSeparation(ctx, layout.playerPad, focalTuning, pulse);
 
-    // Subtle reflective sheen beneath pedestal
-    if (arena.reflectionAlpha > 0.05) {
-      drawPixelSteppedDisc(
-        ctx,
-        pad.x,
-        pad.y + px * 2,
-        pad.rx * 1.12,
-        pad.ry * 1.25,
-        px,
-        hexToRgba(glowColor, arena.reflectionAlpha * (0.28 + pulse * 0.25)),
-      );
-    }
-
-    // Grounded outer shadow ring + pedestal base
-    drawPixelSteppedDisc(
-      ctx,
-      pad.x,
-      pad.y + px,
-      pad.rx * 1.04,
-      pad.ry * 1.06,
-      px,
-      'rgba(8, 10, 26, 0.48)',
-    );
-    drawPixelSteppedDisc(
-      ctx,
-      pad.x,
-      pad.y,
-      pad.rx * 0.94,
-      pad.ry * 0.88,
-      px,
-      hexToRgba(padFill, 0.56),
-      hexToRgba(padRim, 0.42 + pulse * 0.34),
-    );
-
-    // Runic corner pixel pips on pedestal edge
-    for (const sx of [-1, 1] as const) {
-      const rx = Math.round((pad.x + sx * pad.rx * 0.72) / px) * px;
-      const ry = Math.round(pad.y / px) * px;
-      ctx.fillStyle = hexToRgba(glowColor, 0.55 + pulse * 0.35);
-      ctx.fillRect(rx, ry, px, px);
-    }
-  }
+  // 2. Upgraded layered pixel-art battleground platforms beneath both combatants
+  drawCraftedBattlePlatform(ctx, layout.enemyPad, arena, glowColor, px, pulse, t);
+  drawCraftedBattlePlatform(ctx, layout.playerPad, arena, glowColor, px, pulse, t);
 
   // Dynamic biome-matched atmospheric pixel motes
   const moteCount = reducedMotion ? 8 : 18;
@@ -746,37 +935,46 @@ export function emitArenaPointLights(
   const activeRgb = activeType ? TYPE_PALETTES[activeType].rgb : baseRgb;
   const minDim = Math.min(layout.width, layout.height);
 
+  // Subtle neutral-warm key lights centered on combatant silhouettes so fighters read vividly
+  // in dark/tinted biomes without washing out sprite colors or native pixel shading.
+  const neutralPadRgb: [number, number, number] = [
+    baseRgb[0] * 0.35 + 0.65,
+    baseRgb[1] * 0.35 + 0.65,
+    baseRgb[2] * 0.35 + 0.65,
+  ];
+  const padRgb = activeType && pulse > 0.15 ? activeRgb : neutralPadRgb;
+
   backend.addPointLight({
     id: `arena-horizon-${arena.biomeId}`,
     x: layout.centerX,
     y: layout.horizonY,
-    radius: minDim * 0.65,
+    radius: minDim * 0.58,
     color: baseRgb,
-    intensity: 0.52 + pulse * 0.28,
+    intensity: 0.38 + pulse * 0.24,
     flickerSpeed: 2.2,
-    flickerAmount: state.reducedMotion ? 0 : 0.08,
+    flickerAmount: state.reducedMotion ? 0 : 0.06,
   });
 
   backend.addPointLight({
     id: `arena-player-pad-${arena.biomeId}`,
     x: layout.playerPad.x,
     y: layout.playerPad.spriteCy,
-    radius: minDim * 0.42,
-    color: activeType ? activeRgb : baseRgb,
-    intensity: 0.42 + pulse * 0.46,
+    radius: minDim * 0.38,
+    color: padRgb,
+    intensity: 0.46 + pulse * 0.40,
     flickerSpeed: 3.1,
-    flickerAmount: state.reducedMotion ? 0 : 0.06,
+    flickerAmount: state.reducedMotion ? 0 : 0.04,
   });
 
   backend.addPointLight({
     id: `arena-enemy-pad-${arena.biomeId}`,
     x: layout.enemyPad.x,
     y: layout.enemyPad.spriteCy,
-    radius: minDim * 0.40,
-    color: activeType ? activeRgb : baseRgb,
-    intensity: 0.44 + pulse * 0.50,
+    radius: minDim * 0.36,
+    color: padRgb,
+    intensity: 0.48 + pulse * 0.42,
     flickerSpeed: 3.4,
-    flickerAmount: state.reducedMotion ? 0 : 0.07,
+    flickerAmount: state.reducedMotion ? 0 : 0.04,
   });
 
   if (activeType && pulse > 0.05) {

@@ -833,4 +833,72 @@ describe('BattleTheaterRenderer shutters, camera cues, hit-stop & reducedMotion 
 
     backend.dispose();
   });
+
+  it('keeps caught wild Pokemon hidden on Victory with resting ball light and clears stale VFX/shake on triggerShutter()', async () => {
+    const { backend } = await createCanvasBackendHarness();
+    const renderer = new BattleTheaterRenderer();
+
+    // 1. Caught wild Pokemon transitioning from capturing -> victory must NOT reappear on stage
+    const frameEnemy = { width: 56, height: 56 } as unknown as HTMLCanvasElement;
+    const state = makeBattleFixture('forest', 'wild', false, false);
+    state.shutter.active = false;
+    state.phase = 'victory';
+    state.enemy.useOfflineRig = false;
+    state.enemy.frames = {
+      key: '197:f:n',
+      speciesId: 197,
+      back: false,
+      shiny: false,
+      width: 56,
+      height: 56,
+      frames: [{ canvas: frameEnemy, delayMs: 100 }],
+      totalDurationMs: 100,
+      sourceKind: 'animated-gif',
+      archetype: 'quadruped',
+      mirrorX: false,
+    };
+    state.enemy.captureProgress = 1;
+    state.enemy.captureBallKind = 'star';
+    state.rewardSummary = {
+      caught: true,
+      xpGained: 40,
+      shardsGained: 10,
+      newBadges: [],
+      leveledUp: false,
+      trailDrop: null,
+    };
+
+    const drawSpriteSpy = vi.spyOn(backend, 'drawSprite');
+    const addLightSpy = vi.spyOn(backend, 'addPointLight');
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    expect(drawSpriteSpy).not.toHaveBeenCalledWith(expect.objectContaining({ source: frameEnemy }));
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'capture-ball-light' }));
+
+    // 2. Starting a new battle via triggerShutter() clears stale pending VFX & camera shake
+    renderer.triggerVfx({
+      type: 'fire',
+      fromSide: 'player',
+      targetSide: 'enemy',
+      power: 80,
+      effectiveness: 1,
+      category: 'attack',
+      composureBraced: false,
+      isCrit: false,
+      duration: 0.5,
+    });
+    renderer.triggerCameraCue('heavyHit');
+    renderer.triggerShutter('wild', false);
+
+    const nextState = makeBattleFixture('village', 'wild', false, true);
+    renderer.update(nextState, 0.016);
+    expect(nextState.activeVfx).toHaveLength(0);
+    const cam = renderer.getCameraTransform(false);
+    expect(cam.shakeX).toBe(0);
+    expect(cam.shakeY).toBe(0);
+
+    backend.dispose();
+  });
 });

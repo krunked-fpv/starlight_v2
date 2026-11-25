@@ -10,7 +10,9 @@ import type {
   BattleSceneState,
   BattleShutterState,
   BattleVfxEvent,
+  BiomeColorGrade,
   BiomeId,
+  CanopyShadowConfig,
   EncounterTier,
   IBattleTheaterRenderer,
   IOfflineSpriteRigSynthesizer,
@@ -34,6 +36,44 @@ import {
 } from './BattleArenas';
 import { BattleVfxDirector } from './BattleVfxDirector';
 import { OfflineSpriteRigSynthesizer } from './OfflineSpriteRigSynthesizer';
+import {
+  SILHOUETTE_CONTOUR_PAD,
+  getSpriteSilhouetteContour,
+  measureSpriteOpaqueBounds,
+} from './SpriteSilhouette';
+
+function buildBattleColorGrade(base: BiomeColorGrade): BiomeColorGrade {
+  // Preserve rich biome atmosphere while protecting Pokémon sprite hues from extreme ambient tinting or bloom washout
+  const liftAmbient = (c: number): number => clamp(c + (1 - c) * 0.48, 0.82, 1.04);
+  const tameTint = (c: number): number => 1 + (c - 1) * 0.44;
+  return {
+    ...base,
+    ambientRgb: [
+      liftAmbient(base.ambientRgb[0]),
+      liftAmbient(base.ambientRgb[1]),
+      liftAmbient(base.ambientRgb[2]),
+    ],
+    ambientStrength: Math.max(base.ambientStrength, 0.88),
+    tintRgb: [
+      tameTint(base.tintRgb[0]),
+      tameTint(base.tintRgb[1]),
+      tameTint(base.tintRgb[2]),
+    ],
+    saturation: clamp(base.saturation, 1.0, 1.12),
+    contrast: clamp(base.contrast, 0.99, 1.07),
+    bloomIntensity: Math.min(base.bloomIntensity, 0.30),
+    bloomThreshold: Math.max(base.bloomThreshold, 0.78),
+    vignetteStrength: clamp(base.vignetteStrength * 0.84, 0.14, 0.28),
+  };
+}
+
+function buildBattleCanopyConfig(base: CanopyShadowConfig): CanopyShadowConfig {
+  return {
+    ...base,
+    sunbeamIntensity: base.sunbeamIntensity * 0.42,
+    cloudOpacity: Math.min(base.cloudOpacity, 0.13),
+  };
+}
 
 interface CameraSpringState {
   x: number;
@@ -198,6 +238,24 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   }
 
   triggerShutter(tier: EncounterTier, reducedMotion: boolean): void {
+    // Clear any stale VFX, camera cues, or spring recoil left over from a fled or previous battle
+    this.pendingVfx.length = 0;
+    this.pendingCameraCue = null;
+    this.lastObservedCue = 'idle';
+    this.lastObservedCueSeq = -1;
+    this.spring = {
+      x: 0,
+      y: 0,
+      zoom: 1,
+      rotation: 0,
+      vx: 0,
+      vy: 0,
+      vZoom: 0,
+      vRot: 0,
+      shakeAmp: 0,
+      shakePhase: 0,
+    };
+
     const duration = reducedMotion
       ? 0.2
       : tier === 'shrine' || tier === 'shrine-trial'
@@ -390,13 +448,19 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   }
 
   render(backend: IRenderBackend, state: BattleSceneState): void {
-    const ctx2d = backend.getCanvas2DContext() as
-      | (CanvasRenderingContext2D & { canvas?: { width: number; height: number } })
-      | null;
-    if (ctx2d?.canvas && ctx2d.canvas.width > 0 && ctx2d.canvas.height > 0) {
-      const dpr = Math.max(1, backend.capabilities.dpr || 1);
-      this.cachedViewportWidth = Math.max(320, Math.round(ctx2d.canvas.width / dpr));
-      this.cachedViewportHeight = Math.max(200, Math.round(ctx2d.canvas.height / dpr));
+    const vp = typeof backend.getViewportSize === 'function' ? backend.getViewportSize() : null;
+    if (vp && vp.width > 0 && vp.height > 0) {
+      this.cachedViewportWidth = Math.max(320, Math.round(vp.width));
+      this.cachedViewportHeight = Math.max(200, Math.round(vp.height));
+    } else {
+      const ctx2d = backend.getCanvas2DContext() as
+        | (CanvasRenderingContext2D & { canvas?: { width: number; height: number } })
+        | null;
+      if (ctx2d?.canvas && ctx2d.canvas.width > 0 && ctx2d.canvas.height > 0) {
+        const dpr = Math.max(1, backend.capabilities.dpr || 1);
+        this.cachedViewportWidth = Math.max(320, Math.round(ctx2d.canvas.width / dpr));
+        this.cachedViewportHeight = Math.max(200, Math.round(ctx2d.canvas.height / dpr));
+      }
     }
 
     if (!this.fallbackAttached && this.getSheetImageFn) {
@@ -412,8 +476,8 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     const visualProfile = getBiomeVisualProfile(arena.biomeId);
     const camera = this.getCameraTransform(state.reducedMotion);
 
-    backend.setColorGrade(visualProfile.colorGrade);
-    backend.setCanopyConfig(visualProfile.canopyConfig);
+    backend.setColorGrade(buildBattleColorGrade(visualProfile.colorGrade));
+    backend.setCanopyConfig(buildBattleCanopyConfig(visualProfile.canopyConfig));
     backend.setWaterConfig({
       ...visualProfile.waterConfig,
       time: state.elapsedSeconds,
@@ -495,8 +559,11 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
 
     let captureScale = 1;
     let captureAlpha = 1;
-    if (visual.side === 'enemy' && state.phase === 'capturing') {
-      const cp = clamp(visual.captureProgress ?? 0, 0, 1);
+    const isEnemyCaptured =
+      visual.side === 'enemy' &&
+      (Boolean(state.rewardSummary?.caught) || (visual.captureProgress ?? 0) >= 0.99);
+    if (visual.side === 'enemy' && (state.phase === 'capturing' || isEnemyCaptured)) {
+      const cp = isEnemyCaptured ? 1 : clamp(visual.captureProgress ?? 0, 0, 1);
       if (cp >= 0.32) {
         const absorb = clamp((cp - 0.32) / 0.16, 0, 1);
         captureScale = Math.max(0.05, 1 - absorb);
@@ -544,7 +611,56 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         ? SpriteAssetLoader.selectFrame(visual.frames, state.elapsedSeconds)
         : null;
 
-    // Grounded contact shadow (plus offline planar reflection when using offline rig)
+    const opaqueBounds = liveFrame
+      ? measureSpriteOpaqueBounds(visual.frames, liveFrame)
+      : null;
+
+    // Precompute live sprite draw geometry so grounded shadow width aligns with the real silhouette
+    let liveDrawW = drawSize;
+    let liveDrawH = drawSize;
+    let liveDrawX = Math.round(cx - drawSize * 0.5);
+    let liveDrawY = Math.round(groundY - drawSize + 4 + shiftY - bobPx);
+    let liveFrameW = 48;
+    let liveFrameH = 48;
+    let liveVisibleW = pad.size * 0.72 * captureScale;
+    const flipX = Boolean(visual.frames?.mirrorX);
+
+    if (liveFrame) {
+      liveFrameW = Math.max(1, liveFrame.width || visual.frames?.width || 48);
+      liveFrameH = Math.max(1, liveFrame.height || visual.frames?.height || 48);
+
+      let scale = Math.min(drawSize / liveFrameW, drawSize / liveFrameH);
+      if (opaqueBounds && opaqueBounds.contentW > 0 && opaqueBounds.contentH > 0) {
+        // Scale from visible opaque silhouette so sprites with generous transparent GIF padding or wide wings (e.g. Moltres) read heroically
+        const effectiveDim = Math.max(opaqueBounds.contentW * 0.82, opaqueBounds.contentH, 34);
+        const desiredScale = (drawSize * 0.96) / effectiveDim;
+        const maxScaleW = (pad.size * 1.30 * captureScale * evoScale) / opaqueBounds.contentW;
+        const maxScaleH = (pad.size * 1.12 * captureScale * evoScale) / opaqueBounds.contentH;
+        scale = clamp(Math.min(desiredScale, maxScaleW, maxScaleH), 0.75, 4.4);
+      }
+
+      liveDrawW = Math.max(1, Math.round(liveFrameW * scale));
+      liveDrawH = Math.max(1, Math.round(liveFrameH * scale));
+
+      if (opaqueBounds) {
+        const rawCenterX = (opaqueBounds.minX + opaqueBounds.maxX + 1) * 0.5;
+        const alignedCenterX = flipX ? liveFrameW - rawCenterX : rawCenterX;
+        liveDrawX = Math.round(cx - alignedCenterX * scale);
+        const feetOffsetY = (opaqueBounds.maxY + 1) * scale;
+        const standingDy = groundY - feetOffsetY + 2 + shiftY - bobPx;
+        const contentCenterY = (opaqueBounds.minY + opaqueBounds.maxY + 1) * 0.5 * scale;
+        const pullDy = cy - contentCenterY;
+        liveDrawY = Math.round(standingDy * captureScale + pullDy * (1 - captureScale));
+        liveVisibleW = clamp(opaqueBounds.contentW * scale, pad.size * 0.44 * captureScale, pad.size * 1.06 * captureScale);
+      } else {
+        liveDrawX = Math.round(cx - liveDrawW * 0.5);
+        const standingDy = groundY - liveDrawH + 4 + shiftY - bobPx;
+        const pullDy = cy - liveDrawH * 0.5;
+        liveDrawY = Math.round(standingDy * captureScale + pullDy * (1 - captureScale));
+      }
+    }
+
+    // Grounded 2-tier pixel-stepped contact shadow (plus offline planar reflection when using offline rig)
     backend.drawCustom2D((ctx, width, height) => {
       this.cachedViewportWidth = width;
       this.cachedViewportHeight = height;
@@ -553,71 +669,105 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       ctx.imageSmoothingEnabled = false;
       applyCameraToContext(ctx, width, height, camera);
 
+      const shadowRx = Math.max(pad.size * 0.28 * captureScale, liveVisibleW * 0.46);
+      const shadowRy = Math.max(px * 2.5, pad.size * 0.095 * captureScale);
       drawPixelSteppedDisc(
         ctx,
         cx,
         groundY + px,
-        pad.size * 0.36 * captureScale,
-        pad.size * 0.10 * captureScale,
+        shadowRx * 1.12,
+        shadowRy * 1.18,
         px,
-        `rgba(8, 10, 26, ${(0.48 * captureAlpha).toFixed(3)})`,
+        `rgba(6, 9, 24, ${(0.28 * captureAlpha).toFixed(3)})`,
+      );
+      drawPixelSteppedDisc(
+        ctx,
+        cx,
+        groundY + px,
+        shadowRx * 0.86,
+        shadowRy * 0.84,
+        px,
+        `rgba(5, 7, 20, ${(0.58 * captureAlpha).toFixed(3)})`,
       );
 
-      if (!liveFrame && arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
-        const rig: OfflineRigDescriptor = {
-          speciesId: mon.speciesId,
-          name: mon.name,
-          primaryType: mon.type,
-          archetype: mon.archetype,
-          colorHex: mon.colorHex,
-          shiny: mon.isShiny,
-        };
-        ctx.save();
-        ctx.globalAlpha = arena.reflectionAlpha * 0.42 * captureAlpha;
-        ctx.translate(cx, groundY + drawSize * 0.24);
-        ctx.scale(1, -0.36);
-        this.rigSynth.renderRig(ctx, rig, {
-          cx: 0,
-          cy: 0,
-          size: drawSize,
-          time: state.elapsedSeconds,
-          facing,
-          reducedMotion: state.reducedMotion,
-        });
-        ctx.restore();
+      if (arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
+        if (liveFrame && typeof HTMLCanvasElement !== 'undefined' && liveFrame instanceof HTMLCanvasElement) {
+          // True vertically-flipped soft planar reflection beneath feet (fixes un-flipped upright smear!)
+          const feetSrcY = opaqueBounds ? opaqueBounds.maxY + 1 : liveFrameH;
+          const reflScaleX = liveDrawW / liveFrameW;
+          const reflScaleY = liveDrawH / liveFrameH;
+          ctx.save();
+          ctx.globalAlpha = arena.reflectionAlpha * 0.24 * captureAlpha;
+          ctx.translate(liveDrawX + liveDrawW * 0.5, groundY + px);
+          ctx.scale(flipX ? -1 : 1, -0.34);
+          ctx.drawImage(
+            liveFrame,
+            0,
+            0,
+            liveFrameW,
+            feetSrcY,
+            -liveDrawW * 0.5,
+            -Math.round(feetSrcY * reflScaleY),
+            Math.round(liveFrameW * reflScaleX),
+            Math.round(feetSrcY * reflScaleY),
+          );
+          ctx.restore();
+        } else if (!liveFrame) {
+          const rig: OfflineRigDescriptor = {
+            speciesId: mon.speciesId,
+            name: mon.name,
+            primaryType: mon.type,
+            archetype: mon.archetype,
+            colorHex: mon.colorHex,
+            shiny: mon.isShiny,
+          };
+          ctx.save();
+          ctx.globalAlpha = arena.reflectionAlpha * 0.36 * captureAlpha;
+          ctx.translate(cx, groundY + drawSize * 0.22);
+          ctx.scale(1, -0.34);
+          this.rigSynth.renderRig(ctx, rig, {
+            cx: 0,
+            cy: 0,
+            size: drawSize,
+            time: state.elapsedSeconds,
+            facing,
+            reducedMotion: state.reducedMotion,
+          });
+          ctx.restore();
+        }
       }
       ctx.restore();
     }, 'world');
 
     if (liveFrame) {
-      const fw = Math.max(1, liveFrame.width || visual.frames?.width || 48);
-      const fh = Math.max(1, liveFrame.height || visual.frames?.height || 48);
-      const scale = Math.min(drawSize / fw, drawSize / fh);
-      const dw = Math.round(fw * scale);
-      const dh = Math.round(fh * scale);
-      const dx = Math.round(cx - dw * 0.5);
-      const standingDy = groundY - dh + 4 + shiftY - bobPx;
-      const pullDy = cy - dh * 0.5;
-      const dy = Math.round(standingDy * captureScale + pullDy * (1 - captureScale));
-      const flipX = Boolean(visual.frames?.mirrorX);
+      const fw = liveFrameW;
+      const fh = liveFrameH;
+      const dw = liveDrawW;
+      const dh = liveDrawH;
+      const dx = liveDrawX;
+      const dy = liveDrawY;
 
-      // Subtle flipped reflection on reflective arenas
-      if (arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
+      // Dual-contrast pixel-art silhouette contour backing (dark ink outline + subtle starlight rim-halo)
+      const contourCanvas = getSpriteSilhouetteContour(liveFrame);
+      if (contourCanvas) {
+        const padX = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dw) / fw));
+        const padY = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dh) / fh));
         backend.drawSprite({
-          source: liveFrame,
+          source: contourCanvas,
           sx: 0,
           sy: 0,
-          sw: fw,
-          sh: fh,
-          dx,
-          dy: Math.round(groundY + 2),
-          dw,
-          dh: Math.round(dh * 0.35),
+          sw: contourCanvas.width,
+          sh: contourCanvas.height,
+          dx: dx - padX,
+          dy: dy - padY,
+          dw: dw + padX * 2,
+          dh: dh + padY * 2,
           flipX,
-          alpha: arena.reflectionAlpha * 0.26 * captureAlpha,
-          tint: [0.7, 0.85, 1.0, arena.reflectionAlpha * 0.26 * captureAlpha],
+          rotation: tilt,
+          alpha: captureAlpha,
+          tint: [1, 1, 1, captureAlpha],
           pixelCrisp: true,
-          depth: depth - 1,
+          depth: depth - 0.12,
         });
       }
 
@@ -628,14 +778,15 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
             ? getShinyTint(state.elapsedSeconds, captureAlpha, state.reducedMotion)
             : [1, 1, 1, captureAlpha];
 
+      // Reserve shader rim tinting strictly for active combat states so native pixel ink outlines stay crisp
       const rimRgba: [number, number, number, number] | undefined =
         visual.healFlash > 0.05
           ? [0.35, 1.0, 0.62, visual.healFlash]
           : visual.buffFlash > 0.05
             ? [1.0, 0.88, 0.38, visual.buffFlash]
             : mon.isElite || mon.encounterTrait === 'apex'
-              ? [1.0, 0.42, 0.45, 0.75]
-              : [monPal.rgb[0], monPal.rgb[1], monPal.rgb[2], 0.45];
+              ? [1.0, 0.42, 0.45, 0.65]
+              : undefined;
 
       backend.drawSprite({
         source: liveFrame,

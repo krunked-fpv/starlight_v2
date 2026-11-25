@@ -386,27 +386,27 @@ void main() {
   // Pixel-snapped animated shoreline surf foam (0..1 intensity & 4-bit N=1, E=2, S=4, W=8 mask)
   float foamFactor = 0.0;
   if (vFoamMask > 0.001) {
-    float surfWave = floor(sin(pxCell.x * 0.18 + pxCell.y * 0.14 - t * 3.2) * 2.0 + 0.5) * 0.03125;
-    float laceWave = 0.55 + 0.45 * sin(pxCell.x * 0.34 - t * 2.1) * cos(pxCell.y * 0.34 + t * 1.8);
-    float foamLace = step(0.32, laceWave) * 0.65 + step(0.68, laceWave) * 0.35;
+    float surfWave = floor(sin(pxCell.x * 0.22 + pxCell.y * 0.16 - t * 3.0) * 2.0 + 0.5) * 0.03125;
+    float laceWave = 0.52 + 0.48 * sin(pxCell.x * 0.42 - t * 2.1 + pxCell.y * 0.14) * cos(pxCell.y * 0.38 + t * 1.7);
+    float foamLace = step(0.38, laceWave) * 0.58 + step(0.72, laceWave) * 0.42;
 
     if (vFoamMask > 1.01) {
       int mask = int(floor(vFoamMask + 0.5));
-      float edgeN = ((mask & 1) != 0) ? (step(pxLocalUv.y, 0.22 + surfWave) * 0.6 + step(pxLocalUv.y, 0.10 + surfWave) * 0.4) : 0.0;
-      float edgeE = ((mask & 2) != 0) ? (step(0.78 - surfWave, pxLocalUv.x) * 0.6 + step(0.90 - surfWave, pxLocalUv.x) * 0.4) : 0.0;
-      float edgeS = ((mask & 4) != 0) ? (step(0.78 - surfWave, pxLocalUv.y) * 0.6 + step(0.90 - surfWave, pxLocalUv.y) * 0.4) : 0.0;
-      float edgeW = ((mask & 8) != 0) ? (step(pxLocalUv.x, 0.22 + surfWave) * 0.6 + step(pxLocalUv.x, 0.10 + surfWave) * 0.4) : 0.0;
+      float edgeN = ((mask & 1) != 0) ? (step(pxLocalUv.y, 0.15 + surfWave) * 0.55 + step(pxLocalUv.y, 0.07 + surfWave) * 0.45) : 0.0;
+      float edgeE = ((mask & 2) != 0) ? (step(0.85 - surfWave, pxLocalUv.x) * 0.55 + step(0.93 - surfWave, pxLocalUv.x) * 0.45) : 0.0;
+      float edgeS = ((mask & 4) != 0) ? (step(0.85 - surfWave, pxLocalUv.y) * 0.55 + step(0.93 - surfWave, pxLocalUv.y) * 0.45) : 0.0;
+      float edgeW = ((mask & 8) != 0) ? (step(pxLocalUv.x, 0.15 + surfWave) * 0.55 + step(pxLocalUv.x, 0.07 + surfWave) * 0.45) : 0.0;
       float edge = max(max(edgeN, edgeS), max(edgeE, edgeW));
       foamFactor = edge * foamLace;
     } else {
       float edgeDist = min(min(pxLocalUv.x, 1.0 - pxLocalUv.x), min(pxLocalUv.y, 1.0 - pxLocalUv.y));
-      float rimFoam = step(edgeDist, 0.20 + surfWave) * 0.6 + step(edgeDist, 0.09 + surfWave) * 0.4;
-      float crestFoam = step(0.72, 0.5 + 0.5 * w1) * rowMask * 0.38;
+      float rimFoam = step(edgeDist, 0.14 + surfWave) * 0.55 + step(edgeDist, 0.07 + surfWave) * 0.45;
+      float crestFoam = step(0.76, 0.5 + 0.5 * w1) * rowMask * 0.32;
       foamFactor = clamp((rimFoam + crestFoam) * foamLace * vFoamMask, 0.0, 1.0);
     }
   }
 
-  waterColor = mix(waterColor, uFoamColor, clamp(foamFactor * 0.90, 0.0, 0.94));
+  waterColor = mix(waterColor, uFoamColor, clamp(foamFactor * 0.84, 0.0, 0.88));
 
   float alpha = mix(0.84, 0.96, vDepthFactor);
   alpha = clamp(max(alpha, foamFactor * 0.96), 0.0, 1.0);
@@ -552,16 +552,16 @@ void main() {
       }
 
       float energy = max(colInt.a, 0.0) * flicker * att * ndotl;
-      pointAccum += colInt.rgb * energy * 0.56;
-      haloAccum += colInt.rgb * (max(colInt.a, 0.0) * flicker * att * att * 0.09);
+      pointAccum += colInt.rgb * energy * 0.44;
+      haloAccum += colInt.rgb * (max(colInt.a, 0.0) * flicker * att * att * 0.065);
     }
   }
 
   // Filmic light compression prevents overlapping lanterns/fountains/auras from clipping to white
-  pointAccum = pointAccum / (1.0 + pointAccum * 0.85);
-  haloAccum = min(haloAccum, vec3(0.28));
+  pointAccum = pointAccum / (1.0 + pointAccum * 1.18);
+  haloAccum = min(haloAccum, vec3(0.20));
   vec3 lit = scene.rgb * (ambientLight + pointAccum) + haloAccum;
-  lit = lit / (1.0 + max(lit - vec3(0.84), vec3(0.0)) * 0.55);
+  lit = lit / (1.0 + max(lit - vec3(0.80), vec3(0.0)) * 0.72);
 
   // Diagonal forest canopy sunbeam shafts & drifting cloud shadows
   if (uCanopyEnabled > 0.5) {
@@ -591,11 +591,11 @@ void main() {
   // cottage windows, shrine crystals, and lava fissures glow vibrantly even in dark biomes
   if (uHasEmissive > 0.5) {
     vec4 emissive = texture(uEmissiveTex, vUv);
-    lit += emissive.rgb * 0.34;
+    lit += emissive.rgb * 0.28;
   }
 
   // Soft highlight compression before post bloom so warm pools never clip white
-  lit = lit / (1.0 + max(lit - vec3(0.95), vec3(0.0)) * 0.75);
+  lit = lit / (1.0 + max(lit - vec3(0.92), vec3(0.0)) * 0.82);
 
   fragColor = vec4(lit, scene.a);
 }
@@ -660,7 +660,7 @@ vec3 extractBloom(vec2 uv, float threshold) {
   vec3 result = c * softKnee;
   if (uHasEmissive > 0.5) {
     vec3 em = texture(uEmissiveTex, safeUv).rgb;
-    result += em * 0.55;
+    result += em * 0.46;
   }
   return result;
 }
@@ -694,7 +694,7 @@ void main() {
     bloom += extractBloom(vUv + vec2(-t3.x,  t3.y), uBloomThreshold) * 0.05;
     bloom += extractBloom(vUv + vec2( t3.x,  t3.y), uBloomThreshold) * 0.05;
 
-    color += bloom * (uBloomIntensity * 0.34);
+    color += bloom * (uBloomIntensity * 0.27);
   }
 
   // Per-biome color-grade LUT transform

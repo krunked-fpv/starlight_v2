@@ -34,6 +34,7 @@ import {
 } from './AutotileRenderer';
 import { drawReadinessAuraRing } from './LandmarkRenderer';
 import { TILE } from '../../core/dojo';
+import { measureSpriteOpaqueBounds } from '../battle/SpriteSilhouette';
 
 interface MotionSample {
   x: number;
@@ -374,13 +375,32 @@ export class CharacterRigRenderer {
       if (animFrame) {
         const fw = animFrame.width || follower.frames?.width || 48;
         const fh = animFrame.height || follower.frames?.height || 48;
-        const fit = Math.min(40 / Math.max(1, fw), 40 / Math.max(1, fh));
-        const dw = Math.max(18, Math.round(fw * fit));
-        const dh = Math.max(18, Math.round(fh * fit));
-        const dx = Math.round((follower.x + 0.5) * tileSize - dw * 0.5);
-        const dy = Math.round((follower.y + 0.94) * tileSize - dh + bob);
+        const bounds = measureSpriteOpaqueBounds(follower.frames, animFrame);
         const baseFlip = follower.facing === 'right';
         const flipX = follower.frames?.mirrorX ? !baseFlip : baseFlip;
+        let dw: number;
+        let dh: number;
+        let dx: number;
+        let dy: number;
+
+        if (bounds && bounds.contentW > 0 && bounds.contentH > 0) {
+          // Keep follower companion adorably proportionate (~26..28px visible height) so it never towers over or clips Violet's hat
+          const targetSpan = 27;
+          const contentDim = Math.max(bounds.contentW, bounds.contentH, 22);
+          const fit = clamp(targetSpan / contentDim, 0.35, 1.1);
+          dw = Math.max(16, Math.round(fw * fit));
+          dh = Math.max(16, Math.round(fh * fit));
+          const rawCx = (bounds.minX + bounds.maxX + 1) * 0.5;
+          const alignedCx = flipX ? fw - rawCx : rawCx;
+          dx = Math.round((follower.x + 0.5) * tileSize - alignedCx * fit);
+          dy = Math.round((follower.y + 0.90) * tileSize - (bounds.maxY + 1) * fit + bob);
+        } else {
+          const fit = Math.min(30 / Math.max(1, fw), 30 / Math.max(1, fh));
+          dw = Math.max(18, Math.round(fw * fit));
+          dh = Math.max(18, Math.round(fh * fit));
+          dx = Math.round((follower.x + 0.5) * tileSize - dw * 0.5);
+          dy = Math.round((follower.y + 0.90) * tileSize - dh + bob);
+        }
 
         outSprites.push({
           source: animFrame,
@@ -397,10 +417,10 @@ export class CharacterRigRenderer {
         const archetype: BodyArchetype =
           follower.frames?.archetype ?? getSpeciesEntry(follower.speciesId).archetype;
         const regionId = resolveFallbackArchetypeRegion(manifest, archetype);
-        const dw = 40;
-        const dh = 40;
+        const dw = 30;
+        const dh = 30;
         const dx = Math.round((follower.x + 0.5) * tileSize - dw * 0.5);
-        const dy = Math.round((follower.y + 0.94) * tileSize - dh + bob);
+        const dy = Math.round((follower.y + 0.90) * tileSize - dh + bob);
 
         outSprites.push(
           buildSpriteCmd(manifest, 'fallbacks', regionId, dx, dy, dw, dh, {
@@ -609,9 +629,45 @@ export class CharacterRigRenderer {
       this.drawPlayerFrontCosmetics(ctx, px, py, player, t, reducedMotion);
     }
 
-    // 2. NPC quest '!' pixel badges
-    for (const npc of npcs) {
+    // 2. Distinct villager hats/hair/scarves for non-Willow NPCs (works identically on WebGL2 & Canvas2D) + quest '!' pixel crests
+    const npcHatPalettes: ReadonlyArray<{ hat: string; trim: string; scarf: string }> = [
+      { hat: '#9a3412', trim: '#fbbf24', scarf: '#e11d48' }, // Warm auburn ranger cap & berry scarf
+      { hat: '#0f766e', trim: '#99f6e4', scarf: '#14b8a6' }, // Coastal teal sun-beret & seafoam sash
+      { hat: '#4338ca', trim: '#fde047', scarf: '#6366f1' }, // Starlight indigo scholar beret & gold pin
+      { hat: '#9d174d', trim: '#fbcfe8', scarf: '#ec4899' }, // Blossom rose sunhat & ribbon
+      { hat: '#b45309', trim: '#fef08a', scarf: '#f59e0b' }, // Golden straw explorer hat & amber vest
+    ];
+    for (let i = 0; i < npcs.length; i++) {
+      const npc = npcs[i];
       if (!isInBounds(npc.x, npc.y, bounds, 1)) continue;
+      const isWillow = npc.role === 'professor' || npc.id.includes('willow');
+      if (!isWillow) {
+        let hash = i;
+        for (let k = 0; k < npc.id.length; k++) {
+          hash = (hash * 31 + npc.id.charCodeAt(k)) >>> 0;
+        }
+        const style = npcHatPalettes[hash % npcHatPalettes.length];
+        const scarfCol = npc.accentHex || style.scarf;
+        const nx = Math.round((npc.x + 0.5) * tileSize);
+        const ny = Math.round((npc.y + 0.94) * tileSize);
+        // Stepped 16-bit rounded villager cap/beret sitting snugly over hair crown
+        ctx.fillStyle = '#12152e';
+        ctx.fillRect(nx - 6, ny - 38, 12, 2);
+        ctx.fillRect(nx - 8, ny - 36, 16, 5);
+        ctx.fillStyle = style.hat;
+        ctx.fillRect(nx - 5, ny - 37, 10, 2);
+        ctx.fillRect(nx - 7, ny - 35, 14, 3);
+        ctx.fillStyle = style.trim;
+        ctx.fillRect(nx - 6, ny - 33, 12, 1);
+        ctx.fillRect(nx - 1, ny - 36, 2, 2);
+        // Crisp neckerchief & tunic vest trim
+        ctx.fillStyle = '#12152e';
+        ctx.fillRect(nx - 6, ny - 21, 12, 4);
+        ctx.fillStyle = scarfCol;
+        ctx.fillRect(nx - 5, ny - 20, 10, 2);
+        ctx.fillStyle = style.trim;
+        ctx.fillRect(nx - 1, ny - 20, 2, 2);
+      }
       if (!npc.hasAvailableQuest) continue;
       this.drawQuestExclamationBadge(ctx, npc, tileSize, t, reducedMotion);
     }
@@ -746,8 +802,21 @@ export class CharacterRigRenderer {
     const secondary = look.outfitSecondary;
     const torsoTop = baseY - 20;
 
-    // Crisp pixel scarf/collar & belt sash colored by the 10 Style Studio palettes
+    // On default trainer look, let the hand-crafted pixel sprite jacket shine cleanly with a delicate star clasp
+    if (look.styleId === 'default') {
+      if (facing !== 'up') {
+        ctx.fillStyle = '#18122e';
+        ctx.fillRect(ax - 2, torsoTop + 3, 4, 4);
+        ctx.fillStyle = '#ffd966';
+        ctx.fillRect(ax - 1, torsoTop + 4, 2, 2);
+      }
+      return;
+    }
+
+    // Crisp pixel scarf/collar & belt sash colored by the 9 alternate Style Studio palettes
     if (facing === 'up') {
+      ctx.fillStyle = '#16112b';
+      ctx.fillRect(ax - 7, torsoTop, 14, 5);
       ctx.fillStyle = primary;
       ctx.fillRect(ax - 6, torsoTop + 1, 12, 3);
       ctx.fillStyle = secondary;
@@ -755,23 +824,22 @@ export class CharacterRigRenderer {
       return;
     }
 
-    // Collar / scarf accent
+    // Collar / scarf accent with crisp 1px dark outline
+    ctx.fillStyle = '#16112b';
+    ctx.fillRect(ax - 7, torsoTop - 1, 14, 5);
     ctx.fillStyle = primary;
     ctx.fillRect(ax - 6, torsoTop, 12, 3);
     ctx.fillStyle = secondary;
     ctx.fillRect(ax - 2, torsoTop + 2, 4, 3);
 
-    // Side sash tail & waist belt
+    // Side sash tail, waist belt & coat hem accent
     ctx.fillStyle = secondary;
     ctx.fillRect(ax - 6, torsoTop + 8, 12, 2);
-    if (look.styleId !== 'default') {
-      // Distinctive style chest clasp & coat hem accent
-      ctx.fillStyle = look.accent;
-      ctx.fillRect(ax - 1, torsoTop + 4, 2, 3);
-      ctx.fillStyle = primary;
-      ctx.fillRect(ax - 6, torsoTop + 10, 3, 4);
-      ctx.fillRect(ax + 3, torsoTop + 10, 3, 4);
-    }
+    ctx.fillStyle = look.accent;
+    ctx.fillRect(ax - 1, torsoTop + 4, 2, 3);
+    ctx.fillStyle = primary;
+    ctx.fillRect(ax - 6, torsoTop + 10, 3, 4);
+    ctx.fillRect(ax + 3, torsoTop + 10, 3, 4);
   }
 
   private drawPixelCape(
@@ -824,13 +892,26 @@ export class CharacterRigRenderer {
 
     switch (accessory) {
       case 'cap': {
+        // Default Violet/Ozias sprites already wear their hand-pixelled Starlight signature cap:
+        // avoid slapping a blocky red/white rectangle over their forehead; add a crisp star emblem glint instead!
+        if (look.styleId === 'default') {
+          if (facing !== 'up') {
+            ctx.fillStyle = '#18122e';
+            ctx.fillRect(ax - 2 + dirOff, headY - 12, 4, 4);
+            ctx.fillStyle = '#ffd966';
+            ctx.fillRect(ax - 1 + dirOff, headY - 11, 2, 2);
+            ctx.fillStyle = '#fff9d6';
+            ctx.fillRect(ax - 1 + dirOff, headY - 11, 1, 1);
+          }
+          break;
+        }
         ctx.fillStyle = '#18122e';
-        ctx.fillRect(ax - 8, headY - 12, 16, 6);
-        ctx.fillStyle = look.outfitPrimary === '#a855f7' ? '#ef4444' : look.outfitPrimary;
-        ctx.fillRect(ax - 7, headY - 11, 14, 4);
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(ax - 6 + dirOff, headY - 8, 12, 2);
+        ctx.fillRect(ax - 8, headY - 13, 16, 6);
+        ctx.fillStyle = look.outfitPrimary;
+        ctx.fillRect(ax - 7, headY - 12, 14, 4);
         ctx.fillStyle = look.outfitSecondary;
+        ctx.fillRect(ax - 6 + dirOff, headY - 9, 12, 2);
+        ctx.fillStyle = '#fff8d6';
         ctx.fillRect(ax - 1 + dirOff, headY - 11, 2, 2);
         break;
       }
@@ -996,13 +1077,20 @@ export class CharacterRigRenderer {
     const bob = reducedMotion ? 0 : Math.round(Math.sin(t * 4.5 + npc.x) * 2);
     const by = Math.round((npc.y - 0.58) * tileSize + bob);
 
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+    // Crisp double-bordered Celestial pixel quest crest
+    ctx.fillStyle = '#070a1c';
+    ctx.fillRect(cx - 7, by - 9, 14, 16);
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillRect(cx - 6, by - 8, 12, 14);
+    ctx.fillStyle = '#111b44';
     ctx.fillRect(cx - 5, by - 7, 10, 12);
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 1.2;
-    ctx.strokeRect(cx - 5, by - 7, 10, 12);
+    ctx.fillStyle = 'rgba(255, 232, 138, 0.22)';
+    ctx.fillRect(cx - 5, by - 7, 10, 2);
 
-    ctx.fillStyle = '#fde047';
+    ctx.fillStyle = '#070a1c';
+    ctx.fillRect(cx, by - 4, 2, 5);
+    ctx.fillRect(cx, by + 3, 2, 2);
+    ctx.fillStyle = '#fff199';
     ctx.fillRect(cx - 1, by - 5, 2, 5);
     ctx.fillRect(cx - 1, by + 2, 2, 2);
   }

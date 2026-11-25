@@ -18,6 +18,10 @@ import {
   TYPE_PALETTES,
 } from '../../core';
 import { drawPixelArchetypeSprite } from '../../ui/iconHelper';
+import {
+  SILHOUETTE_CONTOUR_PAD,
+  getSpriteSilhouetteContour,
+} from '../battle/SpriteSilhouette';
 
 interface SlipstreamSample {
   x: number;
@@ -399,6 +403,18 @@ export class SkyHopRenderer implements ISkyHopRenderer {
       const dh = Math.round(frameCanvas.height * scale);
       // Gen V front sprites face left; mirror horizontally so partner faces right in Sky-Hop flight!
       ctx.scale(-1, 1);
+      const contour = getSpriteSilhouetteContour(frameCanvas);
+      if (contour) {
+        const padX = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dw) / frameCanvas.width));
+        const padY = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * dh) / frameCanvas.height));
+        ctx.drawImage(
+          contour,
+          Math.round(-dw * 0.5) - padX,
+          Math.round(-dh * 0.5) - padY,
+          dw + padX * 2,
+          dh + padY * 2,
+        );
+      }
       ctx.drawImage(frameCanvas, Math.round(-dw * 0.5), Math.round(-dh * 0.5), dw, dh);
       ctx.restore();
       return;

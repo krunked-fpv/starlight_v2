@@ -274,9 +274,9 @@ export class LandmarkRenderer {
         `landmark-${lm.id}`,
         lm.x,
         lm.y,
-        tileSize * (lm.kind === 'observatory' ? 4.0 : 3.0),
+        tileSize * (lm.kind === 'observatory' ? 3.8 : 2.8),
         color,
-        lm.kind === 'observatory' ? 1.12 : 0.82,
+        lm.kind === 'observatory' ? 0.98 : 0.70,
         2.0,
         0.08,
       );
