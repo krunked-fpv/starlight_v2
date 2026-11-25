@@ -701,10 +701,7 @@ export class AutotileRenderer {
         } else if (tileId === TILE.BRIDGE) {
           this.drawBridgePixelOverlay(ctx, lx, ly, tileSize, ty, nTile, sTile, wTile, eTile);
         } else if (SAND_TILES.has(tileId)) {
-          if (sTile !== undefined && WATER_TILES.has(sTile)) {
-            ctx.fillStyle = 'rgba(20, 48, 86, 0.24)';
-            ctx.fillRect(lx, ly + tileSize - 3, tileSize, 3);
-          }
+          this.drawSandOrganicTransitions(ctx, lx, ly, tileSize, tx, ty, nTile, sTile, wTile, eTile);
         }
       }
     }
@@ -1016,7 +1013,7 @@ export class AutotileRenderer {
           } else if (tileId === TILE.FLOWER) {
             this.drawFlowerPixelDetail(ctx, px, py, tileSize, tx, ty, t);
           } else if (WATER_TILES.has(tileId)) {
-            this.drawWaterShorePixelEdge(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile, t);
+            this.drawWaterShorePixelEdge(ctx, px, py, tileSize, tx, ty, tileId, nTile, sTile, wTile, eTile, t);
           } else if (tileId === TILE.LAVA) {
             this.drawLavaEdgeDetail(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile, t);
           }
@@ -1034,14 +1031,11 @@ export class AutotileRenderer {
         } else if (tileId === TILE.FLOWER) {
           this.drawFlowerPixelDetail(ctx, px, py, tileSize, tx, ty, t);
         } else if (WATER_TILES.has(tileId)) {
-          this.drawWaterShorePixelEdge(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile, t);
+          this.drawWaterShorePixelEdge(ctx, px, py, tileSize, tx, ty, tileId, nTile, sTile, wTile, eTile, t);
         } else if (tileId === TILE.LAVA) {
           this.drawLavaEdgeDetail(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile, t);
         } else if (SAND_TILES.has(tileId)) {
-          if (sTile !== undefined && WATER_TILES.has(sTile)) {
-            ctx.fillStyle = 'rgba(20, 48, 86, 0.24)';
-            ctx.fillRect(px, py + tileSize - 3, tileSize, 3);
-          }
+          this.drawSandOrganicTransitions(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile);
         }
       }
     }
@@ -1115,14 +1109,44 @@ export class AutotileRenderer {
     const hasE = (mask & 16) !== 0;
     const hasS = (mask & 64) !== 0;
 
-    ctx.fillStyle = 'rgba(14, 18, 36, 0.24)';
-    if (!hasN) ctx.fillRect(px, py, tileSize, 2);
-    if (!hasS) ctx.fillRect(px, py + tileSize - 2, tileSize, 2);
-    if (!hasW) ctx.fillRect(px, py, 2, tileSize);
-    if (!hasE) ctx.fillRect(px + tileSize - 2, py, 2, tileSize);
+    // Pixel-stepped organic road curbs (broken pebble/tuft notches rather than harsh rigid lines)
+    ctx.fillStyle = 'rgba(14, 18, 36, 0.22)';
+    if (!hasN) {
+      ctx.fillRect(px, py, tileSize, 2);
+      for (let i = 0; i < tileSize; i += 6) {
+        if (hash2D(tx * 7 + i, ty, 91) > 0.42) {
+          ctx.fillRect(px + i, py + 2, 4, 1);
+        }
+      }
+    }
+    if (!hasS) {
+      ctx.fillRect(px, py + tileSize - 2, tileSize, 2);
+      for (let i = 2; i < tileSize; i += 6) {
+        if (hash2D(tx * 7 + i, ty, 92) > 0.45) {
+          ctx.fillRect(px + i, py + tileSize - 3, 4, 1);
+        }
+      }
+    }
+    if (!hasW) {
+      ctx.fillRect(px, py, 2, tileSize);
+      for (let i = 1; i < tileSize; i += 6) {
+        if (hash2D(tx, ty * 7 + i, 93) > 0.45) {
+          ctx.fillRect(px + 2, py + i, 1, 4);
+        }
+      }
+    }
+    if (!hasE) {
+      ctx.fillRect(px + tileSize - 2, py, 2, tileSize);
+      for (let i = 2; i < tileSize; i += 6) {
+        if (hash2D(tx, ty * 7 + i, 94) > 0.45) {
+          ctx.fillRect(px + tileSize - 3, py + i, 1, 4);
+        }
+      }
+    }
 
+    // Subtle sunlit top lip on north-exposed stone curbs
     ctx.fillStyle = 'rgba(255, 248, 224, 0.14)';
-    if (!hasN) ctx.fillRect(px + 2, py + 2, tileSize - 4, 2);
+    if (!hasN) ctx.fillRect(px + 2, py + 2, tileSize - 4, 1);
 
     if (includeAnimatedRune && tileId === TILE.RUNE_TRAIL) {
       const shimmer = 0.45 + 0.35 * Math.sin(t * 2.6 + tx * 0.7 + ty * 0.5);
@@ -1130,6 +1154,97 @@ export class AutotileRenderer {
       ctx.fillRect(px + 13, py + 13, 6, 6);
       ctx.fillStyle = `rgba(255, 244, 178, ${(shimmer * 0.9).toFixed(3)})`;
       ctx.fillRect(px + 15, py + 15, 2, 2);
+    }
+  }
+
+  private drawSandOrganicTransitions(
+    ctx: CanvasRenderingContext2D,
+    px: number,
+    py: number,
+    tileSize: number,
+    tx: number,
+    ty: number,
+    nTile: number | undefined,
+    sTile: number | undefined,
+    wTile: number | undefined,
+    eTile: number | undefined,
+  ): void {
+    const isLushNeighbor = (id: number | undefined): boolean =>
+      id === TILE.GRASS ||
+      id === TILE.FLOWER ||
+      id === TILE.TALL_GRASS ||
+      id === TILE.TREE ||
+      id === TILE.GROVE_GRASS ||
+      id === TILE.SIGN;
+
+    // 1. Damp shoreline sand bands on ALL 4 cardinal edges bordering water
+    const drawWetBand = (side: 'n' | 's' | 'w' | 'e') => {
+      ctx.fillStyle = 'rgba(26, 62, 102, 0.24)';
+      if (side === 'n') ctx.fillRect(px, py, tileSize, 2);
+      else if (side === 's') ctx.fillRect(px, py + tileSize - 2, tileSize, 2);
+      else if (side === 'w') ctx.fillRect(px, py, 2, tileSize);
+      else ctx.fillRect(px + tileSize - 2, py, 2, tileSize);
+
+      ctx.fillStyle = 'rgba(32, 74, 114, 0.12)';
+      if (side === 'n') ctx.fillRect(px, py + 2, tileSize, 2);
+      else if (side === 's') ctx.fillRect(px, py + tileSize - 4, tileSize, 2);
+      else if (side === 'w') ctx.fillRect(px + 2, py, 2, tileSize);
+      else ctx.fillRect(px + tileSize - 4, py, 2, tileSize);
+    };
+
+    if (nTile !== undefined && WATER_TILES.has(nTile)) drawWetBand('n');
+    if (sTile !== undefined && WATER_TILES.has(sTile)) drawWetBand('s');
+    if (wTile !== undefined && WATER_TILES.has(wTile)) drawWetBand('w');
+    if (eTile !== undefined && WATER_TILES.has(eTile)) drawWetBand('e');
+
+    // 2. Scalloped pixel-art grass/meadow overhang fringes onto sand (breaks harsh rectangular beach seams!)
+    const turfShade = 'rgba(32, 82, 46, 0.45)';
+    const turfBody = '#499e58';
+    const turfTip = '#78c96c';
+
+    if (isLushNeighbor(nTile)) {
+      for (let i = 0; i < tileSize; i += 4) {
+        const drop = 2 + Math.floor(hash2D(tx * 11 + i, ty, 61) * 4);
+        ctx.fillStyle = turfShade;
+        ctx.fillRect(px + i, py + drop, 4, 2);
+        ctx.fillStyle = turfBody;
+        ctx.fillRect(px + i, py, 4, drop);
+        if (drop >= 4) {
+          ctx.fillStyle = turfTip;
+          ctx.fillRect(px + i + 1, py + 1, 2, 1);
+        }
+      }
+    }
+    if (isLushNeighbor(sTile)) {
+      for (let i = 0; i < tileSize; i += 4) {
+        const rise = 2 + Math.floor(hash2D(tx * 11 + i, ty, 62) * 3);
+        ctx.fillStyle = turfBody;
+        ctx.fillRect(px + i, py + tileSize - rise, 4, rise);
+        ctx.fillStyle = turfTip;
+        ctx.fillRect(px + i + 1, py + tileSize - rise, 2, 1);
+      }
+    }
+    if (isLushNeighbor(wTile)) {
+      for (let i = 0; i < tileSize; i += 4) {
+        const reach = 2 + Math.floor(hash2D(tx, ty * 11 + i, 63) * 4);
+        ctx.fillStyle = turfShade;
+        ctx.fillRect(px + reach, py + i, 2, 4);
+        ctx.fillStyle = turfBody;
+        ctx.fillRect(px, py + i, reach, 4);
+        if (reach >= 4) {
+          ctx.fillStyle = turfTip;
+          ctx.fillRect(px + 1, py + i + 1, 1, 2);
+        }
+      }
+    }
+    if (isLushNeighbor(eTile)) {
+      for (let i = 0; i < tileSize; i += 4) {
+        const reach = 2 + Math.floor(hash2D(tx, ty * 11 + i, 64) * 4);
+        ctx.fillStyle = turfBody;
+        ctx.fillRect(px + tileSize - reach, py + i, reach, 4);
+        ctx.fillStyle = turfTip;
+        ctx.fillRect(px + tileSize - reach, py + i + 1, 1, 2);
+      }
     }
   }
 
@@ -1202,6 +1317,7 @@ export class AutotileRenderer {
     tileSize: number,
     tx: number,
     ty: number,
+    tileId: number,
     nTile: number | undefined,
     sTile: number | undefined,
     wTile: number | undefined,
@@ -1209,23 +1325,64 @@ export class AutotileRenderer {
     t: number,
   ): void {
     const isLand = (id: number | undefined) => id !== undefined && !LIQUID_TILES.has(id) && id !== TILE.BRIDGE;
-    const waveShift = Math.round(Math.sin(t * 2.6 + tx * 0.8 + ty * 0.6));
+    const waveShift = Math.round(Math.sin(t * 2.4 + tx * 0.8 + ty * 0.6));
 
-    ctx.fillStyle = 'rgba(232, 250, 255, 0.72)';
-    if (isLand(nTile)) {
-      ctx.fillRect(px, py + Math.max(0, waveShift), tileSize, 2);
-      ctx.fillStyle = 'rgba(130, 218, 255, 0.45)';
-      ctx.fillRect(px + 2, py + 2 + Math.max(0, waveShift), tileSize - 4, 2);
-    }
-    ctx.fillStyle = 'rgba(232, 250, 255, 0.62)';
-    if (isLand(sTile)) {
-      ctx.fillRect(px, py + tileSize - 2 - Math.max(0, waveShift), tileSize, 2);
-    }
-    if (isLand(wTile)) {
-      ctx.fillRect(px + Math.max(0, waveShift), py, 2, tileSize);
-    }
-    if (isLand(eTile)) {
-      ctx.fillRect(px + tileSize - 2 - Math.max(0, waveShift), py, 2, tileSize);
+    // Pixel-stepped lacy surf foam (broken dashes instead of rigid full-tile white bars)
+    const drawHorizontalFoam = (yBase: number, dir: number) => {
+      ctx.fillStyle = 'rgba(130, 218, 255, 0.34)';
+      ctx.fillRect(px + 2, yBase + dir * 2, tileSize - 4, 2);
+      ctx.fillStyle = 'rgba(236, 252, 255, 0.74)';
+      for (let i = 0; i < tileSize; i += 8) {
+        const dashW = hash2D(tx * 5 + i, ty, 81) > 0.35 ? 6 : 4;
+        const localShift = Math.round(Math.sin(t * 2.6 + tx + i * 0.25)) > 0 ? dir : 0;
+        ctx.fillRect(px + i + 1, yBase + localShift, dashW, 2);
+      }
+    };
+
+    const drawVerticalFoam = (xBase: number, dir: number) => {
+      ctx.fillStyle = 'rgba(130, 218, 255, 0.30)';
+      ctx.fillRect(xBase + dir * 2, py + 2, 2, tileSize - 4);
+      ctx.fillStyle = 'rgba(236, 252, 255, 0.68)';
+      for (let i = 0; i < tileSize; i += 8) {
+        const dashH = hash2D(tx, ty * 5 + i, 82) > 0.35 ? 6 : 4;
+        const localShift = Math.round(Math.sin(t * 2.6 + ty + i * 0.25)) > 0 ? dir : 0;
+        ctx.fillRect(xBase + localShift, py + i + 1, 2, dashH);
+      }
+    };
+
+    if (isLand(nTile)) drawHorizontalFoam(py + Math.max(0, waveShift), 1);
+    if (isLand(sTile)) drawHorizontalFoam(py + tileSize - 2 - Math.max(0, waveShift), -1);
+    if (isLand(wTile)) drawVerticalFoam(px + Math.max(0, waveShift), 1);
+    if (isLand(eTile)) drawVerticalFoam(px + tileSize - 2 - Math.max(0, waveShift), -1);
+
+    // Pixel-dithered depth transition where shallow water meets deep ocean water
+    if (tileId === TILE.SHALLOW_WATER || tileId === TILE.REEF_WATER) {
+      const deepTint = 'rgba(16, 48, 108, 0.34)';
+      ctx.fillStyle = deepTint;
+      if (nTile === TILE.WATER) {
+        for (let i = 0; i < tileSize; i += 4) {
+          ctx.fillRect(px + i, py, 2, 3);
+          ctx.fillRect(px + i + 2, py, 2, 1);
+        }
+      }
+      if (sTile === TILE.WATER) {
+        for (let i = 0; i < tileSize; i += 4) {
+          ctx.fillRect(px + i, py + tileSize - 3, 2, 3);
+          ctx.fillRect(px + i + 2, py + tileSize - 1, 2, 1);
+        }
+      }
+      if (wTile === TILE.WATER) {
+        for (let i = 0; i < tileSize; i += 4) {
+          ctx.fillRect(px, py + i, 3, 2);
+          ctx.fillRect(px, py + i + 2, 1, 2);
+        }
+      }
+      if (eTile === TILE.WATER) {
+        for (let i = 0; i < tileSize; i += 4) {
+          ctx.fillRect(px + tileSize - 3, py + i, 3, 2);
+          ctx.fillRect(px + tileSize - 1, py + i + 2, 1, 2);
+        }
+      }
     }
   }
 
@@ -1590,9 +1747,9 @@ export class AutotileRenderer {
         id: `${cluster.id}-win-l-${cluster.tx}`,
         x: cluster.tx * tileSize + w * 0.25,
         y: winY,
-        radius: tileSize * 3.4,
-        color: [1.0, 0.82, 0.44],
-        intensity: 1.05 * twilightBoost,
+        radius: tileSize * 2.9,
+        color: [1.0, 0.80, 0.42],
+        intensity: 0.76 * twilightBoost,
         flickerSpeed: 3.0,
         flickerAmount: 0.08,
       });
@@ -1600,9 +1757,9 @@ export class AutotileRenderer {
         id: `${cluster.id}-win-r-${cluster.tx}`,
         x: cluster.tx * tileSize + w * 0.75,
         y: winY,
-        radius: tileSize * 3.4,
-        color: [1.0, 0.82, 0.44],
-        intensity: 1.05 * twilightBoost,
+        radius: tileSize * 2.9,
+        color: [1.0, 0.80, 0.42],
+        intensity: 0.76 * twilightBoost,
         flickerSpeed: 3.3,
         flickerAmount: 0.08,
       });
@@ -1646,20 +1803,20 @@ export class AutotileRenderer {
             id: `lantern-${tx}-${ty}`,
             x: wx,
             y: wy,
-            radius: tileSize * 3.8,
-            color: [1.0, 0.79, 0.38],
-            intensity: 1.15 * twilightBoost,
+            radius: tileSize * 3.35,
+            color: [1.0, 0.78, 0.36],
+            intensity: 0.86 * twilightBoost,
             flickerSpeed: 3.5,
-            flickerAmount: 0.11,
+            flickerAmount: 0.10,
           });
         } else if (tileId === TILE.HEAL) {
           pushLight({
             id: `fountain-${tx}-${ty}`,
             x: wx,
             y: wy,
-            radius: tileSize * 4.2,
-            color: [0.32, 0.9, 1.0],
-            intensity: 1.24 * twilightBoost,
+            radius: tileSize * 3.6,
+            color: [0.32, 0.88, 1.0],
+            intensity: 0.90 * twilightBoost,
             flickerSpeed: 2.3,
             flickerAmount: 0.08,
           });

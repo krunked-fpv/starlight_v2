@@ -428,9 +428,13 @@ export class BattleVfxDirector {
       }
     }
 
-    // Capture sequence particles & PointLight
-    if (state.phase === 'capturing') {
-      const cp = clamp(state.enemy.captureProgress ?? 0, 0, 1);
+    // Capture sequence particles & PointLight (also keep subtle resting glow once caught on victory/evolving screens)
+    const isCapturedResting =
+      state.phase !== 'capturing' &&
+      (Boolean(state.rewardSummary?.caught) || (state.enemy.captureProgress ?? 0) >= 0.99);
+
+    if (state.phase === 'capturing' || isCapturedResting) {
+      const cp = isCapturedResting ? 1 : clamp(state.enemy.captureProgress ?? 0, 0, 1);
       const from = getSideAnchor('player', layout, state);
       const to = getSideAnchor('enemy', layout, state);
       const arcP = clamp(cp / 0.3, 0, 1);
@@ -453,20 +457,20 @@ export class BattleVfxDirector {
         id: 'capture-ball-light',
         x: bx,
         y: by,
-        radius: 160,
+        radius: isCapturedResting ? 125 : 160,
         color: ballColor,
-        intensity: cp > 0.28 && cp < 0.5 ? 1.65 : 0.95,
+        intensity: isCapturedResting ? 0.72 : cp > 0.28 && cp < 0.5 ? 1.65 : 0.95,
       });
 
-      const sparkCount = state.reducedMotion ? 3 : 6;
+      const sparkCount = isCapturedResting ? (state.reducedMotion ? 2 : 3) : (state.reducedMotion ? 3 : 6);
       for (let i = 0; i < sparkCount; i++) {
-        const a = state.elapsedSeconds * 4 * motionScale + (i / sparkCount) * Math.PI * 2;
-        const r = 18 + (cp > 0.85 ? (cp - 0.85) * 320 : 12);
+        const a = state.elapsedSeconds * (isCapturedResting ? 1.8 : 4) * motionScale + (i / sparkCount) * Math.PI * 2;
+        const r = isCapturedResting ? 22 : 18 + (cp > 0.85 ? (cp - 0.85) * 320 : 12);
         backend.drawParticle({
           x: bx + Math.cos(a) * r,
           y: by + Math.sin(a) * r * 0.72,
-          radius: 7,
-          color: i % 2 === 0 ? [1.0, 0.92, 0.48, 0.9] : [ballColor[0], ballColor[1], ballColor[2], 0.9],
+          radius: isCapturedResting ? 5 : 7,
+          color: i % 2 === 0 ? [1.0, 0.92, 0.48, isCapturedResting ? 0.72 : 0.9] : [ballColor[0], ballColor[1], ballColor[2], isCapturedResting ? 0.7 : 0.9],
           additive: true,
         });
       }
@@ -567,17 +571,22 @@ export class BattleVfxDirector {
       applyCameraToContext(ctx, width, height, camera);
 
       // 1. Per-combatant Shield prism dome, Composure BRACED! hex burst, Buff/Heal, Stat Chevrons, Shiny/Trait, Ability banner
-      this.drawCombatantOverlays(ctx, state.player, getSideAnchor('player', layout, state), state.elapsedSeconds, state.reducedMotion, px);
-      this.drawCombatantOverlays(ctx, state.enemy, getSideAnchor('enemy', layout, state), state.elapsedSeconds, state.reducedMotion, px);
+      this.drawCombatantOverlays(ctx, state.player, getSideAnchor('player', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
+      this.drawCombatantOverlays(ctx, state.enemy, getSideAnchor('enemy', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
 
       // 2. All 18-Type & Support VFX Choreographies
       for (const evt of events) {
         this.drawEventChoreography(ctx, state, evt, layout, px);
       }
 
-      // 3. Poké / Great / Star Ball Capture Arc, Impact Flash & Wobble Shakes
+      // 3. Poké / Great / Star Ball Capture Arc, Impact Flash, Wobble Shakes & Resting Caught Ball
+      const isCapturedResting =
+        state.phase !== 'capturing' &&
+        (Boolean(state.rewardSummary?.caught) || (state.enemy.captureProgress ?? 0) >= 0.99);
       if (state.phase === 'capturing') {
         this.drawCaptureSequence(ctx, state, layout, px);
+      } else if (isCapturedResting) {
+        this.drawRestingCapturedBall(ctx, state, layout, px);
       }
 
       // 4. Evolution Radiant Spiral Metamorphosis
@@ -598,6 +607,7 @@ export class BattleVfxDirector {
     ctx: CanvasRenderingContext2D,
     vis: BattleCombatantVisual,
     anchor: CombatantRenderAnchor,
+    layout: BattleStageLayout,
     time: number,
     reducedMotion: boolean,
     px: number,
@@ -687,21 +697,27 @@ export class BattleVfxDirector {
       );
 
       // Pixel-framed BRACED! tag
-      const tagW = 74;
-      const tagH = 20;
-      const tagX = snap(anchor.x - tagW * 0.5, px);
-      const tagY = snap(anchor.y - anchor.size * 0.62 - (1 - bf) * 14, px);
+      const tagW = 78;
+      const tagH = 22;
+      const tagX = snap(clamp(anchor.x - tagW * 0.5, 14, layout.width - tagW - 14), px);
+      const tagY = snap(clamp(anchor.y - anchor.size * 0.64 - (1 - bf) * 14, 34, layout.height - tagH - 14), px);
       ctx.save();
       ctx.globalAlpha = clamp(bf * 1.25, 0, 1);
-      ctx.fillStyle = '#0d193d';
+      ctx.fillStyle = '#070a1c';
+      ctx.fillRect(tagX - 2, tagY - 2, tagW + 4, tagH + 4);
+      ctx.fillStyle = '#0e1b42';
       ctx.fillRect(tagX, tagY, tagW, tagH);
+      ctx.fillStyle = 'rgba(126, 242, 255, 0.22)';
+      ctx.fillRect(tagX + 2, tagY + 2, tagW - 4, 3);
       ctx.strokeStyle = '#7be8ff';
       ctx.lineWidth = 2;
       ctx.strokeRect(tagX, tagY, tagW, tagH);
-      ctx.fillStyle = '#ffe566';
+      ctx.fillStyle = '#070a1c';
       ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.fillText('BRACED!', tagX + tagW * 0.5 + 1, tagY + tagH * 0.5 + 2);
+      ctx.fillStyle = '#ffe566';
       ctx.fillText('BRACED!', tagX + tagW * 0.5, tagY + tagH * 0.5 + 1);
       ctx.restore();
     }
@@ -724,7 +740,7 @@ export class BattleVfxDirector {
       }
     }
 
-    // Stat Stage Chevrons (atk / def / spd)
+    // Stat Stage Micro-Pills (atk / def / spd) cleanly offset away from sprite silhouette
     const stages: Array<{ label: string; val: number }> = [
       { label: 'ATK', val: mon.battleStages.atk },
       { label: 'DEF', val: mon.battleStages.def },
@@ -732,26 +748,39 @@ export class BattleVfxDirector {
     ].filter((s) => s.val !== 0);
 
     if (stages.length > 0) {
-      const sideDir = vis.side === 'player' ? -1 : 1;
-      const baseX = snap(anchor.x + sideDir * anchor.size * 0.56, px);
-      const baseY = snap(anchor.y - anchor.size * 0.24, px);
+      const pillW = 60;
+      const pillH = 18;
+      const rawX =
+        vis.side === 'player'
+          ? anchor.x - anchor.size * 0.62 - pillW
+          : anchor.x + anchor.size * 0.62;
+      const baseX = snap(clamp(rawX, 14, layout.width - pillW - 14), px);
+      const baseY = snap(clamp(anchor.y - anchor.size * 0.34, 48, layout.height - 140), px);
       ctx.save();
       for (let i = 0; i < stages.length; i++) {
         const st = stages[i];
-        const y = baseY + i * 20;
+        const y = baseY + i * 22;
         const isUp = st.val > 0;
-        const col = isUp ? '#66f2ff' : '#ff7a7a';
-        drawPixelChevronGlyph(ctx, baseX, y, isUp, col, Math.max(2, Math.round(px * 0.85)));
-        ctx.fillStyle = '#0c1430';
-        ctx.fillRect(baseX + px * 4, y - 7, 46, 14);
+        const col = isUp ? '#78f4ff' : '#ff8a8a';
+        // Outer midnight ink frame + celestial glass dark backing
+        ctx.fillStyle = 'rgba(6, 9, 24, 0.94)';
+        ctx.fillRect(baseX - 2, y - 9 - 2, pillW + 4, pillH + 4);
+        ctx.fillStyle = 'rgba(13, 21, 50, 0.94)';
+        ctx.fillRect(baseX, y - 9, pillW, pillH);
+        ctx.fillStyle = isUp ? 'rgba(102, 242, 255, 0.16)' : 'rgba(255, 122, 122, 0.16)';
+        ctx.fillRect(baseX + 1, y - 8, pillW - 2, 4);
         ctx.strokeStyle = col;
         ctx.lineWidth = 1;
-        ctx.strokeRect(baseX + px * 4, y - 7, 46, 14);
-        ctx.fillStyle = col;
+        ctx.strokeRect(baseX + 0.5, y - 8.5, pillW - 1, pillH - 1);
+        drawPixelChevronGlyph(ctx, baseX + 9, y, isUp, col, 2);
+        ctx.fillStyle = '#070a1c';
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`${st.label}${isUp ? '+' : ''}${st.val}`, baseX + px * 5, y);
+        const label = `${st.label}${isUp ? '+' : ''}${st.val}`;
+        ctx.fillText(label, baseX + 19, y + 1.5);
+        ctx.fillStyle = col;
+        ctx.fillText(label, baseX + 18, y + 0.5);
       }
       ctx.restore();
     }
@@ -1210,6 +1239,27 @@ export class BattleVfxDirector {
     }
   }
 
+  private drawRestingCapturedBall(
+    ctx: CanvasRenderingContext2D,
+    state: BattleSceneState,
+    layout: BattleStageLayout,
+    px: number,
+  ): void {
+    const to = getSideAnchor('enemy', layout, state);
+    const ballSize = Math.max(24, layout.enemyPad.size * 0.26);
+    const kind = state.enemy.captureBallKind ?? 'poke';
+    const bx = to.x;
+    const by = to.padY - ballSize * 0.45;
+    drawPixelSteppedDisc(ctx, bx, to.padY + px * 0.5, ballSize * 0.55, ballSize * 0.16, px, 'rgba(6, 9, 24, 0.52)');
+    drawPixelBallSprite(ctx, bx, by, ballSize, kind, 0, 0);
+    const twinkle = state.reducedMotion ? 0.85 : 0.55 + 0.45 * Math.sin(state.elapsedSeconds * 4.5);
+    ctx.save();
+    ctx.globalAlpha = twinkle;
+    drawPixelCrossStar(ctx, bx - ballSize * 0.65, by - ballSize * 0.52, px * 1.5, px, '#ffe566');
+    drawPixelCrossStar(ctx, bx + ballSize * 0.68, by - ballSize * 0.36, px * 1.2, px, '#7be8ff');
+    ctx.restore();
+  }
+
   private drawEvolutionSequence(
     ctx: CanvasRenderingContext2D,
     state: BattleSceneState,
@@ -1274,8 +1324,10 @@ export class BattleVfxDirector {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.lineJoin = 'round';
-      ctx.lineWidth = Math.max(3, Math.round(fontSize * 0.24));
-      ctx.strokeStyle = '#090d1a';
+      ctx.lineWidth = Math.max(3, Math.round(fontSize * 0.26));
+      ctx.strokeStyle = '#070a1c';
+      ctx.fillStyle = 'rgba(7, 10, 28, 0.88)';
+      ctx.fillText(ft.text, 2, 3);
       ctx.strokeText(ft.text, 0, 0);
       ctx.fillStyle = ft.color || '#ffffff';
       ctx.fillText(ft.text, 0, 0);

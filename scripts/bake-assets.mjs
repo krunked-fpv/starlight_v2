@@ -388,43 +388,49 @@ function blendTiles(base, overlay, alphaFn) {
   });
 }
 
-function buildPathVariant(floorTile, pathTile, tintRgb, edgeStrength = 0.72) {
-  const tintedPath = tintTile(pathTile, tintRgb, 0.52, 0.96);
+function buildPathVariant(floorTile, pathTile, tintRgb, edgeStrength = 0.78) {
+  // Seamless biome road texture (no per-tile dark square border box; AutotileRenderer draws curbs on exposed edges)
+  const tintedPath = tintTile(pathTile, tintRgb, 0.56, 0.94);
   return mapPixels(floorTile, (fr, fg, fb, fa, x, y) => {
     const idx = (y * tintedPath.width + x) * 4;
     const pr = tintedPath.data[idx];
     const pg = tintedPath.data[idx + 1];
     const pb = tintedPath.data[idx + 2];
-    const dx = Math.abs(x - 15.5) / 15.5;
-    const dy = Math.abs(y - 15.5) / 15.5;
-    const radial = Math.max(dx, dy);
-    const weight = radial < 0.72 ? edgeStrength : radial < 0.88 ? edgeStrength * 0.55 : edgeStrength * 0.2;
+    const pLum = (0.299 * pr + 0.587 * pg + 0.114 * pb) / 255;
+    // Let subtle biome ground peek naturally inside deeper cobblestone mortar joints
+    const mortarPeek = pLum < 0.34 ? 0.62 : 1.0;
+    const weight = clamp(edgeStrength * mortarPeek, 0.35, 0.92);
     return [lerp(fr, pr, weight), lerp(fg, pg, weight), lerp(fb, pb, weight), fa];
   });
 }
 
 function buildWallVariant(baseWall, tintRgb, fleckRgb, fleckSeedLabel) {
   const rng = mulberry32(hashSeed(SEED, fleckSeedLabel));
-  const out = tintTile(baseWall, tintRgb, 0.65, 0.95);
-  // Crisp horizontal strata + beveled top lip
+  const out = tintTile(baseWall, tintRgb, 0.64, 0.94);
+  // Subtle organic rock-strata pixel shading without artificial per-tile grid stripes
   for (let y = 0; y < 32; y++) {
     for (let x = 0; x < 32; x++) {
       const idx = (y * 32 + x) * 4;
-      if (y <= 1) {
-        out.data[idx] = clamp(Math.round(out.data[idx] * 1.24 + 14), 0, 255);
-        out.data[idx + 1] = clamp(Math.round(out.data[idx + 1] * 1.24 + 14), 0, 255);
-        out.data[idx + 2] = clamp(Math.round(out.data[idx + 2] * 1.24 + 14), 0, 255);
-      } else if (y >= 30 || y === 15) {
-        out.data[idx] = clamp(Math.round(out.data[idx] * 0.72), 0, 255);
-        out.data[idx + 1] = clamp(Math.round(out.data[idx + 1] * 0.72), 0, 255);
-        out.data[idx + 2] = clamp(Math.round(out.data[idx + 2] * 0.72), 0, 255);
+      const lum = (0.299 * out.data[idx] + 0.587 * out.data[idx + 1] + 0.114 * out.data[idx + 2]) / 255;
+      // Gently deepen rock crevices & brighten upper-left facet edges for crisp 16-bit mineral relief
+      if (lum < 0.28) {
+        out.data[idx] = clamp(Math.round(out.data[idx] * 0.86), 0, 255);
+        out.data[idx + 1] = clamp(Math.round(out.data[idx + 1] * 0.86), 0, 255);
+        out.data[idx + 2] = clamp(Math.round(out.data[idx + 2] * 0.90), 0, 255);
+      } else if (lum > 0.68 && ((x + y) & 1) === 0) {
+        out.data[idx] = clamp(Math.round(out.data[idx] * 1.07 + 4), 0, 255);
+        out.data[idx + 1] = clamp(Math.round(out.data[idx + 1] * 1.07 + 4), 0, 255);
+        out.data[idx + 2] = clamp(Math.round(out.data[idx + 2] * 1.07 + 5), 0, 255);
       }
     }
   }
   if (fleckRgb) {
     for (let i = 0; i < 6; i++) {
-      const fx = 3 + Math.floor(rng() * 26);
+      const fx = 3 + Math.floor(rng() * 25);
       const fy = 4 + Math.floor(rng() * 23);
+      // 1px dark undercut shadow makes embedded mineral crystal glints pop crisply
+      const under = out.getPixel(fx, Math.min(31, fy + 1));
+      out.setPixel(fx, Math.min(31, fy + 1), under[0] * 0.55, under[1] * 0.55, under[2] * 0.62, 255);
       out.setPixel(fx, fy, fleckRgb[0], fleckRgb[1], fleckRgb[2], 255);
       if (i % 2 === 0) {
         out.setPixel(fx + 1, fy, Math.min(255, fleckRgb[0] + 24), Math.min(255, fleckRgb[1] + 24), Math.min(255, fleckRgb[2] + 24), 255);
@@ -512,23 +518,27 @@ function bakeTerrainAtlases() {
 
   // Core Village & Overworld (0..17)
   tiles[0] = M.grass.clone();
-  tiles[1] = M.path.clone();
+  // 1: PATH (gently tone-balanced warm village cobble so overlapping lanterns stay golden without clipping white)
+  tiles[1] = mapPixels(M.path, (r, g, b, a) => {
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    const mul = lum > 0.62 ? 0.88 : lum < 0.36 ? 0.92 : 0.93;
+    return [r * mul, g * mul * 0.99, b * mul * 0.96, a];
+  });
   tiles[2] = M.tallGrass.clone();
-  // 3: TREE (lush canopy tile over grass for fallback/tilemap usage)
+  // 3: TREE ground bed (lush shaded moss & woodland root floor — NO flat painted green ball peeking behind real tree props!)
   tiles[3] = (() => {
     const t = M.grass.clone();
-    const rng = mulberry32(hashSeed(SEED, 'tile_3_tree'));
+    const rng = mulberry32(hashSeed(SEED, 'tile_3_tree_bed'));
     for (let y = 0; y < 32; y++) {
       for (let x = 0; x < 32; x++) {
-        const dx = x - 15.5;
-        const dy = y - 14.5;
+        const dx = (x - 15.5) / 13.5;
+        const dy = (y - 17.5) / 11.5;
         const d = Math.hypot(dx, dy);
-        if (d < 13.5) {
-          const shade = d < 7 ? [62, 176, 86] : d < 11 ? [34, 128, 64] : [18, 82, 46];
-          const jitter = rng() > 0.72 ? 18 : rng() < 0.2 ? -14 : 0;
-          t.setPixel(x, y, shade[0] + jitter, shade[1] + jitter, shade[2] + jitter, 255);
-        } else if (y >= 24 && Math.abs(dx) < 3.5) {
-          t.setPixel(x, y, 108, 72, 44, 255);
+        const [r, g, b, a] = t.getPixel(x, y);
+        if (d < 1.0) {
+          const shade = lerp(0.68, 0.94, d * d);
+          const mossy = rng() > 0.82 ? -8 : rng() < 0.12 ? 6 : 0;
+          t.setPixel(x, y, r * shade + mossy, g * (shade + 0.03) + mossy, b * shade + 4, a);
         }
       }
     }
@@ -572,72 +582,93 @@ function bakeTerrainAtlases() {
     }
     return r;
   })();
-  tiles[13] = M.flowerGrass.clone();
-  // 14: SIGN (grass with crisp wooden signpost tile)
+  // 13: FLOWER (harmonize background grass foliage with tile_0 so flower patches blend organically into meadows)
+  tiles[13] = mapPixels(M.flowerGrass, (r, g, b, a, x, y) => {
+    const isBlossom = r > g + 14 || b > g + 12 || (r > 180 && g > 165);
+    if (isBlossom) return [r, g, b, a];
+    const [gr, gg, gb] = M.grass.getPixel(x, y);
+    return [lerp(r, gr, 0.52), lerp(g, gg, 0.52), lerp(b, gb, 0.52), a];
+  });
+  // 14: SIGN ground bed (grass with subtle worn pebble footing under the real signpost prop — zero duplicate painted sign!)
   tiles[14] = (() => {
     const s = M.grass.clone();
-    for (let y = 18; y <= 28; y++) {
-      for (let x = 14; x <= 17; x++) s.setPixel(x, y, 112, 72, 40, 255);
-    }
-    for (let y = 8; y <= 18; y++) {
-      for (let x = 6; x <= 25; x++) {
-        const border = y === 8 || y === 18 || x === 6 || x === 25;
-        s.setPixel(x, y, border ? 94 : 204, border ? 58 : 154, border ? 32 : 94, 255);
+    const rng = mulberry32(hashSeed(SEED, 'tile_14_sign_bed'));
+    for (let y = 18; y <= 29; y++) {
+      for (let x = 9; x <= 22; x++) {
+        const d = Math.hypot((x - 15.5) / 6.5, (y - 24) / 5.0);
+        if (d < 1.0) {
+          const [r, g, b] = s.getPixel(x, y);
+          const mixT = (1 - d) * 0.62;
+          const pebble = rng() > 0.84 ? 14 : rng() < 0.16 ? -12 : 0;
+          s.setPixel(
+            x,
+            y,
+            lerp(r, 148 + pebble, mixT),
+            lerp(g, 134 + pebble, mixT),
+            lerp(b, 104 + pebble, mixT),
+            255,
+          );
+        }
       }
     }
-    for (let x = 9; x <= 22; x++) s.setPixel(x, 11, 88, 56, 32, 255);
-    for (let x = 9; x <= 19; x++) s.setPixel(x, 14, 88, 56, 32, 255);
     return s;
   })();
-  // 15: HEAL (starlight healing pad on sanctum/rune flagstone — refined carved stone seal)
+  // 15: HEAL (refined carved starlight plaza tile under healing fountain)
   tiles[15] = (() => {
-    const h = blendTiles(M.sanctumFloor, M.runeFlagstone, () => 0.45);
+    const h = blendTiles(M.sanctumFloor, M.runeFlagstone, () => 0.42);
     for (let y = 0; y < 32; y++) {
       for (let x = 0; x < 32; x++) {
         const dx = Math.abs(x - 15.5);
         const dy = Math.abs(y - 15.5);
         const dist = Math.hypot(dx, dy);
-        if (Math.abs(dist - 11.5) < 1.1) {
-          h.blendPixel(x, y, 108, 226, 248, 200);
-        } else if (Math.abs(dx + dy - 7.5) < 1.0) {
-          h.blendPixel(x, y, 134, 244, 214, 210);
-        } else if (dist < 2.6) {
-          h.blendPixel(x, y, 196, 250, 255, 220);
+        if (Math.abs(dist - 12.0) < 0.9) {
+          h.blendPixel(x, y, 118, 206, 232, 135);
+        } else if (Math.max(dx, dy) > 13.5) {
+          h.blendPixel(x, y, 42, 54, 88, 120);
+        } else if (Math.abs(dx + dy - 8.0) < 0.8) {
+          h.blendPixel(x, y, 148, 224, 212, 115);
         }
       }
     }
     return h;
   })();
-  // 16: SHRINE (celestial shrine dais tile)
+  // 16: SHRINE (celestial carved shrine dais tile with subtle gold-trim stone inlay)
   tiles[16] = (() => {
     const s = M.runeFlagstone.clone();
     for (let y = 0; y < 32; y++) {
       for (let x = 0; x < 32; x++) {
         const dx = Math.abs(x - 15.5);
         const dy = Math.abs(y - 15.5);
-        if (Math.max(dx, dy) > 12.5 && Math.max(dx, dy) < 14.2) {
-          s.setPixel(x, y, 240, 202, 108, 255);
-        } else if (dx + dy < 6.5) {
-          s.setPixel(x, y, 114, 232, 255, 255);
+        if (Math.max(dx, dy) > 12.5 && Math.max(dx, dy) < 14.0) {
+          s.blendPixel(x, y, 226, 188, 102, 190);
+        } else if (Math.abs(dx + dy - 7.5) < 0.85) {
+          s.blendPixel(x, y, 114, 222, 248, 155);
         }
       }
     }
     return s;
   })();
-  // 17: CHEST (cobble plinth with golden-wood treasure chest accent)
+  // 17: CHEST ground bed (feathered warm sandy-pebble clearing pad — blends smoothly onto sand/grass with zero duplicate chest!)
   tiles[17] = (() => {
-    const c = buildPathVariant(M.grass, M.path, [186, 166, 128], 0.85);
-    for (let y = 9; y <= 23; y++) {
-      for (let x = 7; x <= 24; x++) {
-        const rim = y === 9 || y === 23 || x === 7 || x === 24 || y === 15;
-        if (rim) c.setPixel(x, y, 238, 194, 86, 255);
-        else c.setPixel(x, y, 142, 84, 42, 255);
+    const c = M.sand.clone();
+    const rng = mulberry32(hashSeed(SEED, 'tile_17_chest_pad'));
+    for (let y = 0; y < 32; y++) {
+      for (let x = 0; x < 32; x++) {
+        const [pr, pg, pb] = tiles[1].getPixel(x, y);
+        const [sr, sg, sb] = M.sand.getPixel(x, y);
+        const d = Math.hypot((x - 15.5) / 13.0, (y - 17.5) / 11.5);
+        const stoneWeight = d < 1.0 ? clamp((1 - d * d) * 0.62, 0, 0.62) : 0;
+        const grain = d < 0.92 ? (rng() > 0.85 ? 8 : rng() < 0.15 ? -8 : 0) : 0;
+        c.setPixel(
+          x,
+          y,
+          lerp(sr, pr, stoneWeight) + grain,
+          lerp(sg, pg, stoneWeight) + grain,
+          lerp(sb, pb, stoneWeight) + grain,
+          255,
+        );
       }
     }
-    c.setPixel(15, 15, 255, 240, 156, 255);
-    c.setPixel(16, 15, 255, 240, 156, 255);
-    c.setPixel(15, 16, 255, 240, 156, 255);
-    c.setPixel(16, 16, 255, 240, 156, 255);
     return c;
   })();
 
@@ -664,14 +695,13 @@ function bakeTerrainAtlases() {
     }
     return r;
   })();
-  // 25: LANTERN
+  // 25: LANTERN ground tile (calibrated village cobble with subtle carved slate lamp plinth — zero flat yellow ground blob!)
   tiles[25] = (() => {
-    const l = M.path.clone();
-    for (let y = 8; y <= 23; y++) {
-      for (let x = 8; x <= 23; x++) {
-        const d = Math.hypot(x - 15.5, y - 15.5);
-        if (d < 4.5) l.setPixel(x, y, 255, 232, 136, 255);
-        else if (d < 7.5) l.blendPixel(x, y, 255, 188, 86, 150);
+    const l = tiles[1].clone();
+    for (let y = 21; y <= 28; y++) {
+      for (let x = 12; x <= 19; x++) {
+        const border = y === 21 || y === 28 || x === 12 || x === 19;
+        l.blendPixel(x, y, border ? 42 : 76, border ? 48 : 84, border ? 68 : 104, border ? 180 : 150);
       }
     }
     return l;
@@ -806,19 +836,11 @@ function bakeTerrainAtlases() {
           }
         } else if (id === 15 || id === 16 || id === 24) {
           // Heal pad, Shrine, Rune trail subtle carved glow
-          if ((b > 205 && g > 200 && b > r + 25) || (r > 225 && g > 192 && b < 140)) {
+          if ((b > 210 && g > 205 && b > r + 28) || (r > 225 && g > 192 && b < 140)) {
             er = r;
             eg = g;
             eb = b;
-            ea = 145;
-          }
-        } else if (id === 25) {
-          // Lantern ground warm glow core
-          if (r > 235 && g > 195 && lum > 195) {
-            er = r;
-            eg = g;
-            eb = b;
-            ea = 165;
+            ea = 115;
           }
         } else if (id === 46 || id === 47 || id === 48) {
           // Rift floor/path/wall: ONLY bright starlight specks & crystal edges, NEVER the dark stone body
@@ -935,38 +957,38 @@ function bakePropsAtlases() {
         switch (p.id) {
           case 'cottage_violet':
             // Warm glowing windows only
-            emit = r >= 225 && g >= 175 && b <= 135;
-            ea = 175;
+            emit = r >= 228 && g >= 178 && b <= 130;
+            ea = 152;
             break;
           case 'cottage_lab':
             // Cyan skylight/window glass only (avoid blowing out cream plaster/roof)
-            emit = b >= 205 && g >= 205 && b - r >= 28;
-            ea = 175;
+            emit = b >= 210 && g >= 210 && b - r >= 32;
+            ea = 152;
             break;
           case 'lantern':
-            // Warm lantern glass flame
-            emit = r >= 210 && g >= 180 && lum >= 185;
-            ea = 195;
+            // Warm lantern glass flame only
+            emit = r >= 220 && g >= 186 && lum >= 190 && y < p.image.height * 0.56;
+            ea = 180;
             break;
           case 'shrine_open':
             // Cyan/mint glowing shrine crystals
-            emit = g >= 185 && b >= 185 && g + b - 2 * r > 28;
-            ea = 185;
+            emit = g >= 190 && b >= 190 && g + b - 2 * r > 32;
+            ea = 168;
             break;
           case 'shrine_cleared':
             // Soft amber residual crystal glow
             emit = r >= 230 && g >= 190 && b <= 155;
-            ea = 125;
+            ea = 115;
             break;
           case 'fountain':
-            // Luminous cyan water highlights
-            emit = b >= 200 && g >= 185 && b > r + 25;
-            ea = 155;
+            // Specular water crest highlights only (never stone basin rim)
+            emit = b >= 220 && g >= 212 && b > r + 32;
+            ea = 128;
             break;
           case 'prop_mushroom':
-            // Bioluminescent cyan & lavender spots
-            emit = (b >= 195 && g >= 165 && b > r + 25) || (b >= 220 && r >= 145 && b > g + 40);
-            ea = 175;
+            // Bioluminescent cap spots only (never cream mushroom stem)
+            emit = y < p.image.height * 0.62 && ((b >= 200 && g >= 170 && b > r + 28) || (b >= 222 && r >= 150 && b > g + 42));
+            ea = 155;
             break;
           case 'prop_crystal':
             // Faceted glowing crystal cluster
@@ -1071,6 +1093,57 @@ function deriveAquaticFallback(serpentineImg) {
   return out;
 }
 
+function stripDetachedSlivers(img, minPixels = 36) {
+  // Deterministic flood-fill cleanup removing tiny detached stray artifact islands (e.g. serpentine left-edge sliver)
+  const w = img.width;
+  const h = img.height;
+  const visited = new Uint8Array(w * h);
+  const out = img.clone();
+  const queue = new Int32Array(w * h);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const start = y * w + x;
+      if (visited[start] || out.data[start * 4 + 3] < 20) continue;
+      let head = 0;
+      let tail = 0;
+      queue[tail++] = start;
+      visited[start] = 1;
+      const members = [];
+
+      while (head < tail) {
+        const cur = queue[head++];
+        members.push(cur);
+        const cx = cur % w;
+        const cy = (cur - cx) / w;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const nIdx = ny * w + nx;
+            if (!visited[nIdx] && out.data[nIdx * 4 + 3] >= 20) {
+              visited[nIdx] = 1;
+              queue[tail++] = nIdx;
+            }
+          }
+        }
+      }
+
+      if (members.length < minPixels) {
+        for (const m of members) {
+          out.data[m * 4] = 0;
+          out.data[m * 4 + 1] = 0;
+          out.data[m * 4 + 2] = 0;
+          out.data[m * 4 + 3] = 0;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function bakeFallbacksAtlas() {
   const BASE_ARCHETYPES = [
     'quadruped',
@@ -1087,7 +1160,11 @@ function bakeFallbacksAtlas() {
 
   const loaded = BASE_ARCHETYPES.map((id) => {
     const raw = loadMasterPng(`fallbacks/${id}.png`);
-    return { id, image: new PixelImage(raw.width, raw.height, raw.data) };
+    const baseImg = new PixelImage(raw.width, raw.height, raw.data);
+    return {
+      id,
+      image: id === 'serpentine' ? stripDetachedSlivers(baseImg, 40) : baseImg,
+    };
   });
 
   const serp = loaded.find((item) => item.id === 'serpentine').image;

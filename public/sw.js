@@ -1,5 +1,5 @@
 /* Starlight v2 — Offline-First Service Worker (Cache Storage only; never touches localStorage/IndexedDB) */
-const CACHE_NAME = 'starlight-v2-cache-3.0.0';
+const CACHE_NAME = 'starlight-v2-cache-3.1.0';
 const SPRITE_CACHE = 'starlight-v2-sprites-v1';
 
 const ARENA_IDS = [

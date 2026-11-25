@@ -477,7 +477,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const lctx = c.getContext('2d', { willReadFrequently: true });
       if (!lctx) return null;
       const grad = lctx.createRadialGradient(half, half, 0, half, half, half);
-      grad.addColorStop(0, rgbaStr(r, g, b, 0.22));
+      grad.addColorStop(0, rgbaStr(r, g, b, 0.17));
       grad.addColorStop(0.45, rgbaStr(r, g, b, 0.10));
       grad.addColorStop(1, rgbaStr(r, g, b, 0));
       lctx.fillStyle = grad;
@@ -911,35 +911,48 @@ export class Canvas2DBackend implements IRenderBackend {
 
       // Pixel-snapped animated shoreline surf foam (0..1 float & 4-bit N/E/S/W bitmask)
       if (q.foamMask > 0.001) {
-        const waveOffset = Math.round(Math.sin(t * 3.1 + q.x * 0.15 + q.y * 0.12) * 2.0 * amp);
-        const foamThickness = Math.max(2, Math.round(Math.min(q.w, q.h) * 0.14));
-        ctx.fillStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.78);
+        const waveOffset = Math.round(Math.sin(t * 2.9 + q.x * 0.15 + q.y * 0.12) * 1.6 * amp);
+        const foamThickness = Math.max(2, Math.round(Math.min(q.w, q.h) * 0.09));
+        const seafoam = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.72);
+        const foamLip = rgbaStr(cfg.skyBottomColor[0] * 0.5 + 0.5, cfg.skyBottomColor[1] * 0.5 + 0.5, 1.0, 0.34);
 
         if (q.foamMask > 1.01) {
           const mask = Math.round(q.foamMask);
           const inset = Math.max(0, Math.round(waveOffset * 0.5));
-          if ((mask & 1) !== 0) {
-            ctx.fillRect(q.x, q.y + inset, q.w, foamThickness);
-          }
-          if ((mask & 2) !== 0) {
-            ctx.fillRect(q.x + q.w - foamThickness - inset, q.y, foamThickness, q.h);
-          }
-          if ((mask & 4) !== 0) {
-            ctx.fillRect(q.x, q.y + q.h - foamThickness - inset, q.w, foamThickness);
-          }
-          if ((mask & 8) !== 0) {
-            ctx.fillRect(q.x + inset, q.y, foamThickness, q.h);
-          }
+          const dashH = (yPos: number, dir: number) => {
+            ctx.fillStyle = foamLip;
+            ctx.fillRect(q.x + 1, yPos + dir * foamThickness, q.w - 2, 1);
+            ctx.fillStyle = seafoam;
+            for (let ox = 0; ox < q.w; ox += 8) {
+              const seg = Math.min(6, q.w - ox);
+              ctx.fillRect(q.x + ox + 1, yPos, Math.max(2, seg - 1), foamThickness);
+            }
+          };
+          const dashV = (xPos: number, dir: number) => {
+            ctx.fillStyle = foamLip;
+            ctx.fillRect(xPos + dir * foamThickness, q.y + 1, 1, q.h - 2);
+            ctx.fillStyle = seafoam;
+            for (let oy = 0; oy < q.h; oy += 8) {
+              const seg = Math.min(6, q.h - oy);
+              ctx.fillRect(xPos, q.y + oy + 1, foamThickness, Math.max(2, seg - 1));
+            }
+          };
+          if ((mask & 1) !== 0) dashH(q.y + inset, 1);
+          if ((mask & 2) !== 0) dashV(q.x + q.w - foamThickness - inset, -1);
+          if ((mask & 4) !== 0) dashH(q.y + q.h - foamThickness - inset, -1);
+          if ((mask & 8) !== 0) dashV(q.x + inset, 1);
         } else {
           const intensity = clamp(q.foamMask, 0, 1);
           const inset = Math.max(0, Math.round(waveOffset * 0.5));
-          ctx.fillStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.72 * intensity);
-          ctx.fillRect(q.x + 1, q.y + inset, q.w - 2, Math.max(2, Math.round(foamThickness * 0.85)));
+          ctx.fillStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.66 * intensity);
+          for (let ox = 1; ox < q.w - 1; ox += 8) {
+            ctx.fillRect(q.x + ox, q.y + inset, Math.min(5, q.w - ox - 1), foamThickness);
+          }
           ctx.fillRect(
-            q.x + 2,
+            q.x + 3,
             Math.round(q.y + q.h * 0.5 + waveOffset * 0.4),
-            Math.round(q.w * 0.65),
-            Math.max(1, Math.round(foamThickness * 0.45)),
+            Math.round(q.w * 0.55),
+            1,
           );
         }
       }

@@ -6,7 +6,11 @@ import type {
   OfflineRigDescriptor,
 } from '../../contracts';
 import { TYPE_PALETTES } from '../../core';
-import { clamp, hexToRgba, mixHex } from './BattleArenas';
+import { clamp, mixHex } from './BattleArenas';
+import {
+  SILHOUETTE_CONTOUR_PAD,
+  getAtlasRegionSilhouetteContour,
+} from './SpriteSilhouette';
 
 const FALLBACK_ARCHETYPE_ORDER: readonly BodyArchetype[] = [
   'quadruped',
@@ -412,6 +416,27 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
       }
     };
 
+    // Subtle exterior luminous rim-halo around dark outline cells (pure fillRect, zero ovals)
+    if (!isHitFlash && ctx.globalAlpha >= 0.5) {
+      ctx.fillStyle = 'rgba(236, 245, 255, 0.52)';
+      const rows = grid.length;
+      const cols = grid[0]?.length ?? 16;
+      for (let r = -1; r <= rows; r++) {
+        for (let c = -1; c <= cols; c++) {
+          const cur = r >= 0 && r < rows && c >= 0 && c < cols ? grid[r][c] : '.';
+          if (cur !== '.') continue;
+          const touchesBody =
+            (r > 0 && c >= 0 && c < cols && grid[r - 1][c] !== '.') ||
+            (r + 1 < rows && c >= 0 && c < cols && grid[r + 1][c] !== '.') ||
+            (c > 0 && r >= 0 && r < rows && grid[r][c - 1] !== '.') ||
+            (c + 1 < cols && r >= 0 && r < rows && grid[r][c + 1] !== '.');
+          if (touchesBody) {
+            ctx.fillRect(ox + c * px, oy + r * px, px, px);
+          }
+        }
+      }
+    }
+
     for (let row = 0; row < grid.length; row++) {
       const line = grid[row];
       let col = 0;
@@ -459,7 +484,6 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
   ): void {
     const size = Math.max(24, options.size);
     const pal = resolvePixelPalette(rig);
-    const typePal = TYPE_PALETTES[rig.primaryType] ?? TYPE_PALETTES.normal;
     const h = hashSpecies(rig.speciesId);
     const phase = ((h & 63) / 63) * Math.PI * 2;
     const motionScale = options.reducedMotion ? 0.14 : 1.0;
@@ -471,7 +495,6 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
       : Math.round(Math.sin(t * 3.4 + phase) * 1.4) * pixelUnit;
 
     const hitFlash = clamp(options.hitFlash ?? 0, 0, 1);
-    const rimHex = options.rimColor || typePal.glow;
     const dirSign = options.facing === 'right' ? -1 : 1;
 
     ctx.save();
@@ -481,20 +504,33 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
       ctx.scale(-1, 1);
     }
 
-    // Pixel-stepped elemental aura / rim highlights behind creature
     const auraPx = Math.max(2, Math.round(size / 18));
-    const half = Math.round((size * 0.44) / auraPx) * auraPx;
-    ctx.fillStyle = hexToRgba(rimHex, 0.24);
-    ctx.fillRect(-half, -Math.round(half * 0.65), half * 2, Math.round(half * 1.3));
-    ctx.fillStyle = hexToRgba(pal.primary, 0.22);
-    ctx.fillRect(-Math.round(half * 0.72), -half, Math.round(half * 1.44), half * 2);
-
     const sheet = this.fallbackSheet;
     const region = isDrawableSheet(sheet) ? this.resolveRegion(rig.archetype) : null;
 
     if (sheet && region && isDrawableSheet(sheet)) {
       const drawSize = Math.max(48, Math.round(size / 4) * 4);
       const halfDraw = Math.round(drawSize * 0.5);
+
+      // Dual-contrast pixel-art silhouette contour behind the 48x48 archetype sprite
+      if (ctx.globalAlpha >= 0.5) {
+        const contour = getAtlasRegionSilhouetteContour(sheet, region);
+        if (contour) {
+          const padPx = Math.max(1, Math.round((SILHOUETTE_CONTOUR_PAD * drawSize) / Math.max(1, region.w)));
+          ctx.drawImage(
+            contour,
+            0,
+            0,
+            contour.width,
+            contour.height,
+            -halfDraw - padPx,
+            -halfDraw - padPx,
+            drawSize + padPx * 2,
+            drawSize + padPx * 2,
+          );
+        }
+      }
+
       ctx.drawImage(
         sheet,
         region.x,
@@ -506,10 +542,6 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
         drawSize,
         drawSize,
       );
-
-      // Species-tinted pixel shoulder/crown marker pixels so different species of same archetype feel distinct
-      ctx.fillStyle = hexToRgba(pal.primary, 0.75);
-      ctx.fillRect(-halfDraw + auraPx, -halfDraw + auraPx, auraPx, auraPx);
 
       // Pixel-crisp hit-flash silhouette overlay
       if (hitFlash > 0.04) {
