@@ -426,7 +426,7 @@ export class TeamBoxView {
             const lockedHintHtml = lockedRules
               .map(
                 (rule) =>
-                  `<span class="sl-pill" style="color:var(--sl-text-dim);">${createIconSvg('icon-evolve', 'sl-icon-sm')} ${safeText(getSpeciesEntry(rule.to).name)} (${safeText(rule.item ? (evoItemMap.get(rule.item) ?? rule.item) : `Lv.${rule.minLevel}`)})</span>`,
+                  `<span class="sl-pill" style="color:var(--sl-text-dim);">${createIconSvg('icon-evolve', 'sl-icon-sm')} Evolves: ${safeText(getSpeciesEntry(rule.to).name)} (${safeText(rule.item ? (evoItemMap.get(rule.item) ?? rule.item) : `Lv.${rule.minLevel}`)})</span>`,
               )
               .join('');
 
@@ -589,7 +589,7 @@ export class TeamBoxView {
               .filter((r) => !evoOptions.includes(r))
               .map(
                 (rule) =>
-                  `<span class="sl-pill" style="color:var(--sl-text-dim);">${createIconSvg('icon-evolve', 'sl-icon-sm')} ${safeText(getSpeciesEntry(rule.to).name)} (${safeText(rule.item ? (evoItemMap.get(rule.item) ?? rule.item) : `Lv.${rule.minLevel}`)})</span>`,
+                  `<span class="sl-pill" style="color:var(--sl-text-dim);">${createIconSvg('icon-evolve', 'sl-icon-sm')} Evolves: ${safeText(getSpeciesEntry(rule.to).name)} (${safeText(rule.item ? (evoItemMap.get(rule.item) ?? rule.item) : `Lv.${rule.minLevel}`)})</span>`,
               )
               .join('');
             const boxEvoHtml = evoOptions
