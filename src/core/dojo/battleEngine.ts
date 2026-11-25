@@ -127,46 +127,46 @@ interface PaceTimings {
 
 const PACE_PRESETS: Record<BattlePace, PaceTimings> = {
   cinema: {
-    introHold: 0.42,
-    windup: 0.28,
-    impactHold: 0.46,
-    abilityHold: 0.38,
-    interTurn: 0.34,
-    faintHold: 0.44,
-    sendOutHold: 0.4,
-    hpDrainSec: 0.46,
-    ballThrow: 0.34,
-    ballAbsorb: 0.26,
-    ballWobble: 0.38,
-    ballResolve: 0.38,
+    introHold: 0.52,
+    windup: 0.56,
+    impactHold: 0.72,
+    abilityHold: 0.52,
+    interTurn: 0.48,
+    faintHold: 0.6,
+    sendOutHold: 0.48,
+    hpDrainSec: 0.42,
+    ballThrow: 0.38,
+    ballAbsorb: 0.28,
+    ballWobble: 0.46,
+    ballResolve: 0.52,
   },
   classic: {
-    introHold: 0.32,
-    windup: 0.22,
-    impactHold: 0.36,
-    abilityHold: 0.3,
-    interTurn: 0.26,
-    faintHold: 0.36,
-    sendOutHold: 0.32,
-    hpDrainSec: 0.36,
-    ballThrow: 0.28,
-    ballAbsorb: 0.22,
-    ballWobble: 0.3,
-    ballResolve: 0.3,
+    introHold: 0.4,
+    windup: 0.42,
+    impactHold: 0.54,
+    abilityHold: 0.4,
+    interTurn: 0.34,
+    faintHold: 0.46,
+    sendOutHold: 0.38,
+    hpDrainSec: 0.32,
+    ballThrow: 0.3,
+    ballAbsorb: 0.24,
+    ballWobble: 0.36,
+    ballResolve: 0.4,
   },
   fast: {
-    introHold: 0.2,
-    windup: 0.16,
-    impactHold: 0.24,
-    abilityHold: 0.22,
-    interTurn: 0.16,
-    faintHold: 0.26,
-    sendOutHold: 0.22,
-    hpDrainSec: 0.24,
-    ballThrow: 0.2,
+    introHold: 0.24,
+    windup: 0.24,
+    impactHold: 0.34,
+    abilityHold: 0.26,
+    interTurn: 0.22,
+    faintHold: 0.3,
+    sendOutHold: 0.26,
+    hpDrainSec: 0.2,
+    ballThrow: 0.22,
     ballAbsorb: 0.16,
-    ballWobble: 0.22,
-    ballResolve: 0.22,
+    ballWobble: 0.24,
+    ballResolve: 0.26,
   },
 };
 
@@ -336,6 +336,11 @@ function statFullLabel(stat: string): string {
   return 'Power';
 }
 
+function isSameMon(a: Pokemon | null | undefined, b: Pokemon | null | undefined): boolean {
+  if (!a || !b) return false;
+  return a === b || (Boolean(a.uid) && a.uid === b.uid);
+}
+
 export class DojoBattleController {
   private readonly storage: StarlightStorageBridge;
   private readonly sprites: SpriteAssetLoader;
@@ -351,6 +356,7 @@ export class DojoBattleController {
   private actionCooldownRemaining = 0;
   private floatingTextSeq = 0;
   private introScheduled = false;
+  private defeatRecoveryPending = false;
 
   // Multi-mon battle tracking & post-battle metadata for StarlightApp dialogue
   private cumulativeXpGained = 0;
@@ -563,13 +569,16 @@ export class DojoBattleController {
     if (cachedEnemy) this.state.enemy.frames = cachedEnemy;
 
     void this.sprites.loadSpeciesSprite(pMon.speciesId, { back: true, shiny: pMon.isShiny, offlineOnly: offline }).then((f) => {
-      if (this.playerMon.speciesId === pMon.speciesId) {
+      const curOffline = this.state.forceOfflineRig || this.sprites.isForceOffline();
+      if (isSameMon(this.playerMon, pMon) && this.playerMon.speciesId === pMon.speciesId && curOffline === offline) {
         this.state.player.frames = f;
         this.state.player.useOfflineRig = offline || f.sourceKind === 'offline-pixel';
       }
     });
     void this.sprites.loadSpeciesSprite(eMon.speciesId, { back: false, shiny: eMon.isShiny, offlineOnly: offline }).then((f) => {
-      if (this.getCurrentEnemy().speciesId === eMon.speciesId) {
+      const curOffline = this.state.forceOfflineRig || this.sprites.isForceOffline();
+      const curEnemy = this.getCurrentEnemy();
+      if (isSameMon(curEnemy, eMon) && curEnemy.speciesId === eMon.speciesId && curOffline === offline) {
         this.state.enemy.frames = f;
         this.state.enemy.useOfflineRig = offline || f.sourceKind === 'offline-pixel';
       }
@@ -635,7 +644,7 @@ export class DojoBattleController {
       this.actionCooldownRemaining = 0;
     }
     this.setIdleCommandPrompt();
-    this.syncCombatantSprites();
+    this.syncCombatantSprites(true);
   }
 
   private scheduleIntroSequence(): void {
@@ -715,9 +724,13 @@ export class DojoBattleController {
   }
 
   startEncounter(opts: BattleStartOptions): BattleSceneState {
+    if (this.defeatRecoveryPending) {
+      this.completeDefeatRecovery();
+    }
     this.clearTimeline();
     this.pendingOutcome = createEmptyOutcome();
     this.introScheduled = false;
+    this.defeatRecoveryPending = false;
     this.actionCooldownRemaining = 0;
     this.cumulativeXpGained = 0;
     this.leveledUpInBattle = false;
@@ -924,11 +937,12 @@ export class DojoBattleController {
       return stage < buffCap && hpRatio >= 0.35;
     };
 
-    // Wild AI: natural variety without wasteful heals (>60% HP), re-shields, or >+1 buff stacking
+    // Wild AI: natural variety without wasteful heals (>60% HP), endless shield/DEF stalling, or >+1 buff stacking
     if (!isBossOrRival) {
+      const defStage = Number(enemy.battleStages?.def || 0);
       const sensibleMoves = moves.filter((m) => {
         if (m.category === 'heal') return hpRatio <= 0.6;
-        if (m.category === 'shield') return !isShielded;
+        if (m.category === 'shield') return !isShielded && defStage < 2 && hpRatio <= 0.85;
         if (m.category === 'buff') return isBuffAllowed(m);
         return true;
       });
@@ -1069,7 +1083,7 @@ export class DojoBattleController {
       this.spawnFloatingText('player', `LEVEL UP! Lv.${this.playerMon.level}`, '#fde047', 21, 0, 1.5, -24);
     }
     for (const bench of team) {
-      if (!bench || bench === this.playerMon || bench.isFainted) continue;
+      if (!bench || isSameMon(bench, this.playerMon) || bench.isFainted) continue;
       const share = computeBenchXpShare(bench, this.playerMon, defeatedEnemy, xpRes.baseXp);
       bench.gainXp(share.xp);
     }
@@ -1096,21 +1110,25 @@ export class DojoBattleController {
     if (gemId && roll < 0.34) {
       this.storage.manager.addRewards({ gems: { [gemId]: 1 } }, false);
       const gemName = stripEmojis(EVOLUTION_ITEMS[gemId]?.name || 'Evolution Gem');
-      return `a ${gemName}`;
+      return gemName;
     }
     if (roll < 0.58) {
       this.storage.manager.addRewards({ starBalls: 1 }, false);
-      return 'a Star Ball';
+      return 'Star Ball';
     }
     if (roll < 0.8) {
       this.storage.manager.addRewards({ greatBalls: 1 }, false);
-      return 'a Great Ball';
+      return 'Great Ball';
     }
     this.storage.manager.addRewards({ potions: 1 }, false);
-    return 'a Berry Potion';
+    return 'Berry Potion';
   }
 
-  private awardVictoryRewards(caught: boolean, excludeBenchUid?: string): void {
+  private awardVictoryRewards(
+    caught: boolean,
+    excludeBenchUid?: string,
+    catchDestination?: 'team' | 'box',
+  ): void {
     const enemy = this.getCurrentEnemy();
     const profile = this.storage.manager.getActiveProfile();
     const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [this.playerMon];
@@ -1143,7 +1161,7 @@ export class DojoBattleController {
 
     // Smart bench XP share (never awards catch XP to the newly caught Pokémon itself!)
     for (const bench of team) {
-      if (!bench || bench === this.playerMon || bench.isFainted) continue;
+      if (!bench || isSameMon(bench, this.playerMon) || bench.isFainted) continue;
       if (excludeBenchUid && bench.uid === excludeBenchUid) continue;
       const share = computeBenchXpShare(bench, this.playerMon, enemy, xpRes.baseXp);
       bench.gainXp(share.xp);
@@ -1216,7 +1234,14 @@ export class DojoBattleController {
       trailDrop: trailDropLabel,
     };
 
-    if (lvRes.leveledUp) {
+    // Clear stale damage floating texts & ability ribbons before victory/evolution banner
+    this.state.player.abilityBanner = null;
+    this.state.enemy.abilityBanner = null;
+    this.state.floatingTexts = caught
+      ? this.state.floatingTexts.filter((ft) => ft.text === 'GOTCHA!' || ft.text.startsWith('Curious'))
+      : [];
+
+    if (lvRes.leveledUp && !pendingEvo) {
       this.spawnFloatingText('player', `LEVEL UP! Lv.${this.playerMon.level}`, '#fde047', 22, 0, 1.55, -24);
     }
     this.pendingOutcome.sfx.push(caught ? 'catch-success' : 'victory');
@@ -1227,18 +1252,24 @@ export class DojoBattleController {
     this.pendingOutcome.newBadgeIds = uniqueBadges;
     this.pendingOutcome.battleEnded = caught ? 'caught' : 'victory';
 
+    const shardLabel = shards === 1 ? '1 Star Shard' : `${shards} Star Shards`;
     if (pendingEvo) {
       this.setPhase('evolving', 'Evolution!');
       this.triggerCameraCue('evolution');
       this.pendingOutcome.sfx.push('evo-start');
       this.pushLog(`What?! ${stripEmojis(this.playerMon.displayName)} is glowing with Starlight energy!`);
     } else {
-      this.setPhase('victory', 'Victory!');
+      this.setPhase('victory', caught ? 'Caught!' : 'Victory!');
       const lvMsg = anyLeveledUp ? ` ${stripEmojis(this.playerMon.displayName)} grew to Lv.${this.playerMon.level}!` : '';
-      const dropMsg = trailDropLabel ? ` Found ${trailDropLabel} on the victory trail!` : '';
-      this.pushLog(`Victory! +${totalXp} XP & +${shards} Star Shards!${lvMsg}${dropMsg}`);
+      const dropMsg = trailDropLabel ? ` Found a ${trailDropLabel} on the victory trail!` : '';
+      if (caught) {
+        const destLabel = catchDestination === 'box' ? 'Storage Box' : 'team';
+        this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${destLabel}! (+${totalXp} XP & +${shardLabel}!)${lvMsg}`);
+      } else {
+        this.pushLog(`Victory! +${totalXp} XP & +${shardLabel}!${lvMsg}${dropMsg}`);
+      }
     }
-    this.syncCombatantSprites();
+    this.syncCombatantSprites(true);
   }
 
   private scheduleEnemyFaintSequence(): void {
@@ -1286,6 +1317,14 @@ export class DojoBattleController {
           this.state.enemy.faintDrop = 0;
           this.state.enemy.sendOutProgress = 0;
           this.state.enemy.displayedHp = nextFoe.hp;
+          this.state.enemy.hitFlash = 0;
+          this.state.enemy.lungeOffset = 0;
+          this.state.enemy.recoilOffset = 0;
+          this.state.enemy.bracedFlash = 0;
+          this.state.enemy.buffFlash = 0;
+          this.state.enemy.healFlash = 0;
+          this.state.enemy.abilityBanner = null;
+          this.state.enemy.captureProgress = 0;
           this.storage.manager.recordSeen(nextFoe.speciesId, true);
           this.pendingOutcome.sfx.push('catch-throw');
           if (!this.pendingOutcome.crySpeciesIds) this.pendingOutcome.crySpeciesIds = [];
@@ -1366,7 +1405,7 @@ export class DojoBattleController {
       onStart: () => {
         const profile = this.storage.manager.getActiveProfile();
         const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [];
-        const hasHealthyBench = team.some((m) => m && !m.isFainted && m !== this.playerMon);
+        const hasHealthyBench = team.some((m) => m && !m.isFainted && !isSameMon(m, this.playerMon));
         if (hasHealthyBench) {
           this.setPhase('forced-switch', 'Choose Next Partner');
           this.state.turnNumber += 1;
@@ -1376,14 +1415,18 @@ export class DojoBattleController {
           return;
         }
 
-        // All fainted -> Starlight Village healing recall
-        this.storage.manager.healTeam(true);
-        this.storage.manager.warpToSafeZone();
+        // All fainted -> keep HP at 0 on Defeat screen (v1 battle.js:9875-9879 parity);
+        // healTeam(true) + warpToSafeZone() execute cleanly on closeBattle()!
+        this.defeatRecoveryPending = true;
+        this.state.floatingTexts = [];
+        this.state.player.abilityBanner = null;
+        this.state.enemy.abilityBanner = null;
+        this.state.player.displayedHp = 0;
+        this.state.player.faintDrop = 1;
         this.setPhase('defeat', 'Retreating...');
-        this.pendingOutcome.sfx.push('heal');
         this.pendingOutcome.battleEnded = 'defeat';
-        this.pushLog('Your team rested up safely at Starlight Village Healing Fountain!');
-        this.syncCombatantSprites();
+        this.pushLog('Your team needs a quick rest! Returning to Starlight Village Healing Fountain...');
+        this.syncCombatantSprites(true);
       },
     });
   }
@@ -1458,10 +1501,11 @@ export class DojoBattleController {
         const move = resolvedIsStruggle ? STRUGGLE_MOVE : getMoveEntry(resolvedMoveId);
         const atkName = stripEmojis(attacker.displayName);
 
-        // COMBAT-04 parity: match v1 battle.js:8510-8515 calculateDamage options exactly
+        // COMBAT-04 parity: apply abilities, Composure, and wild Apex encounter trait boost
         const rawResult = calculateDamage(attacker, defender, move, {
           applyAbilities: true,
           applyComposure: true,
+          applyEncounterTraits: true,
           defenderSide,
           isBoss: Boolean(this.state.shrineId),
         });
@@ -1480,21 +1524,25 @@ export class DojoBattleController {
 
         if (result.category === 'heal') {
           const healed = attacker.healAmount(result.heal);
-          atkVis.healFlash = 1;
-          this.pendingOutcome.sfx.push('heal');
-          this.pendingOutcome.vfxEvents.push({
-            type: move.type,
-            fromSide: attackerSide,
-            targetSide: attackerSide,
-            power: 40,
-            effectiveness: 1,
-            category: 'heal',
-            composureBraced: false,
-            isCrit: false,
-            duration: Math.max(0.32, t.impactHold + 0.16),
-          });
-          this.spawnFloatingText(attackerSide, `+${healed} HP`, '#86efac', 21, 0, 1.35, -10);
-          this.pushLog(`${atkName} recovered ${healed} HP!`);
+          if (healed > 0) {
+            atkVis.healFlash = 1;
+            this.pendingOutcome.sfx.push('heal');
+            this.pendingOutcome.vfxEvents.push({
+              type: move.type,
+              fromSide: attackerSide,
+              targetSide: attackerSide,
+              power: 40,
+              effectiveness: 1,
+              category: 'heal',
+              composureBraced: false,
+              isCrit: false,
+              duration: Math.max(0.32, t.impactHold + 0.16),
+            });
+            this.spawnFloatingText(attackerSide, `+${healed} HP`, '#86efac', 21, 0, 1.35, -10);
+            this.pushLog(`${atkName} recovered ${healed} HP!`);
+          } else {
+            this.pushLog(`${atkName}'s HP is already full!`);
+          }
           this.syncCombatantSprites();
           this.storage.saveSync();
           return;
@@ -1763,11 +1811,13 @@ export class DojoBattleController {
       this.enqueueMoveSequence('player', effectiveMoveId);
       this.enqueueStep({ duration: t.interTurn });
       this.enqueueMoveSequence('enemy', () => this.chooseEnemyMove(this.getCurrentEnemy()));
+      this.enqueueStep({ duration: t.interTurn });
     } else {
       this.setPhase('enemy-acting', 'Foe Acting');
       this.enqueueMoveSequence('enemy', () => this.chooseEnemyMove(this.getCurrentEnemy()));
       this.enqueueStep({ duration: t.interTurn });
       this.enqueueMoveSequence('player', effectiveMoveId);
+      this.enqueueStep({ duration: t.interTurn });
     }
 
     this.enqueueStep({
@@ -1866,6 +1916,7 @@ export class DojoBattleController {
 
     // 4. Resolution (Caught celebration vs Breakout + Enemy counterattack)
     if (attempt.caught) {
+      let catchDestination: 'team' | 'box' = 'team';
       this.enqueueStep({
         duration: t.ballResolve,
         onStart: () => {
@@ -1875,21 +1926,25 @@ export class DojoBattleController {
             this.spawnFloatingText('enemy', 'Curious +4 Bond!', '#67e8f9', 15, 0.1, 1.4, -48);
           }
           enemy.hp = Math.max(1, enemy.hp);
+          enemy.resetBattleState();
           const catchRes = this.storage.manager.recordCaught(enemy);
+          catchDestination = catchRes.destination === 'box' ? 'box' : 'team';
           if (catchRes.newBadges?.length) {
             this.pendingOutcome.newBadgeIds = [
               ...(this.pendingOutcome.newBadgeIds ?? []),
               ...catchRes.newBadges.map((b: { id: string }) => b.id),
             ];
           }
-          this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${catchRes.destination}!`);
+          const destLabel = catchDestination === 'box' ? 'Storage Box' : 'team';
+          this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${destLabel}!`);
         },
         onProgress: (p) => {
           this.state.enemy.captureProgress = 0.88 + p * 0.12;
         },
         onComplete: () => {
           this.state.enemy.captureProgress = 1;
-          this.awardVictoryRewards(true, enemy.uid);
+          this.state.enemy.faintDrop = 1;
+          this.awardVictoryRewards(true, enemy.uid, catchDestination);
         },
       });
     } else {
@@ -1906,6 +1961,7 @@ export class DojoBattleController {
       });
       this.enqueueStep({ duration: t.interTurn * 0.7 });
       this.enqueueMoveSequence('enemy', () => this.chooseEnemyMove(this.getCurrentEnemy()));
+      this.enqueueStep({ duration: t.interTurn });
       this.enqueueStep({
         duration: 0,
         onStart: () => {
@@ -1970,6 +2026,7 @@ export class DojoBattleController {
 
     this.enqueueStep({ duration: t.interTurn * 0.7 });
     this.enqueueMoveSequence('enemy', () => this.chooseEnemyMove(this.getCurrentEnemy()));
+    this.enqueueStep({ duration: t.interTurn });
     this.enqueueStep({
       duration: 0,
       onStart: () => {
@@ -1995,7 +2052,7 @@ export class DojoBattleController {
     const profile = this.storage.manager.getActiveProfile();
     const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [];
     const target = team[teamIdx];
-    if (!target || target.isFainted || target === this.playerMon) {
+    if (!target || target.isFainted || isSameMon(target, this.playerMon)) {
       return createEmptyOutcome();
     }
 
@@ -2014,6 +2071,13 @@ export class DojoBattleController {
         this.state.player.sendOutProgress = 0;
         this.state.player.displayedHp = target.hp;
         this.state.player.displayedXpRatio = Math.max(0, Math.min(1, target.xp / Math.max(1, target.xpToNext)));
+        this.state.player.hitFlash = 0;
+        this.state.player.lungeOffset = 0;
+        this.state.player.recoilOffset = 0;
+        this.state.player.bracedFlash = 0;
+        this.state.player.buffFlash = 0;
+        this.state.player.healFlash = 0;
+        this.state.player.abilityBanner = null;
         this.pendingOutcome.sfx.push('catch-throw');
         if (!this.pendingOutcome.crySpeciesIds) this.pendingOutcome.crySpeciesIds = [];
         this.pendingOutcome.crySpeciesIds.push(target.speciesId);
@@ -2056,6 +2120,7 @@ export class DojoBattleController {
     } else {
       this.enqueueStep({ duration: t.interTurn * 0.7 });
       this.enqueueMoveSequence('enemy', () => this.chooseEnemyMove(this.getCurrentEnemy()));
+      this.enqueueStep({ duration: t.interTurn });
       this.enqueueStep({
         duration: 0,
         onStart: () => {
@@ -2099,8 +2164,9 @@ export class DojoBattleController {
       const unlockedNames = unlockedIds.map((id) => getMoveEntry(id).name).filter(Boolean);
       const moveText = unlockedNames.length > 0 ? ` Learned ${unlockedNames.join(', ')}!` : '';
 
+      this.state.floatingTexts = [];
       this.state.player.buffFlash = 1;
-      this.spawnFloatingText('player', 'EVOLVED!', '#fde047', 24, 0, 1.6, -24);
+      this.spawnFloatingText('player', 'EVOLVED!', '#fde047', 24, 0, 1.6, -28);
       this.pushLog(`Congratulations! ${oldName} evolved into ${stripEmojis(res.evolution.newName)}!${moveText}`);
       this.state.evolutionTarget = undefined;
       this.setPhase('victory', 'Victory!');
@@ -2120,6 +2186,9 @@ export class DojoBattleController {
       return outcome;
     }
     this.clearTimeline();
+    this.pendingOutcome = createEmptyOutcome();
+    this.state.activeVfx = [];
+    this.state.floatingTexts = [];
     this.state.active = false;
     this.state.inputLocked = false;
     outcome.battleEnded = 'fled';
@@ -2133,9 +2202,21 @@ export class DojoBattleController {
     return outcome;
   }
 
+  private completeDefeatRecovery(): void {
+    this.defeatRecoveryPending = false;
+    this.storage.manager.healTeam(true);
+    this.storage.manager.warpToSafeZone();
+  }
+
   closeBattle(): void {
+    const needsDefeatRecovery = this.defeatRecoveryPending || this.state.phase === 'defeat';
+    if (needsDefeatRecovery) {
+      this.completeDefeatRecovery();
+    }
     this.clearTimeline();
     this.pendingOutcome = createEmptyOutcome();
+    this.state.activeVfx = [];
+    this.state.floatingTexts = [];
     this.state.active = false;
     this.setPhase('command', null);
   }

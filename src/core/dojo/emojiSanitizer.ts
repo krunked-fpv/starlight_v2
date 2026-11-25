@@ -76,11 +76,13 @@ export const EMOJI_TO_ICON_ID: Record<string, IconId> = {
 
 /**
  * Strips 100% of raw Unicode emojis / pictographs / variation selectors and cleans whitespace.
- * Guarantees safe zero-emoji strings for DOM rendering.
+ * Preserves Nidoran gender distinction as ASCII `(F)` / `(M)` so zero-emoji DOM invariants stay 100% clean.
  */
 export function stripEmojis(raw: unknown): string {
   if (raw === null || raw === undefined) return '';
   return String(raw)
+    .replace(/♀/g, ' (F)')
+    .replace(/♂/g, ' (M)')
     .replace(EMOJI_PATTERN, '')
     .replace(/\s{2,}/g, ' ')
     .trim();

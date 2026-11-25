@@ -27,6 +27,7 @@ import {
   WORLD_ROWS,
   StarlightAudioController,
   applyComposureGuardrail,
+  calculateDamage,
   containsEmoji,
   createPokemon,
   decodeGif89aBytes,
@@ -925,5 +926,321 @@ describe('Round 2 Combat State Machine, Anti-Spam Lock & v1 Parity (COMBAT-01..C
     const outPotRest = battle2.advanceUntilSettled();
     const allAb = [...(outPot.abilitySfx ?? []), ...(outPotRest.abilitySfx ?? [])];
     expect(allAb.some((a) => a.abilityId === 'starlight_grace')).toBe(false);
+  });
+});
+
+describe('Combat & Encounter Deep Audit Regression Suite', () => {
+  it('preserves post-battle wild encounter cooldown across syncFromProfile and resets streak on non-encounter tiles', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+    const ow = new DojoOverworldSim(bridge, new SpriteAssetLoader({ forceOffline: true }));
+
+    // Find a pair of adjacent walkable TALL_GRASS tiles in Whispering Forest
+    let grassRow = -1;
+    let grassStartX = -1;
+    outer: for (let y = 1; y < WORLD_ROWS - 1; y++) {
+      for (let x = 1; x < WORLD_COLS - 2; x++) {
+        if (
+          WORLD_MAP[y][x] === TILE.TALL_GRASS
+          && isTileWalkableAt(x, y)
+          && WORLD_MAP[y][x + 1] === TILE.TALL_GRASS
+          && isTileWalkableAt(x + 1, y)
+        ) {
+          grassRow = y;
+          grassStartX = x;
+          break outer;
+        }
+      }
+    }
+    expect(grassRow).toBeGreaterThan(0);
+
+    profile.pos = { x: grassStartX, y: grassRow, dir: 'right' };
+    ow.applyPostBattleCooldown();
+    ow.syncFromProfile({ preserveEncounterPacing: true });
+
+    // First 4 tall-grass steps after battle MUST NOT ambush even with random=0.001
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
+    for (let step = 1; step <= 4; step++) {
+      const dx = step % 2 === 1 ? 1 : -1;
+      const ev = ow.stepDirection(dx, 0);
+      expect(ev.moved).toBe(true);
+      expect(ev.onGrass).toBe(true);
+      expect(ev.wildEncounterTriggered, `Unexpected ambush on post-battle step ${step}`).toBeUndefined();
+    }
+    // Step 5 reaches minStepsBetweenWilds (5) and can trigger cleanly
+    const fifthEv = ow.stepDirection(1, 0);
+    randSpy.mockRestore();
+    expect(fifthEv.moved).toBe(true);
+    expect(fifthEv.wildEncounterTriggered?.biomeId).toBe('forest');
+
+    // Stepping off an encounter tile onto a non-encounter tile must reset wildStreak
+    let edgeX = -1;
+    let edgeY = -1;
+    edgeSearch: for (let y = 1; y < WORLD_ROWS - 1; y++) {
+      for (let x = 2; x < WORLD_COLS - 2; x++) {
+        if (
+          WORLD_MAP[y][x] === TILE.TALL_GRASS
+          && isTileWalkableAt(x, y)
+          && WORLD_MAP[y][x + 1] === TILE.GRASS
+          && isTileWalkableAt(x + 1, y)
+          && WORLD_MAP[y][x - 1] === TILE.TALL_GRASS
+          && isTileWalkableAt(x - 1, y)
+        ) {
+          edgeX = x;
+          edgeY = y;
+          break edgeSearch;
+        }
+      }
+    }
+    expect(edgeX).toBeGreaterThan(0);
+    profile.pos = { x: edgeX - 1, y: edgeY, dir: 'right' };
+    ow.syncFromProfile();
+    const highRand = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    // Build streak on tall grass (oscillate without triggering because random=0.99)
+    for (let i = 0; i < 6; i++) {
+      const dx = i % 2 === 0 ? 1 : -1;
+      const ev = ow.stepDirection(dx, 0);
+      expect(ev.wildEncounterTriggered).toBeUndefined();
+    }
+    // Now at edgeX-1 -> step right to edgeX (tall grass, streak=7) -> step right to edgeX+1 (plain GRASS, resets streak!)
+    expect(ow.stepDirection(1, 0).wildEncounterTriggered).toBeUndefined();
+    const offGrass = ow.stepDirection(1, 0);
+    expect(offGrass.onGrass).toBe(false);
+    // Step back onto tall grass: because streak was reset to 0, random=0.99 must NOT force guaranteed encounter
+    const backOnGrass = ow.stepDirection(-1, 0);
+    highRand.mockRestore();
+    expect(backOnGrass.onGrass).toBe(true);
+    expect(backOnGrass.wildEncounterTriggered).toBeUndefined();
+  });
+
+  it('keeps HP at 0 on Defeat screen until closeBattle(), then heals team and recalls to Starlight Village (8,15)', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+    profile.pos = { x: 50, y: 20, dir: 'down' };
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({
+      biomeId: 'volcano',
+      tier: 'shrine',
+      shrineId: 'volcano_shrine',
+      forceOfflineRig: true,
+      battlePace: 'fast',
+    });
+    battle.advanceUntilSettled();
+
+    for (let turn = 0; turn < 12 && battle.getState().phase === 'command'; turn++) {
+      battle.performMove('vine_whip');
+      battle.advanceUntilSettled();
+    }
+
+    const defeatState = battle.getState();
+    expect(defeatState.phase).toBe('defeat');
+    // HP must remain 0 on Defeat screen (never snapping/refilling to maxHp while fainted!)
+    expect(defeatState.player.mon.hp).toBe(0);
+    expect(defeatState.player.displayedHp).toBe(0);
+    expect(defeatState.player.faintDrop).toBe(1);
+    expect(profile.team[0].hp).toBe(0);
+
+    // Closing the Defeat screen heals the team and recalls cleanly to Starlight Village spawn (8,15)
+    battle.closeBattle();
+    expect(profile.team[0].hp).toBe(profile.team[0].maxHp);
+    expect(profile.pos.x).toBe(8);
+    expect(profile.pos.y).toBe(15);
+  });
+
+  it('keeps caught wild Pokémon hidden on Victory, resets stale battle buffs, and preserves Gotcha destination for Team & Storage Box', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+    profile.bag.starBalls = 5;
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true, battlePace: 'fast' });
+    battle.advanceUntilSettled();
+
+    // Give the wild Caterpie active combat buffs & shield before catching
+    const internal = battle as unknown as { enemyParty: Array<{ battleStages: { atk: number; def: number; spd: number }; shieldTurns: number }> };
+    internal.enemyParty[0].battleStages.atk = 2;
+    internal.enemyParty[0].shieldTurns = 2;
+
+    const catchSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
+    battle.throwBall('star');
+    battle.advanceUntilSettled();
+    catchSpy.mockRestore();
+
+    const teamCatchState = battle.getState();
+    expect(teamCatchState.phase).toBe('victory');
+    expect(teamCatchState.rewardSummary?.caught).toBe(true);
+    expect(teamCatchState.enemy.captureProgress).toBe(1);
+    expect(teamCatchState.enemy.faintDrop).toBe(1);
+    expect(teamCatchState.statusMessage).toContain('Gotcha!');
+    expect(teamCatchState.statusMessage).toContain('team');
+    expect(profile.team.length).toBe(2);
+    expect(profile.team[1].battleStages.atk).toBe(0);
+    expect(profile.team[1].shieldTurns).toBe(0);
+
+    // Fill remaining party slots to 6 and verify 7th catch routes to Storage Box
+    while (profile.team.length < 6) {
+      profile.team.push(createPokemon(16, 5, 'forest'));
+    }
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 19, forceOfflineRig: true, battlePace: 'fast' });
+    battle.advanceUntilSettled();
+    const boxSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
+    battle.throwBall('star');
+    battle.advanceUntilSettled();
+    boxSpy.mockRestore();
+
+    expect(profile.team.length).toBe(6);
+    expect(profile.box.length).toBe(1);
+    expect(profile.box[0].speciesId).toBe(19);
+    expect(battle.getState().statusMessage).toContain('Gotcha!');
+    expect(battle.getState().statusMessage).toContain('Storage Box');
+  });
+
+  it('handles full-HP heal move narration, voluntary switch enemy counter-attack, evolution ceremony, and Apex trait damage', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+    const lead = profile.team[0];
+    const mate = createPokemon(25, 8, 'forest');
+    profile.team.push(mate);
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true, battlePace: 'fast' });
+    battle.advanceUntilSettled();
+
+    // Voluntary switch consumes turn so enemy counter-attacks
+    const swInit = battle.switchTeamMember(1);
+    const swRest = battle.advanceUntilSettled();
+    expect(battle.getState().player.mon.speciesId).toBe(25);
+    expect(
+      swInit.vfxEvents.filter((e) => e.fromSide === 'enemy').length
+      + swRest.vfxEvents.filter((e) => e.fromSide === 'enemy').length,
+    ).toBeGreaterThanOrEqual(1);
+
+    // Full-HP Synthesis logs "already full" cleanly when Bulbasaur is healthy
+    battle.closeBattle();
+    lead.healFull();
+    profile.team = [lead];
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true, battlePace: 'fast' });
+    battle.advanceUntilSettled();
+    const synthSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    battle.performMove('synthesis');
+    battle.advanceUntilSettled();
+    synthSpy.mockRestore();
+    expect(battle.getState().battleLog.some((l) => l.includes('HP is already full'))).toBe(true);
+
+    // Evolution ceremony on level-up past Lv.16 (Bulbasaur -> Ivysaur) using type-advantaged Vine Whip vs Squirtle
+    battle.closeBattle();
+    lead.level = 15;
+    lead.recalculateStats();
+    lead.healFull();
+    lead.xp = lead.xpToNext - 1;
+    battle.startEncounter({ biomeId: 'water', tier: 'wild', forceSpeciesId: 7, forceOfflineRig: true, battlePace: 'fast' });
+    battle.advanceUntilSettled();
+    for (let t = 0; t < 8 && battle.getState().phase === 'command'; t++) {
+      battle.performMove('vine_whip');
+      battle.advanceUntilSettled();
+    }
+    expect(battle.getState().phase).toBe('evolving');
+    expect(battle.getState().evolutionTarget?.toId).toBe(2);
+    const evoOut = battle.confirmEvolution();
+    expect(evoOut.sfx).toContain('evolve');
+    expect(battle.getState().phase).toBe('victory');
+    expect(lead.speciesId).toBe(2);
+    expect(battle.getState().player.mon.speciesId).toBe(2);
+    expect(battle.getState().statusMessage).toContain('Ivysaur');
+
+    // Apex encounter trait damage parity: Apex wild mon deals strictly higher damage when applyEncounterTraits is enabled
+    const normalWild = createPokemon(19, 12, 'forest', { encounterTrait: null });
+    const apexWild = createPokemon(19, 12, 'forest', { encounterTrait: 'apex' });
+    const defender = createPokemon(1, 12, 'forest');
+    const tackle = normalWild.getMoveObjects()[0];
+    const baseDmg = calculateDamage(normalWild, defender, tackle, {
+      applyAbilities: false,
+      applyComposure: false,
+      applyEncounterTraits: true,
+      forceHit: true,
+      forceCrit: false,
+      fixedVariance: 1.0,
+    }).damage;
+    const apexDmg = calculateDamage(apexWild, defender, tackle, {
+      applyAbilities: false,
+      applyComposure: false,
+      applyEncounterTraits: true,
+      forceHit: true,
+      forceCrit: false,
+      fixedVariance: 1.0,
+    }).damage;
+    expect(apexDmg).toBeGreaterThan(baseDmg);
+  });
+
+  it('addresses playtester #9: Nidoran (F)/(M) distinction, readable cinema pacing with finished HP drain, clean Victory/Defeat popups & trail drop labels', () => {
+    // Nidoran gender distinction without violating zero-emoji DOM invariants
+    expect(getSpeciesEntry(29).name).toBe('Nidoran (F)');
+    expect(getSpeciesEntry(32).name).toBe('Nidoran (M)');
+    expect(containsEmoji(getSpeciesEntry(29).name)).toBe(false);
+    expect(containsEmoji(getSpeciesEntry(32).name)).toBe(false);
+
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+
+    // Cinema turn pacing: readable announce + impact + post-turn holds, and displayedHp fully drained when Turn 2 unlocks
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 29, forceOfflineRig: true, battlePace: 'cinema' });
+    battle.advanceUntilSettled();
+    expect(battle.getState().enemy.mon.displayName).toBe('Nidoran (F)');
+
+    battle.performMove('tackle');
+    let elapsed = 0;
+    while (battle.getState().phase !== 'command' && elapsed < 10) {
+      battle.update(0.04);
+      elapsed += 0.04;
+    }
+    expect(elapsed).toBeGreaterThanOrEqual(2.2);
+    expect(battle.getState().phase).toBe('command');
+    expect(battle.getState().player.displayedHp).toBe(battle.getState().player.mon.hp);
+    expect(battle.getState().enemy.displayedHp).toBe(battle.getState().enemy.mon.hp);
+
+    // Victory clears stale damage popups & formats trail drops cleanly without leading "a "
+    profile.team[0].level = 20;
+    profile.team[0].recalculateStats();
+    profile.team[0].healFull();
+    const dropSpy = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    for (let t = 0; t < 6 && battle.getState().phase === 'command'; t++) {
+      battle.performMove('vine_whip');
+      battle.advanceUntilSettled();
+    }
+    dropSpy.mockRestore();
+    const winSt = battle.getState();
+    expect(['victory', 'evolving']).toContain(winSt.phase);
+    expect(winSt.floatingTexts.some((ft) => ft.text.startsWith('-'))).toBe(false);
+    expect(winSt.player.abilityBanner).toBeNull();
+    expect(winSt.enemy.abilityBanner).toBeNull();
+    if (winSt.rewardSummary?.trailDrop) {
+      expect(winSt.rewardSummary.trailDrop.startsWith('a ')).toBe(false);
+    }
+
+    // Wild AI must not infinitely spam Shield moves once DEF stage >= 2
+    battle.closeBattle();
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 152, forceOfflineRig: true, battlePace: 'fast' }); // Chikorita (has Petal Guard shield)
+    battle.advanceUntilSettled();
+    const chikoInternal = battle as unknown as {
+      enemyParty: Array<{ battleStages: { def: number }; shieldTurns: number }>;
+      chooseEnemyMove: (mon: unknown) => string;
+    };
+    chikoInternal.enemyParty[0].battleStages.def = 2;
+    chikoInternal.enemyParty[0].shieldTurns = 0;
+    for (let i = 0; i < 12; i++) {
+      expect(chikoInternal.chooseEnemyMove(chikoInternal.enemyParty[0])).not.toBe('petal_guard');
+    }
   });
 });

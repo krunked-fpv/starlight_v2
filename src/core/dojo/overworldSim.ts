@@ -275,7 +275,7 @@ export class DojoOverworldSim {
     this.followerFacing = dir;
   }
 
-  syncFromProfile(): void {
+  syncFromProfile(options?: { preserveEncounterPacing?: boolean }): void {
     const profile = this.storage.getActiveProfileJSON();
     if (profile?.pos) {
       const safe = isTileWalkableAt(profile.pos.x, profile.pos.y)
@@ -288,8 +288,10 @@ export class DojoOverworldSim {
       this.facing = (safe.dir as Direction) || 'down';
       this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     }
-    this.stepsSinceWild = BALANCE.overworld.minStepsBetweenWilds;
-    this.wildStreak = 0;
+    if (!options?.preserveEncounterPacing) {
+      this.stepsSinceWild = BALANCE.overworld.minStepsBetweenWilds;
+      this.wildStreak = 0;
+    }
     this.bfsPath = [];
     this.autoInteractTarget = null;
     this.refreshState();
@@ -446,11 +448,20 @@ export class DojoOverworldSim {
     this.state.bfsPath = [];
   }
 
+  applyPostBattleCooldown(): void {
+    this.stepsSinceWild = 0;
+    this.wildStreak = 0;
+  }
+
   applyPostEscapeGrace(): void {
+    this.stepsSinceWild = 0;
+    this.wildStreak = 0;
     this.graceSteps = Math.max(this.graceSteps, BALANCE.overworld.postEscapeGraceSteps);
   }
 
   applyPostWarpGrace(): void {
+    this.stepsSinceWild = 0;
+    this.wildStreak = 0;
     this.graceSteps = Math.max(this.graceSteps, BALANCE.overworld.postWarpGraceSteps);
   }
 
@@ -464,6 +475,8 @@ export class DojoOverworldSim {
     this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     this.bfsPath = [];
     this.autoInteractTarget = null;
+    this.stepsSinceWild = 0;
+    this.wildStreak = 0;
     this.graceSteps = BALANCE.overworld.postWarpGraceSteps;
     this.state.biomeBannerTimer = 2.6;
     this.refreshState();
@@ -484,6 +497,8 @@ export class DojoOverworldSim {
     this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     this.bfsPath = [];
     this.autoInteractTarget = null;
+    this.stepsSinceWild = 0;
+    this.wildStreak = 0;
     this.graceSteps = BALANCE.overworld.postWarpGraceSteps;
     this.state.biomeBannerTimer = 2.6;
     this.refreshState();
@@ -502,6 +517,8 @@ export class DojoOverworldSim {
     this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     this.bfsPath = [];
     this.autoInteractTarget = null;
+    this.stepsSinceWild = 0;
+    this.wildStreak = 0;
     this.graceSteps = BALANCE.overworld.postWarpGraceSteps;
     this.state.biomeBannerTimer = 2.6;
     this.refreshState();
@@ -670,7 +687,7 @@ export class DojoOverworldSim {
             this.autoInteractTarget = null;
             const depthInfo = getTileDepthInfo(this.tileX, this.tileY);
             const depthTier = depthInfo?.depthTier ?? 0;
-            const rareChance = depthTier >= 2 ? 0.28 : depthTier === 1 ? 0.12 : 0.05;
+            const rareChance = depthTier >= 2 ? 0.06 : depthTier === 1 ? 0.035 : 0.02;
             const isRarePatch = Boolean(depthInfo?.isRarePatch) || Math.random() < rareChance;
             wildEncounterTriggered = {
               biomeId: encounterBiome,
@@ -679,6 +696,9 @@ export class DojoOverworldSim {
             };
           }
         }
+      } else {
+        // v1 overworld.js:2661 parity: stepping off encounter tiles resets consecutive wild streak
+        this.wildStreak = 0;
       }
     }
 

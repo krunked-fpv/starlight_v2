@@ -613,6 +613,7 @@ export class StarlightApp {
 
       onTriggerEncounter: (tier: EncounterTier) => {
         this.ensureAudioUnlocked();
+        if (this.screen === 'battle' && this.battleController.isActive()) return;
         this.handleStartBattle({
           biomeId: this.overworldSim.getState().currentBiomeId,
           tier,
@@ -645,16 +646,7 @@ export class StarlightApp {
 
       onBattleFlee: () => {
         this.ensureAudioUnlocked();
-        const outcome = this.battleController.flee();
-        this.applyBattleOutcome(outcome);
-        if (outcome.battleEnded === 'fled') {
-          this.overworldSim.applyPostEscapeGrace();
-          this.overworldSim.syncFromProfile();
-          this.screen = 'overworld';
-          this.syncBgmForCurrentScreen();
-          this.showToast('Escaped safely.');
-          this.syncUI();
-        }
+        this.handleFleeBattle();
       },
 
       onBattleToggleOfflineRig: () => {
@@ -949,6 +941,12 @@ export class StarlightApp {
 
   private handleSelectTrainer(trainerId: TrainerId): void {
     this.storage.manager.selectTrainer(trainerId);
+    const liveProfile = this.storage.manager.getActiveProfile();
+    const liveTeam = Array.isArray(liveProfile?.team) ? liveProfile.team : [];
+    if (liveTeam.length > 0 && !liveTeam.some((m: { isFainted?: boolean; hp?: number }) => m && !m.isFainted && (m.hp ?? 0) > 0)) {
+      this.storage.manager.healTeam(true);
+      this.storage.manager.warpToSafeZone();
+    }
     const profile = this.storage.getActiveProfileJSON();
     this.overworldSim.syncFromProfile();
     this.briefing = null;
@@ -1036,7 +1034,13 @@ export class StarlightApp {
       this.briefing = null;
       this.dialogue = null;
       if (this.battleController.isActive()) {
+        const wasDefeat = this.battleController.getState().phase === 'defeat';
+        this.clearBattleTimers();
         this.battleController.closeBattle();
+        if (wasDefeat) {
+          this.overworldSim.applyPostWarpGrace();
+          this.overworldSim.syncFromProfile({ preserveEncounterPacing: true });
+        }
       }
       if (this.skyHopController.getState().active) {
         this.skyHopController.close();
@@ -1045,6 +1049,7 @@ export class StarlightApp {
     }
     if (screen === 'title' || screen === 'starter') {
       this.clearToast();
+      this.clearBattleTimers();
       this.briefing = null;
       this.dialogue = null;
       this.battleController.closeBattle();
@@ -1122,16 +1127,36 @@ export class StarlightApp {
     });
   }
 
+  private handleFleeBattle(): void {
+    const outcome = this.battleController.flee();
+    this.applyBattleOutcome(outcome);
+    if (outcome.battleEnded === 'fled') {
+      this.clearBattleTimers();
+      this.clearMovementInputs();
+      const fleeMsg = this.battleController.getState().statusMessage || 'Got away safely!';
+      this.overworldSim.applyPostBattleCooldown();
+      this.overworldSim.applyPostEscapeGrace();
+      this.overworldSim.syncFromProfile({ preserveEncounterPacing: true });
+      this.screen = 'overworld';
+      this.syncBgmForCurrentScreen();
+      this.showToast(fleeMsg);
+      this.syncUI();
+    }
+  }
+
   private handleCloseBattleResult(): void {
     this.clearBattleTimers();
     const meta = this.battleController.getLastEncounterMeta();
     const wasDefeat = meta.phase === 'defeat';
     const wasVictory = meta.phase === 'victory';
     this.battleController.closeBattle();
-    this.overworldSim.syncFromProfile();
-
+    this.overworldSim.applyPostBattleCooldown();
     if (wasDefeat) {
       this.overworldSim.applyPostWarpGrace();
+    }
+    this.overworldSim.syncFromProfile({ preserveEncounterPacing: true });
+
+    if (wasDefeat) {
       this.audio.playSafeRecall();
       this.showToast('Your team rested safely at Starlight Village Healing Fountain!');
     } else if (wasVictory) {
@@ -1785,7 +1810,7 @@ export class StarlightApp {
         const isSwitchDrawerOpen = Boolean(switchDrawerOpenEl)
           || switchToggleBtn?.getAttribute('aria-pressed') === 'true';
 
-        // Arrow/WASD keyboard focus navigation across active battle controls
+        // Arrow keyboard focus navigation across active battle controls (skip utility rig toggle, prioritize active drawer/result/moves)
         if (
           code === 'ArrowUp'
           || code === 'ArrowDown'
@@ -1794,9 +1819,21 @@ export class StarlightApp {
         ) {
           const battleRoot = document.querySelector('[data-testid="battle-screen"]');
           if (battleRoot) {
-            const focusables = Array.from(
-              battleRoot.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
-            ).filter((btn) => !btn.closest('[hidden]') && btn.offsetParent !== null);
+            const isVisibleBtn = (btn: HTMLButtonElement) =>
+              !btn.disabled && !btn.closest('[hidden]') && btn.offsetParent !== null;
+            let scopeRoot: Element = battleRoot;
+            if (bState.phase === 'evolving' || bState.phase === 'victory' || bState.phase === 'defeat') {
+              scopeRoot = battleRoot.querySelector('[data-testid="battle-result-banner"]') ?? battleRoot;
+            } else if (bState.phase === 'forced-switch' || isSwitchDrawerOpen) {
+              scopeRoot = battleRoot.querySelector('[data-testid="battle-switch-drawer"]') ?? battleRoot;
+            }
+            const rawFocusables = Array.from(
+              scopeRoot.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'),
+            ).filter((btn) => isVisibleBtn(btn) && btn.getAttribute('data-testid') !== 'battle-offline-rig');
+            // Order move buttons first during command phase so ArrowRight/ArrowDown starts on Move 1
+            const moveBtns = rawFocusables.filter((btn) => btn.getAttribute('data-testid')?.startsWith('battle-move-'));
+            const otherBtns = rawFocusables.filter((btn) => !btn.getAttribute('data-testid')?.startsWith('battle-move-'));
+            const focusables = moveBtns.length > 0 ? [...moveBtns, ...otherBtns] : rawFocusables;
             if (focusables.length > 0) {
               e.preventDefault();
               const curIdx = focusables.indexOf(document.activeElement as HTMLButtonElement);
@@ -1855,17 +1892,8 @@ export class StarlightApp {
           }
           if (code === 'KeyR' && bState.canRun) {
             e.preventDefault();
-            this.clearBattleTimers();
-            const outcome = this.battleController.flee();
-            this.applyBattleOutcome(outcome);
-            if (outcome.battleEnded === 'fled') {
-              this.overworldSim.applyPostEscapeGrace();
-              this.overworldSim.syncFromProfile();
-              this.screen = 'overworld';
-              this.syncBgmForCurrentScreen();
-              this.showToast('Escaped safely.');
-              this.syncUI();
-            }
+            this.ensureAudioUnlocked();
+            this.handleFleeBattle();
             return;
           }
         }
@@ -1891,6 +1919,27 @@ export class StarlightApp {
             activeBtn.click();
             return;
           }
+          if (bState.phase === 'forced-switch') {
+            const firstSwitch = document.querySelector<HTMLButtonElement>(
+              '[data-testid="battle-switch-drawer"] [data-testid^="battle-switch-slot-"]:not(:disabled)',
+            );
+            if (firstSwitch) {
+              e.preventDefault();
+              firstSwitch.focus();
+            }
+            return;
+          }
+          if (bState.phase === 'command' && !bState.inputLocked && !isSwitchDrawerOpen) {
+            const firstMove = document.querySelector<HTMLButtonElement>(
+              '[data-testid="battle-screen"] [data-testid^="battle-move-"]:not(:disabled)',
+            );
+            if (firstMove) {
+              e.preventDefault();
+              firstMove.focus();
+              firstMove.click();
+            }
+            return;
+          }
         }
         if (code === 'Escape' || code === 'KeyX' || code === 'Backspace') {
           e.preventDefault();
@@ -1905,17 +1954,7 @@ export class StarlightApp {
           if (bState.phase === 'victory' || bState.phase === 'defeat') {
             this.handleCloseBattleResult();
           } else if (code === 'Escape' && bState.phase === 'command' && !bState.inputLocked) {
-            this.clearBattleTimers();
-            const outcome = this.battleController.flee();
-            this.applyBattleOutcome(outcome);
-            if (outcome.battleEnded === 'fled') {
-              this.overworldSim.applyPostEscapeGrace();
-              this.overworldSim.syncFromProfile();
-              this.screen = 'overworld';
-              this.syncBgmForCurrentScreen();
-              this.showToast('Escaped safely.');
-              this.syncUI();
-            }
+            this.handleFleeBattle();
           }
         }
         return;
@@ -2147,26 +2186,37 @@ export class StarlightApp {
         this.handleOverworldStepEvent(stepEv);
         if (stepEv.moved) needsImmediateUiSync = true;
       }
-      const owState = this.overworldSim.getState();
-      this.overworldRenderer.update(owState, dtSeconds);
 
-      const occludedByModal = isDrawerScreen(this.screen) || this.screen === 'settings';
-      let shouldRenderOverworld = true;
-      if (occludedByModal && dtSeconds > 0.0001) {
-        this.modalBgRenderAccum += dtSeconds;
-        if (this.modalBgRenderAccum < 0.25) {
-          shouldRenderOverworld = false;
-        } else {
-          this.modalBgRenderAccum = 0;
-        }
-      } else {
-        this.modalBgRenderAccum = 0.25;
-      }
-
-      if (shouldRenderOverworld) {
+      // If a wild encounter just triggered this tick, immediately render the first battle shutter frame
+      // instead of flashing 1 stale Overworld frame!
+      if ((this.screen as ActiveScreen) === 'battle') {
+        const bState = this.battleController.getState();
+        this.battleRenderer.update(bState, dtSeconds);
         backend.beginFrame(elapsedSeconds, dtSeconds);
-        this.overworldRenderer.render(backend, owState);
+        this.battleRenderer.render(backend, bState);
         backend.endFrame();
+      } else {
+        const owState = this.overworldSim.getState();
+        this.overworldRenderer.update(owState, dtSeconds);
+
+        const occludedByModal = isDrawerScreen(this.screen) || this.screen === 'settings';
+        let shouldRenderOverworld = true;
+        if (occludedByModal && dtSeconds > 0.0001) {
+          this.modalBgRenderAccum += dtSeconds;
+          if (this.modalBgRenderAccum < 0.25) {
+            shouldRenderOverworld = false;
+          } else {
+            this.modalBgRenderAccum = 0;
+          }
+        } else {
+          this.modalBgRenderAccum = 0.25;
+        }
+
+        if (shouldRenderOverworld) {
+          backend.beginFrame(elapsedSeconds, dtSeconds);
+          this.overworldRenderer.render(backend, owState);
+          backend.endFrame();
+        }
       }
     }
 
