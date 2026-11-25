@@ -18,6 +18,7 @@ export class StarlightAudioController {
 
   constructor() {
     this.engine = createAudioEngine();
+    this.synthesizeDeterministicWaveform(25, 420, 'pulse12');
   }
 
   unlock(): void {
@@ -174,13 +175,16 @@ export class StarlightAudioController {
         let peak = 0;
         for (let i = 0; i < 128; i++) {
           const sample = live[i * 2] ?? 0;
-          this.waveformSamples[i] = sample;
           if (Math.abs(sample) > peak) peak = Math.abs(sample);
         }
-        if (peak > 0.01) {
+        if (peak > 0.02) {
+          const outSamples = new Float32Array(128);
+          for (let i = 0; i < 128; i++) {
+            outSamples[i] = live[i * 2] ?? 0;
+          }
           return {
             speciesId: id,
-            samples: new Float32Array(this.waveformSamples),
+            samples: outSamples,
             peakAmplitude: Math.min(1, peak),
             playing: true,
           };
@@ -191,6 +195,7 @@ export class StarlightAudioController {
     }
 
     if (id !== this.lastCrySpeciesId) {
+      this.lastCrySpeciesId = id;
       const sp = SPECIES[id];
       const baseHz = 180 + ((id * 37) % 440);
       this.synthesizeDeterministicWaveform(id, baseHz, sp?.type === 'electric' ? 'pulse12' : 'triangle');

@@ -589,20 +589,20 @@ function bakeTerrainAtlases() {
     for (let x = 9; x <= 19; x++) s.setPixel(x, 14, 88, 56, 32, 255);
     return s;
   })();
-  // 15: HEAL (starlight healing pad on sanctum/rune flagstone)
+  // 15: HEAL (starlight healing pad on sanctum/rune flagstone — refined carved stone seal)
   tiles[15] = (() => {
-    const h = blendTiles(M.sanctumFloor, M.runeFlagstone, () => 0.35);
+    const h = blendTiles(M.sanctumFloor, M.runeFlagstone, () => 0.45);
     for (let y = 0; y < 32; y++) {
       for (let x = 0; x < 32; x++) {
         const dx = Math.abs(x - 15.5);
         const dy = Math.abs(y - 15.5);
         const dist = Math.hypot(dx, dy);
-        if (Math.abs(dist - 11) < 1.2) {
-          h.setPixel(x, y, 86, 238, 255, 255);
-        } else if ((dx < 2.2 && dy < 7.5) || (dy < 2.2 && dx < 7.5)) {
-          h.setPixel(x, y, 128, 255, 212, 255);
-        } else if (dist < 3.5) {
-          h.setPixel(x, y, 224, 255, 255, 255);
+        if (Math.abs(dist - 11.5) < 1.1) {
+          h.blendPixel(x, y, 108, 226, 248, 200);
+        } else if (Math.abs(dx + dy - 7.5) < 1.0) {
+          h.blendPixel(x, y, 134, 244, 214, 210);
+        } else if (dist < 2.6) {
+          h.blendPixel(x, y, 196, 250, 255, 220);
         }
       }
     }
@@ -648,15 +648,17 @@ function bakeTerrainAtlases() {
   tiles[21] = M.iceWall.clone();
   tiles[22] = M.snowIce.clone();
   tiles[23] = buildPathVariant(M.snowIce, M.path, [146, 198, 224], 0.7);
-  // 24: RUNE_TRAIL
+  // 24: RUNE_TRAIL (carved twilight flagstone with subtle recessed starlight diamond inlay)
   tiles[24] = (() => {
     const r = M.runeFlagstone.clone();
     for (let y = 0; y < 32; y++) {
       for (let x = 0; x < 32; x++) {
         const dx = Math.abs(x - 15.5);
         const dy = Math.abs(y - 15.5);
-        if ((dx < 1.6 && dy < 12) || (dy < 1.6 && dx < 12) || Math.abs(dx + dy - 10) < 0.9) {
-          r.setPixel(x, y, 108, 240, 255, 255);
+        if (Math.abs(dx + dy - 7.5) < 0.9) {
+          r.blendPixel(x, y, 134, 218, 246, 175);
+        } else if (dx + dy < 2.2) {
+          r.blendPixel(x, y, 238, 206, 128, 200);
         }
       }
     }
@@ -787,60 +789,60 @@ function bakeTerrainAtlases() {
         let ea = 0;
 
         if (id === 18) {
-          // Lava molten veins & yellow-white hot cores
-          if (r > 125 && r >= g && r > b * 1.4) {
+          // Lava molten fissures & bright orange-yellow hot veins only
+          if (r > 185 && g > 70 && r > b * 2.0) {
             er = r;
-            eg = Math.round(g * 0.94);
-            eb = Math.round(b * 0.65);
-            ea = 240;
-          }
-        } else if (id === 19 || id === 20) {
-          // Volcano embers
-          if ((r >= 100 && r - b >= 35) || (r > 140 && r > b * 1.35)) {
-            er = Math.min(255, r + 45);
-            eg = Math.min(255, g + 18);
-            eb = b;
+            eg = Math.round(g * 0.88);
+            eb = Math.round(b * 0.55);
             ea = 195;
           }
+        } else if (id === 19 || id === 20) {
+          // Volcano floor: ONLY tiny glowing ember cracks, never the basalt body
+          if (r > 195 && g > 105 && r - b >= 95) {
+            er = r;
+            eg = Math.round(g * 0.85);
+            eb = Math.round(b * 0.6);
+            ea = 140;
+          }
         } else if (id === 15 || id === 16 || id === 24) {
-          // Heal pad, Shrine, Rune trail
-          if ((b > 180 && g > 180) || (r > 210 && g > 175 && b < 140)) {
+          // Heal pad, Shrine, Rune trail subtle carved glow
+          if ((b > 205 && g > 200 && b > r + 25) || (r > 225 && g > 192 && b < 140)) {
             er = r;
             eg = g;
             eb = b;
-            ea = 225;
+            ea = 145;
           }
         } else if (id === 25) {
-          // Lantern glow pool
-          if (r > 215 && g > 175 && lum > 170) {
+          // Lantern ground warm glow core
+          if (r > 235 && g > 195 && lum > 195) {
             er = r;
             eg = g;
             eb = b;
-            ea = 215;
+            ea = 165;
           }
         } else if (id === 46 || id === 47 || id === 48) {
-          // Rift floor/path/wall stars & void seams
-          if (lum >= 48 || b >= 95 || (r >= 76 && b >= 84)) {
-            er = Math.min(255, Math.round(r * 1.8));
-            eg = Math.min(255, Math.round(g * 1.8));
-            eb = Math.min(255, Math.round(b * 1.9));
-            ea = 215;
-          }
-        } else if (id === 58 || id === 59 || id === 60) {
-          // Terastal crystal facets
-          if (lum > 192 || (b > 220 && g > 185)) {
+          // Rift floor/path/wall: ONLY bright starlight specks & crystal edges, NEVER the dark stone body
+          if (lum >= 145 || (b >= 210 && r >= 150)) {
             er = r;
             eg = g;
             eb = b;
-            ea = 200;
+            ea = 145;
+          }
+        } else if (id === 58 || id === 59 || id === 60) {
+          // Terastal crystal specular facets only
+          if (lum > 228 || (b > 238 && g > 215 && r > 180)) {
+            er = r;
+            eg = g;
+            eb = b;
+            ea = 135;
           }
         } else if (id === 8 || id === 9 || id === 10 || id === 21 || id === 33 || id === 49 || id === 50) {
           // Crystal & biolume flecks
-          if ((b > 195 && g > 175 && b > r + 25) || (r > 175 && b > 210 && b > g + 35)) {
+          if ((b > 215 && g > 195 && b > r + 35) || (r > 195 && b > 225 && b > g + 45)) {
             er = r;
             eg = g;
             eb = b;
-            ea = 195;
+            ea = 145;
           }
         }
 
@@ -932,52 +934,54 @@ function bakePropsAtlases() {
 
         switch (p.id) {
           case 'cottage_violet':
-            // Warm glowing windows
-            emit = r >= 215 && g >= 165 && b <= 155;
+            // Warm glowing windows only
+            emit = r >= 225 && g >= 175 && b <= 135;
+            ea = 175;
             break;
           case 'cottage_lab':
-            // Cyan skylight/window glass & warm accent lamps
-            emit = (b >= 200 && g >= 205 && b - r >= 20) || (r >= 240 && g >= 215 && b >= 180);
+            // Cyan skylight/window glass only (avoid blowing out cream plaster/roof)
+            emit = b >= 205 && g >= 205 && b - r >= 28;
+            ea = 175;
             break;
           case 'lantern':
             // Warm lantern glass flame
-            emit = r >= 195 && g >= 165 && lum >= 165;
-            ea = 245;
+            emit = r >= 210 && g >= 180 && lum >= 185;
+            ea = 195;
             break;
           case 'shrine_open':
             // Cyan/mint glowing shrine crystals
-            emit = (g >= 175 && b >= 175 && g + b - 2 * r > 18) || (lum > 205 && b >= r);
-            ea = 240;
+            emit = g >= 185 && b >= 185 && g + b - 2 * r > 28;
+            ea = 185;
             break;
           case 'shrine_cleared':
             // Soft amber residual crystal glow
-            emit = r >= 225 && g >= 185 && b <= 175;
-            ea = 150;
+            emit = r >= 230 && g >= 190 && b <= 155;
+            ea = 125;
             break;
           case 'fountain':
-            // Luminous cyan water & crest foam
-            emit = b >= 185 && g >= 170 && b > r + 18;
-            ea = 195;
+            // Luminous cyan water highlights
+            emit = b >= 200 && g >= 185 && b > r + 25;
+            ea = 155;
             break;
           case 'prop_mushroom':
             // Bioluminescent cyan & lavender spots
-            emit = (b >= 185 && g >= 155 && b > r + 20) || (b >= 215 && r >= 135 && b > g + 35);
-            ea = 230;
+            emit = (b >= 195 && g >= 165 && b > r + 25) || (b >= 220 && r >= 145 && b > g + 40);
+            ea = 175;
             break;
           case 'prop_crystal':
             // Faceted glowing crystal cluster
-            emit = (b >= 175 && g >= 145 && b > r + 20) || (lum > 215 && b >= 215);
-            ea = 235;
+            emit = b >= 195 && g >= 165 && b > r + 25;
+            ea = 175;
             break;
           case 'landmark_obelisk':
             // Carved glowing runes
-            emit = (b >= 160 && g >= 150 && b > r + 30) || (lum > 210 && b >= 195);
-            ea = 240;
+            emit = b >= 180 && g >= 170 && b > r + 35;
+            ea = 185;
             break;
           case 'landmark_observatory':
-            // Brass dome highlights & starlight lens glint
-            emit = (r >= 215 && g >= 170 && b <= 145) || lum > 225;
-            ea = 210;
+            // Starlight telescope lens glint & brass lamp
+            emit = (r >= 225 && g >= 185 && b <= 135) || (b >= 225 && g >= 215 && b > r + 20);
+            ea = 165;
             break;
           case 'chest_open':
             // Treasure gleam inside open chest

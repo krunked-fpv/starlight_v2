@@ -492,23 +492,38 @@ export class SkyHopRenderer implements ISkyHopRenderer {
     lobeCount: number,
   ): void {
     const baseY = Math.round(h * baseYNorm);
-    const span = w / lobeCount;
+    const span = w / Math.max(4, lobeCount);
     const offset = ((scroll * w * 0.28) % span + span) % span;
-    const pxW = Math.max(8, Math.round(span * 0.18));
+    const step = 4;
+
+    // Soft solid cloud deck foundation below billows
+    ctx.fillStyle = bodyHex;
+    ctx.globalAlpha = 0.72;
+    ctx.fillRect(0, baseY + 6, w, Math.max(0, h - baseY));
 
     for (let i = -1; i <= lobeCount + 2; i++) {
       const cx = Math.round(i * span - offset);
-      const puffH = Math.round(14 + ((i * 7) % 3) * 8);
-      const cy = baseY - puffH;
+      const halfSpan = Math.round(span * 0.62);
+      const puffH = Math.round(14 + Math.abs(Math.sin(i * 1.9)) * 16);
+
+      // Stepped pixel dome (smooth rounded 16-bit cloud silhouette, zero flat blocks)
+      const tiers = [
+        { dy: -puffH, hw: Math.round(halfSpan * 0.34), h: step },
+        { dy: -puffH + step, hw: Math.round(halfSpan * 0.56), h: step * 2 },
+        { dy: -puffH + step * 3, hw: Math.round(halfSpan * 0.78), h: step * 2 },
+        { dy: -puffH + step * 5, hw: halfSpan, h: puffH + 12 },
+      ];
+
       ctx.fillStyle = rimHex;
-      ctx.globalAlpha = 0.32;
-      ctx.fillRect(cx - pxW * 2, cy - 3, pxW * 4, 4);
-      ctx.fillRect(cx - pxW, cy - 7, pxW * 2, 4);
+      ctx.globalAlpha = 0.28;
+      ctx.fillRect(cx - tiers[0].hw, baseY + tiers[0].dy - 2, tiers[0].hw * 2, step);
+      ctx.fillRect(cx - tiers[1].hw, baseY + tiers[1].dy - 2, tiers[1].hw * 2, step);
 
       ctx.fillStyle = bodyHex;
-      ctx.globalAlpha = 0.9;
-      ctx.fillRect(cx - pxW * 2 - 4, cy, pxW * 4 + 8, h - cy);
-      ctx.fillRect(cx - pxW, cy - 4, pxW * 2, puffH + 4);
+      ctx.globalAlpha = 0.62;
+      for (const tier of tiers) {
+        ctx.fillRect(cx - tier.hw, baseY + tier.dy, tier.hw * 2, tier.h);
+      }
     }
     ctx.globalAlpha = 1;
   }

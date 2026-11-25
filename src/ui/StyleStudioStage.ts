@@ -92,14 +92,102 @@ export function drawPixelTrainerStageCharacter(
   if (look.cape) {
     const sway = Math.round(Math.sin(t * 3.2) * 3 * s);
     ctx.fillStyle = look.accentDark;
-    ctx.fillRect(Math.round(-15 * s + sway * 0.4), Math.round(-12 * s), Math.round(30 * s), Math.round(32 * s));
+    ctx.fillRect(Math.round(-17 * s + sway * 0.4), Math.round(-12 * s), Math.round(34 * s), Math.round(34 * s));
     ctx.fillStyle = look.outfitSecondary;
-    ctx.fillRect(Math.round(-13 * s + sway * 0.4), Math.round(14 * s), Math.round(26 * s), Math.round(4 * s));
+    ctx.fillRect(Math.round(-15 * s + sway * 0.4), Math.round(16 * s), Math.round(30 * s), Math.round(4 * s));
   }
 
-  // 3. Pixel JRPG Character Sprite (scaled crisply from atlas OR pixel body wearing exact Outfit/Accessory)
+  // 3. Curated Pixel JRPG Character Sprite from characters-atlas (with live outfit accent badge & crisp accessory overlay)
+  const regionId = `${look.id}_down`;
+  const charRegion = options.manifest?.sheets?.characters?.regions?.[regionId];
   const px = Math.max(2, Math.round(2.4 * s));
-  // Boots & legs
+
+  if (options.charactersSheet && charRegion && charRegion.w > 0 && charRegion.h > 0) {
+    const drawSize = Math.round(48 * s);
+    const dx = Math.round(-drawSize * 0.5);
+    const dy = Math.round(-drawSize * 0.52);
+
+    // Draw crisp nearest-neighbor pixel trainer sprite
+    ctx.drawImage(
+      options.charactersSheet,
+      charRegion.x,
+      charRegion.y,
+      charRegion.w,
+      charRegion.h,
+      dx,
+      dy,
+      drawSize,
+      drawSize,
+    );
+
+    // Subtle outfit color sash / accent scarf when non-default outfit style is equipped
+    if (look.styleId !== 'default') {
+      ctx.fillStyle = look.outfitPrimary;
+      ctx.fillRect(Math.round(-9 * s), Math.round(1 * s), Math.round(18 * s), Math.round(5 * s));
+      ctx.fillStyle = look.outfitSecondary;
+      ctx.fillRect(Math.round(-3 * s), Math.round(1 * s), Math.round(6 * s), Math.round(9 * s));
+      ctx.fillStyle = look.accent;
+      ctx.fillRect(Math.round(-9 * s), Math.round(1 * s), Math.round(18 * s), Math.round(2 * s));
+    }
+
+    // Crisp pixel accessory overlay anchored accurately to the sprite's head
+    switch (look.accessory) {
+      case 'crown':
+        ctx.fillStyle = '#ffd566';
+        ctx.fillRect(Math.round(-9 * s), Math.round(-26 * s), Math.round(18 * s), Math.round(4 * s));
+        ctx.fillRect(Math.round(-9 * s), Math.round(-30 * s), Math.round(4 * s), Math.round(4 * s));
+        ctx.fillRect(Math.round(-2 * s), Math.round(-31 * s), Math.round(4 * s), Math.round(5 * s));
+        ctx.fillRect(Math.round(5 * s), Math.round(-30 * s), Math.round(4 * s), Math.round(4 * s));
+        break;
+      case 'wizard':
+        ctx.fillStyle = look.accentDark;
+        ctx.fillRect(Math.round(-14 * s), Math.round(-24 * s), Math.round(28 * s), Math.round(4 * s));
+        ctx.fillRect(Math.round(-9 * s), Math.round(-33 * s), Math.round(18 * s), Math.round(9 * s));
+        ctx.fillRect(Math.round(-4 * s), Math.round(-38 * s), Math.round(8 * s), Math.round(5 * s));
+        ctx.fillStyle = '#ffd566';
+        ctx.fillRect(Math.round(-9 * s), Math.round(-26 * s), Math.round(18 * s), Math.round(2 * s));
+        break;
+      case 'headband':
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(Math.round(-11 * s), Math.round(-20 * s), Math.round(22 * s), Math.round(3 * s));
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(Math.round(9 * s), Math.round(-22 * s), Math.round(5 * s), Math.round(6 * s));
+        break;
+      case 'goggles':
+        ctx.fillStyle = '#cbd5e1';
+        ctx.fillRect(Math.round(-11 * s), Math.round(-21 * s), Math.round(22 * s), Math.round(4 * s));
+        ctx.fillStyle = '#38bdf8';
+        ctx.fillRect(Math.round(-9 * s), Math.round(-21 * s), Math.round(7 * s), Math.round(4 * s));
+        ctx.fillRect(Math.round(2 * s), Math.round(-21 * s), Math.round(7 * s), Math.round(4 * s));
+        break;
+      case 'halo':
+        ctx.fillStyle = '#fff59d';
+        ctx.fillRect(Math.round(-10 * s), Math.round(-31 * s), Math.round(20 * s), Math.round(3 * s));
+        ctx.fillStyle = '#7ce8ff';
+        ctx.fillRect(Math.round(-6 * s), Math.round(-31 * s), Math.round(12 * s), Math.round(2 * s));
+        break;
+      case 'visor':
+        ctx.fillStyle = '#67e8f9';
+        ctx.fillRect(Math.round(-10 * s), Math.round(-14 * s), Math.round(20 * s), Math.round(4 * s));
+        break;
+      case 'antlers':
+        ctx.fillStyle = '#a16207';
+        ctx.fillRect(Math.round(-12 * s), Math.round(-31 * s), Math.round(4 * s), Math.round(8 * s));
+        ctx.fillRect(Math.round(8 * s), Math.round(-31 * s), Math.round(4 * s), Math.round(8 * s));
+        ctx.fillStyle = '#f9a8d4';
+        ctx.fillRect(Math.round(-14 * s), Math.round(-33 * s), Math.round(5 * s), Math.round(4 * s));
+        ctx.fillRect(Math.round(9 * s), Math.round(-33 * s), Math.round(5 * s), Math.round(4 * s));
+        break;
+      case 'cap':
+      default:
+        break;
+    }
+
+    ctx.restore();
+    return;
+  }
+
+  // Fallback headless-only pixel silhouette when atlas sheet is unavailable
   ctx.fillStyle = '#1e293b';
   ctx.fillRect(-4 * px, 4 * px, 3 * px, 5 * px);
   ctx.fillRect(1 * px, 4 * px, 3 * px, 5 * px);
@@ -107,17 +195,14 @@ export function drawPixelTrainerStageCharacter(
   ctx.fillRect(-4 * px, 8 * px, 3 * px, 2 * px);
   ctx.fillRect(1 * px, 8 * px, 3 * px, 2 * px);
 
-  // Coat / Outfit
   ctx.fillStyle = look.outfitPrimary;
   ctx.fillRect(-5 * px, -4 * px, 10 * px, 8 * px);
   ctx.fillStyle = look.outfitSecondary;
   ctx.fillRect(-2 * px, -4 * px, 4 * px, 3 * px);
-  // Arms
   ctx.fillStyle = look.outfitPrimary;
   ctx.fillRect(-7 * px, -3 * px, 2 * px, 6 * px);
   ctx.fillRect(5 * px, -3 * px, 2 * px, 6 * px);
 
-  // Head & Hair
   ctx.fillStyle = look.skin;
   ctx.fillRect(-4 * px, -11 * px, 8 * px, 7 * px);
   ctx.fillStyle = look.hair;
@@ -125,67 +210,9 @@ export function drawPixelTrainerStageCharacter(
   ctx.fillRect(-5 * px, -11 * px, 1 * px, 4 * px);
   ctx.fillRect(4 * px, -11 * px, 1 * px, 4 * px);
 
-  // Eyes
   ctx.fillStyle = '#10152e';
   ctx.fillRect(-2 * px, -8 * px, px, 2 * px);
   ctx.fillRect(1 * px, -8 * px, px, 2 * px);
-
-  // 4. Accessory overlay (all 8 accessories!)
-  switch (look.accessory) {
-    case 'crown':
-      ctx.fillStyle = '#ffd566';
-      ctx.fillRect(-4 * px, -15 * px, 8 * px, 2 * px);
-      ctx.fillRect(-4 * px, -17 * px, 2 * px, 2 * px);
-      ctx.fillRect(-1 * px, -17 * px, 2 * px, 2 * px);
-      ctx.fillRect(2 * px, -17 * px, 2 * px, 2 * px);
-      break;
-    case 'wizard':
-      ctx.fillStyle = look.accentDark;
-      ctx.fillRect(-6 * px, -14 * px, 12 * px, 2 * px);
-      ctx.fillRect(-4 * px, -19 * px, 8 * px, 5 * px);
-      ctx.fillRect(-2 * px, -22 * px, 4 * px, 3 * px);
-      ctx.fillStyle = '#ffd566';
-      ctx.fillRect(-4 * px, -15 * px, 8 * px, px);
-      break;
-    case 'headband':
-      ctx.fillStyle = '#fbbf24';
-      ctx.fillRect(-5 * px, -12 * px, 10 * px, 2 * px);
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(4 * px, -13 * px, 2 * px, 3 * px);
-      break;
-    case 'goggles':
-      ctx.fillStyle = '#94a3b8';
-      ctx.fillRect(-5 * px, -13 * px, 10 * px, 2 * px);
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(-4 * px, -13 * px, 3 * px, 2 * px);
-      ctx.fillRect(1 * px, -13 * px, 3 * px, 2 * px);
-      break;
-    case 'halo':
-      ctx.fillStyle = '#fff59d';
-      ctx.fillRect(-4 * px, -17 * px, 8 * px, 2 * px);
-      ctx.fillStyle = '#7ce8ff';
-      ctx.fillRect(-2 * px, -17 * px, 4 * px, px);
-      break;
-    case 'visor':
-      ctx.fillStyle = '#67e8f9';
-      ctx.fillRect(-4 * px, -9 * px, 8 * px, 2 * px);
-      break;
-    case 'antlers':
-      ctx.fillStyle = '#a16207';
-      ctx.fillRect(-5 * px, -17 * px, 2 * px, 4 * px);
-      ctx.fillRect(3 * px, -17 * px, 2 * px, 4 * px);
-      ctx.fillStyle = '#f9a8d4';
-      ctx.fillRect(-6 * px, -18 * px, 2 * px, 2 * px);
-      ctx.fillRect(4 * px, -18 * px, 2 * px, 2 * px);
-      break;
-    case 'cap':
-    default:
-      ctx.fillStyle = look.outfitPrimary;
-      ctx.fillRect(-5 * px, -15 * px, 10 * px, 3 * px);
-      ctx.fillStyle = look.outfitSecondary;
-      ctx.fillRect(-3 * px, -14 * px, 7 * px, 2 * px);
-      break;
-  }
 
   ctx.restore();
 }

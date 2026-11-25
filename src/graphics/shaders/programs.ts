@@ -191,16 +191,16 @@ void main() {
         float wrapDiff = clamp((dot(N, L) + 0.25) / 1.25, 0.0, 1.0);
         float energy = max(colInt.a, 0.0) * att;
 
-        diffuseAccum += colInt.rgb * energy * (wrapDiff * 0.55);
+        diffuseAccum += colInt.rgb * energy * (wrapDiff * 0.34);
 
         vec3 H = normalize(L + viewDir);
-        float spec = pow(max(dot(N, H), 0.0), 20.0) * ndotl;
-        specAccum += colInt.rgb * energy * spec * 0.24;
+        float spec = pow(max(dot(N, H), 0.0), 22.0) * ndotl;
+        specAccum += colInt.rgb * energy * spec * 0.14;
       }
     }
 
-    diffuseAccum = diffuseAccum / (1.0 + max(diffuseAccum - vec3(1.15), vec3(0.0)) * 0.45);
-    color = color * diffuseAccum + specAccum;
+    diffuseAccum = diffuseAccum / (1.0 + max(diffuseAccum - vec3(1.05), vec3(0.0)) * 0.85);
+    color = color * diffuseAccum + min(specAccum, vec3(0.28));
   }
 
   // Optional silhouette rim-light highlight via 4-neighbor alpha gradient
@@ -211,25 +211,25 @@ void main() {
     float aD = sampleClampedAlpha(vec2(0.0, uTexelSize.y));
     float minNeighbor = min(min(aL, aR), min(aU, aD));
     float edgeMask = smoothstep(0.08, 0.65, albedo.a - minNeighbor);
-    color = mix(color, color + vRimColor.rgb * 1.15, edgeMask * vRimColor.a);
+    color = mix(color, color + vRimColor.rgb * 0.85, edgeMask * vRimColor.a);
   }
 
-  // Unattenuated self-illumination channel (flows directly into Lighting & Dual-Kawase Bloom)
+  // Unattenuated self-illumination channel (flows cleanly into Lighting & Dual-Kawase Bloom without clipping)
   vec3 emissiveOut = vec3(0.0);
 
   // Optional atlas emissive texture contribution (lantern glass, cottage windows, shrine crystals, lava)
   if (uHasEmissive == 1) {
     vec4 em = texture(uEmissiveTex, vUv);
     vec3 emContrib = em.rgb * em.a;
-    color += emContrib * 0.65;
-    emissiveOut += emContrib * 1.25;
+    color += emContrib * 0.22;
+    emissiveOut += emContrib * 0.72;
   }
 
   // Scalar emissive boost (animated Pokemon sprites & glowing elemental VFX)
   if (vEmissive > 0.001) {
     vec3 scalarEm = baseColor * vEmissive;
-    color += scalarEm * 0.75;
-    emissiveOut += scalarEm * 0.90;
+    color += scalarEm * 0.42;
+    emissiveOut += scalarEm * 0.68;
   }
 
   float clampedAlpha = clamp(outAlpha, 0.0, 1.0);
@@ -591,8 +591,11 @@ void main() {
   // cottage windows, shrine crystals, and lava fissures glow vibrantly even in dark biomes
   if (uHasEmissive > 0.5) {
     vec4 emissive = texture(uEmissiveTex, vUv);
-    lit += emissive.rgb * 0.95;
+    lit += emissive.rgb * 0.34;
   }
+
+  // Soft highlight compression before post bloom so warm pools never clip white
+  lit = lit / (1.0 + max(lit - vec3(0.95), vec3(0.0)) * 0.75);
 
   fragColor = vec4(lit, scene.a);
 }
@@ -657,7 +660,7 @@ vec3 extractBloom(vec2 uv, float threshold) {
   vec3 result = c * softKnee;
   if (uHasEmissive > 0.5) {
     vec3 em = texture(uEmissiveTex, safeUv).rgb;
-    result += em * 0.85;
+    result += em * 0.55;
   }
   return result;
 }
@@ -691,7 +694,7 @@ void main() {
     bloom += extractBloom(vUv + vec2(-t3.x,  t3.y), uBloomThreshold) * 0.05;
     bloom += extractBloom(vUv + vec2( t3.x,  t3.y), uBloomThreshold) * 0.05;
 
-    color += bloom * (uBloomIntensity * 0.48);
+    color += bloom * (uBloomIntensity * 0.34);
   }
 
   // Per-biome color-grade LUT transform
@@ -700,9 +703,9 @@ void main() {
   color = mix(vec3(luma), color, uSaturation);
   color = (color - 0.5) * uContrast + 0.5;
 
-  // Gentle highlight roll-off to preserve pastel Starlight glow without harsh clipping
+  // Filmic highlight roll-off to preserve vivid pixel art saturation without harsh clipping
   color = max(color, vec3(0.0));
-  color = color / (1.0 + max(color - 0.92, vec3(0.0)) * 0.65);
+  color = color / (1.0 + max(color - 0.84, vec3(0.0)) * 0.95);
 
   // Radial vignette
   if (uVignetteStrength > 0.005) {

@@ -1254,27 +1254,33 @@ export class CelestialUIController implements ICelestialUIController {
       if (this.oziasPortraitCanvas) {
         renderTrainerPortraitCanvas(this.oziasPortraitCanvas, 'ozias', charSheet, this.manifest, o.appearance);
       }
-      if (this.violetLeadCanvas && v.team[0]) {
-        renderPokemonPreviewCanvas(
-          this.violetLeadCanvas,
-          v.team[0].speciesId,
-          this.getCachedFrames?.(v.team[0].speciesId, false, v.team[0].isShiny) ?? null,
-          fallbackSheet,
-          this.manifest,
-          v.team[0].isShiny,
-          timeSec,
-        );
+      if (this.violetLeadCanvas) {
+        setHidden(this.violetLeadCanvas, !v.team[0]);
+        if (v.team[0]) {
+          renderPokemonPreviewCanvas(
+            this.violetLeadCanvas,
+            v.team[0].speciesId,
+            this.getCachedFrames?.(v.team[0].speciesId, false, v.team[0].isShiny) ?? null,
+            fallbackSheet,
+            this.manifest,
+            v.team[0].isShiny,
+            timeSec,
+          );
+        }
       }
-      if (this.oziasLeadCanvas && o.team[0]) {
-        renderPokemonPreviewCanvas(
-          this.oziasLeadCanvas,
-          o.team[0].speciesId,
-          this.getCachedFrames?.(o.team[0].speciesId, false, o.team[0].isShiny) ?? null,
-          fallbackSheet,
-          this.manifest,
-          o.team[0].isShiny,
-          timeSec,
-        );
+      if (this.oziasLeadCanvas) {
+        setHidden(this.oziasLeadCanvas, !o.team[0]);
+        if (o.team[0]) {
+          renderPokemonPreviewCanvas(
+            this.oziasLeadCanvas,
+            o.team[0].speciesId,
+            this.getCachedFrames?.(o.team[0].speciesId, false, o.team[0].isShiny) ?? null,
+            fallbackSheet,
+            this.manifest,
+            o.team[0].isShiny,
+            timeSec,
+          );
+        }
       }
     }
   }

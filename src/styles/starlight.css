@@ -490,10 +490,10 @@ button:focus-visible {
 .sl-toast {
   position: fixed;
   left: 50%;
-  bottom: 84px;
+  top: 72px;
   z-index: 60;
-  transform: translate(-50%, 10px);
-  padding: 10px 16px;
+  transform: translate(-50%, -8px);
+  padding: 9px 16px;
   border: 2px solid var(--sl-cyan);
   border-radius: var(--sl-radius-px);
   background: var(--sl-bg-twilight-strong);
@@ -783,7 +783,7 @@ button:focus-visible {
 /* ---------------- Overworld Adventure HUD ---------------- */
 .sl-hud-top-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) auto minmax(0, 1.1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
   gap: 10px;
   width: 100%;
@@ -864,12 +864,18 @@ button:focus-visible {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  padding: 6px 8px;
+}
+
+.sl-action-dock .sl-btn {
+  padding: 8px 10px;
+  white-space: nowrap;
 }
 
 .sl-biome-banner {
   position: fixed;
-  top: 84px;
+  top: 122px;
   left: 50%;
   z-index: 25;
   transform: translate(-50%, -12px);
@@ -1232,9 +1238,53 @@ button:focus-visible {
   align-items: stretch;
   justify-content: space-between;
   gap: 4px;
-  padding: 8px 12px;
+  padding: 9px 12px;
   text-align: left;
+  border: 2px solid var(--sl-border-subtle);
+  border-left: 5px solid var(--sl-cyan);
+  border-radius: var(--sl-radius-px);
+  background: linear-gradient(180deg, rgba(24, 35, 78, 0.96) 0%, rgba(12, 18, 44, 0.98) 100%);
+  color: var(--sl-text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: var(--sl-bevel-btn);
+  transition: transform 90ms ease, border-color 120ms ease, filter 120ms ease;
 }
+
+.sl-move-card:hover:not(:disabled) {
+  border-color: var(--sl-gold);
+  filter: brightness(1.12);
+}
+
+.sl-move-card:active:not(:disabled) {
+  transform: translateY(2px);
+}
+
+.sl-move-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sl-move-card[data-type='normal']   { border-left-color: #cbd5e1; }
+.sl-move-card[data-type='fire']     { border-left-color: #fb923c; }
+.sl-move-card[data-type='water']    { border-left-color: #60a5fa; }
+.sl-move-card[data-type='grass']    { border-left-color: #4ade80; }
+.sl-move-card[data-type='electric'] { border-left-color: #facc15; }
+.sl-move-card[data-type='ice']      { border-left-color: #67e8f9; }
+.sl-move-card[data-type='fighting'] { border-left-color: #f87171; }
+.sl-move-card[data-type='poison']   { border-left-color: #d946ef; }
+.sl-move-card[data-type='ground']   { border-left-color: #e2b86b; }
+.sl-move-card[data-type='flying']   { border-left-color: #a5b4fc; }
+.sl-move-card[data-type='psychic']  { border-left-color: #f472b6; }
+.sl-move-card[data-type='bug']      { border-left-color: #a3e635; }
+.sl-move-card[data-type='rock']     { border-left-color: #d4b96a; }
+.sl-move-card[data-type='ghost']    { border-left-color: #a78bfa; }
+.sl-move-card[data-type='dragon']   { border-left-color: #818cf8; }
+.sl-move-card[data-type='dark']     { border-left-color: #a8998d; }
+.sl-move-card[data-type='steel']    { border-left-color: #cbd5e1; }
+.sl-move-card[data-type='fairy']    { border-left-color: #f9a8d4; }
 
 .sl-move-top {
   display: flex;
@@ -1242,6 +1292,7 @@ button:focus-visible {
   justify-content: space-between;
   gap: 6px;
   width: 100%;
+  color: #f8fafc;
 }
 
 .sl-move-meta {
@@ -1250,7 +1301,8 @@ button:focus-visible {
   justify-content: space-between;
   gap: 8px;
   font-size: 11px;
-  color: var(--sl-text-muted);
+  font-weight: 700;
+  color: #93d5fa;
   width: 100%;
 }
 
@@ -1366,7 +1418,14 @@ button:focus-visible {
   align-items: center;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding-bottom: 6px;
+  scrollbar-width: thin;
+}
+
+.sl-dex-type-strip > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  padding: 6px 10px;
 }
 
 .sl-dex-list {
@@ -1972,7 +2031,13 @@ button:focus-visible {
 
 .sl-skyhop-wave-banner {
   align-self: center;
-  padding: 6px 14px;
+  width: fit-content;
+  max-width: min(460px, 92%);
+  margin-bottom: auto;
+  padding: 6px 18px;
+  text-align: center;
+  font-weight: 800;
+  color: var(--sl-gold-bright);
   pointer-events: none;
 }
 
@@ -2022,6 +2087,7 @@ button:focus-visible {
   .sl-action-dock {
     grid-column: 1 / -1;
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
   .sl-pokedex-body,
   .sl-badge-case,
@@ -2053,6 +2119,12 @@ button:focus-visible {
   }
   .sl-hud-top-row {
     grid-template-columns: 1fr;
+  }
+  .sl-biome-banner {
+    top: 274px;
+  }
+  .sl-toast {
+    top: 12px;
   }
   .sl-badge-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
