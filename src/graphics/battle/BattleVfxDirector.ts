@@ -301,6 +301,23 @@ function drawPixelChevronGlyph(
   }
 }
 
+function isCombatantHiddenOrFainted(state: BattleSceneState, vis: BattleCombatantVisual): boolean {
+  if ((vis.faintDrop ?? 0) > 0.35) return true;
+  if (
+    vis.side === 'enemy' &&
+    (Boolean(state.rewardSummary?.caught) || (vis.captureProgress ?? 0) >= 0.45)
+  ) {
+    return true;
+  }
+  if (
+    vis.mon.hp <= 0 &&
+    (state.phase === 'victory' || state.phase === 'defeat' || state.phase === 'evolving')
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export class BattleVfxDirector {
   emitParticlesAndLights(
     backend: IRenderBackend,
@@ -395,6 +412,7 @@ export class BattleVfxDirector {
 
     // Combatant state lights & sparkles (Shiny / Elite / Braced / Shield)
     for (const vis of [state.player, state.enemy]) {
+      if (isCombatantHiddenOrFainted(state, vis)) continue;
       const anchor = getSideAnchor(vis.side, layout, state);
       if (vis.bracedFlash > 0.05) {
         backend.addPointLight({
@@ -571,8 +589,12 @@ export class BattleVfxDirector {
       applyCameraToContext(ctx, width, height, camera);
 
       // 1. Per-combatant Shield prism dome, Composure BRACED! hex burst, Buff/Heal, Stat Chevrons, Shiny/Trait, Ability banner
-      this.drawCombatantOverlays(ctx, state.player, getSideAnchor('player', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
-      this.drawCombatantOverlays(ctx, state.enemy, getSideAnchor('enemy', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
+      if (!isCombatantHiddenOrFainted(state, state.player)) {
+        this.drawCombatantOverlays(ctx, state.player, getSideAnchor('player', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
+      }
+      if (!isCombatantHiddenOrFainted(state, state.enemy)) {
+        this.drawCombatantOverlays(ctx, state.enemy, getSideAnchor('enemy', layout, state), layout, state.elapsedSeconds, state.reducedMotion, px);
+      }
 
       // 2. All 18-Type & Support VFX Choreographies
       for (const evt of events) {

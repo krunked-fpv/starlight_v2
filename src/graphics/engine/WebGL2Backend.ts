@@ -385,7 +385,7 @@ export class WebGL2Backend implements IRenderBackend {
     const rawDpr =
       dpr ?? (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1);
     const effectiveDpr = this._capabilities.isSoftwareRasterizer
-      ? 0.55
+      ? (safeW <= 1440 ? 0.85 : 0.72)
       : clamp(rawDpr, 1, this.dprCap);
 
     this.cssWidth = safeW;

@@ -10,6 +10,7 @@ import { clamp, mixHex } from './BattleArenas';
 import {
   SILHOUETTE_CONTOUR_PAD,
   getAtlasRegionSilhouetteContour,
+  getPaletteTintedAtlasRegion,
 } from './SpriteSilhouette';
 
 const FALLBACK_ARCHETYPE_ORDER: readonly BodyArchetype[] = [
@@ -531,17 +532,38 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
         }
       }
 
-      ctx.drawImage(
+      const tintedSprite = getPaletteTintedAtlasRegion(
         sheet,
-        region.x,
-        region.y,
-        region.w,
-        region.h,
-        -halfDraw,
-        -halfDraw,
-        drawSize,
-        drawSize,
+        region,
+        pal.primary,
+        pal.accent,
+        Boolean(rig.shiny),
       );
+      if (tintedSprite) {
+        ctx.drawImage(
+          tintedSprite,
+          0,
+          0,
+          tintedSprite.width,
+          tintedSprite.height,
+          -halfDraw,
+          -halfDraw,
+          drawSize,
+          drawSize,
+        );
+      } else {
+        ctx.drawImage(
+          sheet,
+          region.x,
+          region.y,
+          region.w,
+          region.h,
+          -halfDraw,
+          -halfDraw,
+          drawSize,
+          drawSize,
+        );
+      }
 
       // Pixel-crisp hit-flash silhouette overlay
       if (hitFlash > 0.04) {

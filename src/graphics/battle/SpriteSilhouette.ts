@@ -17,6 +17,15 @@ const opaqueBoundsByFrames = new WeakMap<DecodedSpriteFrames, SpriteOpaqueBounds
 const opaqueBoundsByCanvas = new WeakMap<object, SpriteOpaqueBounds | null>();
 const contourCanvasCache = new WeakMap<object, HTMLCanvasElement | null>();
 const atlasContourCache = new WeakMap<object, Map<string, HTMLCanvasElement | null>>();
+const atlasTintedCache = new WeakMap<object, Map<string, HTMLCanvasElement | null>>();
+
+function parseHexRgb255(hex: string): [number, number, number] {
+  const clean = hex.replace('#', '').trim();
+  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+  const n = Number.parseInt(full.slice(0, 6), 16);
+  if (Number.isNaN(n)) return [160, 180, 220];
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
 
 function canReadCanvasPixels(source: unknown): source is HTMLCanvasElement {
   if (!source || typeof source !== 'object') return false;
@@ -333,6 +342,97 @@ export function getAtlasRegionSilhouetteContour(
     if (!byKey) {
       byKey = new Map();
       atlasContourCache.set(sheet, byKey);
+    }
+    byKey.set(key, null);
+    return null;
+  }
+}
+
+/**
+ * Palette-remaps an archetype fallback atlas region toward a specific Pokemon's primary/accent colors
+ * while preserving crisp dark pixel outlines, eye whites, and 16-bit shading luminance ramps.
+ * Returns null gracefully in pure Node unit tests where getImageData() is unavailable.
+ */
+export function getPaletteTintedAtlasRegion(
+  sheet: HTMLImageElement | HTMLCanvasElement | null | undefined,
+  region: AtlasRegion,
+  primaryHex: string,
+  accentHex: string,
+  shiny = false,
+): HTMLCanvasElement | null {
+  if (!sheet || typeof sheet !== 'object') return null;
+  const key = `${region.x},${region.y},${region.w},${region.h}|${primaryHex}|${accentHex}|${shiny ? 1 : 0}`;
+  let byKey = atlasTintedCache.get(sheet);
+  if (byKey && byKey.has(key)) {
+    return byKey.get(key) ?? null;
+  }
+
+  const outCanvas = createOffscreenCanvas(region.w, region.h);
+  if (!outCanvas) return null;
+
+  try {
+    const ctx =
+      outCanvas.getContext('2d', { willReadFrequently: true }) ?? outCanvas.getContext('2d');
+    if (!ctx || typeof ctx.getImageData !== 'function') return null;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, region.w, region.h);
+    ctx.drawImage(sheet, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+
+    const imgData = ctx.getImageData(0, 0, region.w, region.h);
+    const data = imgData.data;
+    const [pr, pg, pb] = parseHexRgb255(primaryHex);
+    const [ar, ag, ab] = parseHexRgb255(accentHex);
+
+    for (let i = 0; i < data.length; i += 4) {
+      const a = data[i + 3];
+      if (a < 20) continue;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+
+      // Preserve crisp dark ink outlines & pupils, plus pure white eye speculars
+      if (lum < 0.18 || maxC < 52) continue;
+      if (lum > 0.90 && sat < 0.15) continue;
+
+      // Map bright highlight / secondary belly patches toward accentHex; main body toward primaryHex
+      const useAccent = lum > 0.72 || sat < 0.24;
+      const tr = useAccent ? ar : pr;
+      const tg = useAccent ? ag : pg;
+      const tb = useAccent ? ab : pb;
+
+      // Preserve hand-pixelled 16-bit light-to-shadow shading curve
+      const shade = 0.34 + lum * 0.92;
+      const mixAmt = useAccent ? 0.62 : 0.78;
+      let nr = r * (1 - mixAmt) + tr * shade * mixAmt;
+      let ng = g * (1 - mixAmt) + tg * shade * mixAmt;
+      let nb = b * (1 - mixAmt) + tb * shade * mixAmt;
+
+      if (shiny && lum > 0.58) {
+        nr = nr * 0.82 + 255 * 0.18;
+        ng = ng * 0.84 + 236 * 0.16;
+        nb = nb * 0.88 + 148 * 0.12;
+      }
+
+      data[i] = Math.max(0, Math.min(255, Math.round(nr)));
+      data[i + 1] = Math.max(0, Math.min(255, Math.round(ng)));
+      data[i + 2] = Math.max(0, Math.min(255, Math.round(nb)));
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+    if (!byKey) {
+      byKey = new Map();
+      atlasTintedCache.set(sheet, byKey);
+    }
+    byKey.set(key, outCanvas);
+    return outCanvas;
+  } catch {
+    if (!byKey) {
+      byKey = new Map();
+      atlasTintedCache.set(sheet, byKey);
     }
     byKey.set(key, null);
     return null;

@@ -448,13 +448,19 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   }
 
   render(backend: IRenderBackend, state: BattleSceneState): void {
-    const ctx2d = backend.getCanvas2DContext() as
-      | (CanvasRenderingContext2D & { canvas?: { width: number; height: number } })
-      | null;
-    if (ctx2d?.canvas && ctx2d.canvas.width > 0 && ctx2d.canvas.height > 0) {
-      const dpr = Math.max(1, backend.capabilities.dpr || 1);
-      this.cachedViewportWidth = Math.max(320, Math.round(ctx2d.canvas.width / dpr));
-      this.cachedViewportHeight = Math.max(200, Math.round(ctx2d.canvas.height / dpr));
+    const vp = typeof backend.getViewportSize === 'function' ? backend.getViewportSize() : null;
+    if (vp && vp.width > 0 && vp.height > 0) {
+      this.cachedViewportWidth = Math.max(320, Math.round(vp.width));
+      this.cachedViewportHeight = Math.max(200, Math.round(vp.height));
+    } else {
+      const ctx2d = backend.getCanvas2DContext() as
+        | (CanvasRenderingContext2D & { canvas?: { width: number; height: number } })
+        | null;
+      if (ctx2d?.canvas && ctx2d.canvas.width > 0 && ctx2d.canvas.height > 0) {
+        const dpr = Math.max(1, backend.capabilities.dpr || 1);
+        this.cachedViewportWidth = Math.max(320, Math.round(ctx2d.canvas.width / dpr));
+        this.cachedViewportHeight = Math.max(200, Math.round(ctx2d.canvas.height / dpr));
+      }
     }
 
     if (!this.fallbackAttached && this.getSheetImageFn) {
@@ -684,28 +690,51 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         `rgba(5, 7, 20, ${(0.58 * captureAlpha).toFixed(3)})`,
       );
 
-      if (!liveFrame && arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
-        const rig: OfflineRigDescriptor = {
-          speciesId: mon.speciesId,
-          name: mon.name,
-          primaryType: mon.type,
-          archetype: mon.archetype,
-          colorHex: mon.colorHex,
-          shiny: mon.isShiny,
-        };
-        ctx.save();
-        ctx.globalAlpha = arena.reflectionAlpha * 0.42 * captureAlpha;
-        ctx.translate(cx, groundY + drawSize * 0.24);
-        ctx.scale(1, -0.36);
-        this.rigSynth.renderRig(ctx, rig, {
-          cx: 0,
-          cy: 0,
-          size: drawSize,
-          time: state.elapsedSeconds,
-          facing,
-          reducedMotion: state.reducedMotion,
-        });
-        ctx.restore();
+      if (arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
+        if (liveFrame && typeof HTMLCanvasElement !== 'undefined' && liveFrame instanceof HTMLCanvasElement) {
+          // True vertically-flipped soft planar reflection beneath feet (fixes un-flipped upright smear!)
+          const feetSrcY = opaqueBounds ? opaqueBounds.maxY + 1 : liveFrameH;
+          const reflScaleX = liveDrawW / liveFrameW;
+          const reflScaleY = liveDrawH / liveFrameH;
+          ctx.save();
+          ctx.globalAlpha = arena.reflectionAlpha * 0.24 * captureAlpha;
+          ctx.translate(liveDrawX + liveDrawW * 0.5, groundY + px);
+          ctx.scale(flipX ? -1 : 1, -0.34);
+          ctx.drawImage(
+            liveFrame,
+            0,
+            0,
+            liveFrameW,
+            feetSrcY,
+            -liveDrawW * 0.5,
+            -Math.round(feetSrcY * reflScaleY),
+            Math.round(liveFrameW * reflScaleX),
+            Math.round(feetSrcY * reflScaleY),
+          );
+          ctx.restore();
+        } else if (!liveFrame) {
+          const rig: OfflineRigDescriptor = {
+            speciesId: mon.speciesId,
+            name: mon.name,
+            primaryType: mon.type,
+            archetype: mon.archetype,
+            colorHex: mon.colorHex,
+            shiny: mon.isShiny,
+          };
+          ctx.save();
+          ctx.globalAlpha = arena.reflectionAlpha * 0.36 * captureAlpha;
+          ctx.translate(cx, groundY + drawSize * 0.22);
+          ctx.scale(1, -0.34);
+          this.rigSynth.renderRig(ctx, rig, {
+            cx: 0,
+            cy: 0,
+            size: drawSize,
+            time: state.elapsedSeconds,
+            facing,
+            reducedMotion: state.reducedMotion,
+          });
+          ctx.restore();
+        }
       }
       ctx.restore();
     }, 'world');
@@ -717,26 +746,6 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       const dh = liveDrawH;
       const dx = liveDrawX;
       const dy = liveDrawY;
-
-      // Subtle flipped reflection on reflective arenas
-      if (arena.reflectionAlpha > 0.05 && captureScale > 0.25) {
-        backend.drawSprite({
-          source: liveFrame,
-          sx: 0,
-          sy: 0,
-          sw: fw,
-          sh: fh,
-          dx,
-          dy: Math.round(groundY + 2),
-          dw,
-          dh: Math.round(dh * 0.35),
-          flipX,
-          alpha: arena.reflectionAlpha * 0.26 * captureAlpha,
-          tint: [0.7, 0.85, 1.0, arena.reflectionAlpha * 0.26 * captureAlpha],
-          pixelCrisp: true,
-          depth: depth - 1,
-        });
-      }
 
       // Dual-contrast pixel-art silhouette contour backing (dark ink outline + subtle starlight rim-halo)
       const contourCanvas = getSpriteSilhouetteContour(liveFrame);
