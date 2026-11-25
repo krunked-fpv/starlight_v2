@@ -5,6 +5,7 @@ import type {
   BallKind,
   BattleSceneState,
   BiomeId,
+  CelebrationBannerState,
   DialogueModalState,
   DojoBadgeEntry,
   DojoEvolutionItem,
@@ -215,6 +216,8 @@ export class StarlightApp {
   private toastUntil = 0;
   private badgeToast: BadgeToastState | null = null;
   private readonly badgeQueue: string[] = [];
+  private celebration: CelebrationBannerState | null = null;
+  private celebrationSeq = 0;
   private autosaveAccum = 0;
   private modalBgRenderAccum = 0;
   private settingsTelemetryAccum = 0;
@@ -528,6 +531,25 @@ export class StarlightApp {
     this.badgeToast = null;
   }
 
+  private triggerCelebration(
+    iconId: IconId,
+    title: string,
+    subtitle?: string,
+    tone: CelebrationBannerState['tone'] = 'gold',
+  ): void {
+    const cleanTitle = stripEmojis(title).trim();
+    if (!cleanTitle) return;
+    const cleanSub = subtitle ? stripEmojis(subtitle).trim() : undefined;
+    this.celebrationSeq += 1;
+    this.celebration = {
+      seq: this.celebrationSeq,
+      iconId,
+      title: cleanTitle,
+      ...(cleanSub ? { subtitle: cleanSub } : {}),
+      tone,
+    };
+  }
+
   private triggerBadgeToast(badgeIds: string[] | undefined): void {
     if (!badgeIds || badgeIds.length === 0) return;
     for (const id of badgeIds) {
@@ -611,9 +633,11 @@ export class StarlightApp {
 
       onWarpSafeZone: () => {
         this.ensureAudioUnlocked();
-        this.audio.playSafeRecall();
+        this.audio.playSafeRecall({ phase: 'full' });
         const warpRes = this.overworldSim.warpToSafeZone();
         this.triggerBadgeToast(warpRes.newBadgeIds);
+        this.overworldRenderer.triggerCelebrationBurst(warpRes.x, warpRes.y, 'heal');
+        this.triggerCelebration('icon-warp-safe', 'Safe Recall', 'Arrived beside Starlight Healing Fountain', 'heal');
         this.briefing = null;
         this.dialogue = null;
         this.clearMovementInputs();
@@ -625,9 +649,11 @@ export class StarlightApp {
 
       onWarpFarmZone: () => {
         this.ensureAudioUnlocked();
-        this.audio.playWarpTeleport();
+        this.audio.playWarpTeleport({ phase: 'full', mode: 'starlight' });
         const res = this.overworldSim.warpToFarmZone();
         this.triggerBadgeToast(res.newBadgeIds);
+        this.overworldRenderer.triggerCelebrationBurst(res.x, res.y, 'starlight');
+        this.triggerCelebration('icon-warp-farm', 'Starlight Warp', `Arrived at ${res.biomeName}`, 'starlight');
         this.briefing = null;
         this.dialogue = null;
         this.clearMovementInputs();
@@ -639,7 +665,7 @@ export class StarlightApp {
 
       onWarpBiome: (biomeId: BiomeId) => {
         this.ensureAudioUnlocked();
-        this.audio.playWarpTeleport();
+        this.audio.playWarpTeleport({ phase: 'full', mode: 'starlight' });
         this.handleWarpBiome(biomeId);
       },
 
@@ -697,6 +723,7 @@ export class StarlightApp {
       onBattleConfirmEvolution: () => {
         this.ensureAudioUnlocked();
         const outcome = this.battleController.confirmEvolution();
+        this.triggerCelebration('icon-evolve', 'Evolution Complete!', 'Your partner grew stronger!', 'starlight');
         this.applyBattleOutcome(outcome);
       },
 
@@ -772,6 +799,7 @@ export class StarlightApp {
           this.audio.playUpgradeFanfare();
           this.overworldSim.refreshState();
           this.triggerBadgeToast(res.newBadges?.map((b: { id: string }) => b.id));
+          this.triggerCelebration('icon-star-rank', 'Star-Rank Power-Up!', `Upgraded to Tier ${res.newTier}!`, 'gold');
           this.showToast(`Star-Rank upgraded to Tier ${res.newTier}!`);
           this.syncUI();
         } else {
@@ -786,6 +814,7 @@ export class StarlightApp {
           this.audio.playBuddyCheer();
           this.overworldSim.refreshState();
           this.triggerBadgeToast(res.newBadges?.map((b: { id: string }) => b.id));
+          this.triggerCelebration('icon-cheer-heart', 'Buddy Cheer!', 'Bond boosted and HP recovered!', 'heal');
           this.showToast('Buddy Cheer boosted bond and recovered HP!');
           this.syncUI();
         } else {
@@ -814,7 +843,9 @@ export class StarlightApp {
           this.audio.playEvolveFanfare();
           this.overworldSim.refreshState();
           this.triggerBadgeToast(res.newBadges?.map((b: { id: string }) => b.id));
-          this.showToast(`Evolved into ${stripEmojis(res.evolution.newName)}!`);
+          const evolvedName = stripEmojis(res.evolution.newName);
+          this.triggerCelebration('icon-evolve', 'Evolution Complete!', `Evolved into ${evolvedName}!`, 'starlight');
+          this.showToast(`Evolved into ${evolvedName}!`);
           this.syncUI();
         } else {
           this.showToast('Evolution requirements not met yet.');
@@ -886,6 +917,11 @@ export class StarlightApp {
         this.showToast('Reset all Starlight v2 profiles.');
         this.syncBgmForCurrentScreen();
         this.syncUI();
+      },
+
+      onParentHoldTick: (progress: number) => {
+        this.ensureAudioUnlocked();
+        this.audio.playHoldTick(progress);
       },
 
       onOpenSkyHop: () => {
@@ -1147,11 +1183,13 @@ export class StarlightApp {
   private handleWarpBiome(biomeId: BiomeId): void {
     const warpRes = this.overworldSim.warpToBiome(biomeId);
     this.triggerBadgeToast(warpRes.newBadgeIds);
+    this.overworldRenderer.triggerCelebrationBurst(warpRes.x, warpRes.y, biomeId === 'village' ? 'heal' : 'starlight');
     this.briefing = null;
     this.dialogue = null;
     this.clearMovementInputs();
     this.screen = 'overworld';
     const biomeName = stripEmojis(BIOMES[biomeId]?.name ?? biomeId);
+    this.triggerCelebration('icon-warp-farm', 'Starlight Warp', `Arrived at ${biomeName}`, 'starlight');
     this.showToast(`Arrived at ${biomeName}.`);
     this.syncBgmForCurrentScreen();
     this.syncUI();
@@ -1261,6 +1299,12 @@ export class StarlightApp {
           const rawWinText = (meta.wasRivalRematch && rival.rematchWinText)
             ? rival.rematchWinText
             : (rival.winText || `${rival.name}: "What an awesome battle!"`);
+          this.triggerCelebration(
+            'icon-trophy',
+            meta.wasRivalRematch ? 'Rival Rematch Victory!' : 'Rival Victory!',
+            `Defeated ${stripEmojis(rival.name)}!`,
+            'gold',
+          );
           this.dialogue = {
             speaker: stripEmojis(rival.name),
             speakerPortrait: 'rival',
@@ -1273,6 +1317,12 @@ export class StarlightApp {
       } else if (meta.shrineId) {
         const shrine = Object.values(SHRINES).find((s) => s.id === meta.shrineId);
         if (meta.shrineTrialNumber > 0) {
+          this.triggerCelebration(
+            'icon-shrine',
+            `Astral Trial #${meta.shrineTrialNumber} Cleared!`,
+            '+3 Star Shards • +1 Star Ball',
+            'shrine',
+          );
           this.dialogue = {
             speaker: stripEmojis(shrine?.name || 'Astral Shrine'),
             title: `Astral Shrine Trial #${meta.shrineTrialNumber} Cleared!`,
@@ -1290,6 +1340,12 @@ export class StarlightApp {
             (shrine as { clearText?: string; winText?: string }).clearText
             || (shrine as { clearText?: string; winText?: string }).winText
             || `You triumphed over the Guardian of ${stripEmojis(shrine.name)} and earned its Elemental Blessing!`;
+          this.triggerCelebration(
+            'icon-shrine',
+            `${stripEmojis(shrine.name)} Cleared!`,
+            'Elemental Shrine Guardian vanquished!',
+            'shrine',
+          );
           this.dialogue = {
             speaker: stripEmojis(shrine.name),
             title: `${stripEmojis(shrine.name)} Cleared!`,
@@ -1473,6 +1529,8 @@ export class StarlightApp {
         };
       } else if (res?.unlocked) {
         this.audio.playArcadeUnlockFanfare();
+        this.overworldRenderer.triggerCelebrationBurst(nearby.x, nearby.y, 'starlight');
+        this.triggerCelebration('icon-skyhop', 'Secret Arcade Unlocked!', 'Starlight Sky-Hop revealed! 3/3 Charges ready!', 'arcade');
         this.dialogue = {
           speaker: 'Secret Star Emblem',
           title: 'Starlight Sky-Hop Unlocked!',
@@ -1502,6 +1560,8 @@ export class StarlightApp {
       this.storage.manager.healTeam(true);
       this.overworldSim.refreshState();
       this.audio.playHealChime();
+      this.overworldRenderer.triggerCelebrationBurst(nearby.x, nearby.y, 'heal');
+      this.triggerCelebration('icon-fountain', 'Team Restored!', 'Full HP, PP & Berry Potions refilled!', 'heal');
       this.showToast('Starlight Healing Fountain fully restored your team HP & PP and refilled Berry Potions!');
       this.syncUI();
       return;
@@ -1541,6 +1601,13 @@ export class StarlightApp {
         this.triggerBadgeToast(newBadges.map((b: { id: string }) => b.id));
         this.audio.playChestOpen();
         this.overworldSim.refreshState();
+        this.overworldRenderer.triggerCelebrationBurst(nearby.x, nearby.y, 'gold');
+        this.triggerCelebration(
+          'icon-chest',
+          'Treasure Found!',
+          stripEmojis(rawChest.label || 'Starlight Treasure Chest'),
+          'gold',
+        );
         this.dialogue = {
           speaker: stripEmojis(rawChest.label || 'Starlight Treasure Chest'),
           lines: [
@@ -1581,6 +1648,8 @@ export class StarlightApp {
           this.audio.playQuestCompleteFanfare();
           this.triggerBadgeToast(qRes?.newBadges?.map((b: { id: string }) => b.id));
           this.overworldSim.refreshState();
+          this.overworldRenderer.triggerCelebrationBurst(nearby.x, nearby.y, 'quest');
+          this.triggerCelebration('icon-quest', 'Quest Complete!', stripEmojis(quest.title), 'quest');
           const completeLines = normalizeDialogueLines(quest.completeDialogue);
           const lines = (completeLines.length > 0
             ? completeLines
@@ -1712,10 +1781,13 @@ export class StarlightApp {
     if (!ev || !ev.moved) return;
     this.audio.playStep(ev.onGrass);
 
+    const ow = this.overworldSim.getState();
     if (ev.steppedHealSpot) {
       this.storage.manager.healTeam(true);
       this.overworldSim.refreshState();
       this.audio.playHealChime();
+      this.overworldRenderer.triggerCelebrationBurst(ow.player.tileX, ow.player.tileY, 'heal');
+      this.triggerCelebration('icon-fountain', 'Team Restored!', 'Full HP, PP & Berry Potions refilled!', 'heal');
       this.showToast('Starlight Healing Fountain restored your entire team and refilled Potions!');
     } else if (ev.discoveryPicked) {
       const v1Kind = ev.discoveryPicked.v1Kind;
@@ -1726,22 +1798,31 @@ export class StarlightApp {
           this.audio.playDiscoveryChime('mystery_cry');
         }
         const spName = ev.mysteryCrySpeciesName || 'a wild Pokémon';
+        this.overworldRenderer.triggerCelebrationBurst(ev.discoveryPicked.x, ev.discoveryPicked.y, 'starlight');
+        this.triggerCelebration('icon-sparkle', 'Mystery Pokémon Echo!', `Heard ${spName} nearby • +2 Star Shards!`, 'starlight');
         this.showToast(`Mystery Pokémon Echo! Spotted ${spName}'s tracks (+2 Star Shards)!`);
       } else if (v1Kind === 'starfall') {
         this.audio.playDiscoveryChime('starfall');
+        this.overworldRenderer.triggerCelebrationBurst(ev.discoveryPicked.x, ev.discoveryPicked.y, 'starlight');
+        this.triggerCelebration('icon-starfall', 'Starfall Discovery!', '+2 Star Shards gathered!', 'starlight');
         this.showToast('Starfall Crystal discovered! Collected +2 Star Shards!');
       } else if (v1Kind === 'shimmer') {
         this.audio.playDiscoveryChime('shimmer');
+        this.overworldRenderer.triggerCelebrationBurst(ev.discoveryPicked.x, ev.discoveryPicked.y, 'gold');
         if (!ev.wildEncounterTriggered) {
+          this.triggerCelebration('icon-sparkle', 'Shimmer Dew Found!', '+2 Star Shards & +1 Buddy Cheer!', 'gold');
           this.showToast('Shimmer Dew found! +2 Star Shards & +1 Buddy Cheer!');
         }
       } else {
         this.audio.playDiscoveryChime(ev.discoveryPicked.kind);
+        this.overworldRenderer.triggerCelebrationBurst(ev.discoveryPicked.x, ev.discoveryPicked.y, 'gold');
         this.showToast('Found hidden Starlight treasure!');
       }
     } else if (ev.stepArcadeChargeEarned) {
+      this.overworldRenderer.triggerCelebrationBurst(ow.player.tileX, ow.player.tileY, 'starlight');
       this.showToast('Earned +1 Sky-Hop Arcade Charge from exploring!');
     } else if (ev.stepCheerEarned) {
+      this.overworldRenderer.triggerCelebrationBurst(ow.player.tileX, ow.player.tileY, 'heal');
       this.showToast('Buddy Cheer recharged!');
     }
 
@@ -1981,12 +2062,7 @@ export class StarlightApp {
                   ? (step > 0 ? 0 : focusables.length - 1)
                   : (curIdx + step + focusables.length) % focusables.length;
               focusables[nextIdx].focus();
-              const audioExt = this.audio as unknown as { playCursorMove?: () => void };
-              if (typeof audioExt.playCursorMove === 'function') {
-                audioExt.playCursorMove();
-              } else {
-                this.audio.playMenuBlip(620);
-              }
+              this.audio.playCursorMove();
             }
           }
           return;
@@ -2167,9 +2243,11 @@ export class StarlightApp {
         }
         if (code === 'KeyH' && !this.dialogue) {
           e.preventDefault();
-          this.audio.playSafeRecall();
+          this.audio.playSafeRecall({ phase: 'full' });
           const warpRes = this.overworldSim.warpToSafeZone();
           this.triggerBadgeToast(warpRes.newBadgeIds);
+          this.overworldRenderer.triggerCelebrationBurst(warpRes.x, warpRes.y, 'heal');
+          this.triggerCelebration('icon-warp-safe', 'Safe Recall', 'Arrived beside Starlight Healing Fountain', 'heal');
           this.clearMovementInputs();
           this.showToast('Warped to Starlight Village beside the Healing Fountain.');
           this.syncBgmForCurrentScreen();
@@ -2178,9 +2256,11 @@ export class StarlightApp {
         }
         if (code === 'KeyT' && !this.dialogue) {
           e.preventDefault();
-          this.audio.playWarpTeleport();
+          this.audio.playWarpTeleport({ phase: 'full', mode: 'starlight' });
           const res = this.overworldSim.warpToFarmZone();
           this.triggerBadgeToast(res.newBadgeIds);
+          this.overworldRenderer.triggerCelebrationBurst(res.x, res.y, 'starlight');
+          this.triggerCelebration('icon-warp-farm', 'Starlight Warp', `Arrived at ${res.biomeName}`, 'starlight');
           this.clearMovementInputs();
           this.showToast(`Warped to recommended zone: ${res.biomeName}.`);
           this.syncBgmForCurrentScreen();
@@ -2367,6 +2447,12 @@ export class StarlightApp {
       if (ev.runEnded) {
         if (sState.score >= 80) {
           this.audio.playArcadeUnlockFanfare();
+          this.triggerCelebration(
+            'icon-trophy',
+            'Sky-Hop Flight Complete!',
+            `Score ${sState.score} • Rewards earned!`,
+            'arcade',
+          );
         } else {
           this.audio.playMenuBlip(380);
         }
@@ -2506,6 +2592,7 @@ export class StarlightApp {
       frameStats: this.engine.getStats(),
       toastMessage: this.toastMessage,
       badgeToast: this.badgeToast,
+      celebration: this.celebration,
       selectedPokedexId: this.selectedPokedexId,
       cryWaveform: this.audio.getCryWaveformSnapshot(this.selectedPokedexId),
       spriteCacheVersion: this.sprites.getVersion(),

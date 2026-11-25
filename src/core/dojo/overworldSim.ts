@@ -88,12 +88,12 @@ export interface TacticalBriefingPartyMember {
 
 export interface TacticalBriefingV1Data extends TacticalBriefingData {
   upgradeTier: number;
-  badgeName: string | null;
+  badgeName?: string;
   partyPreview: TacticalBriefingPartyMember[];
   minLv: number;
   maxLv: number;
-  rematchNumber: number | null;
-  trialNumber: number | null;
+  rematchNumber?: number;
+  trialNumber?: number;
   isAstralTrial: boolean;
   isRematch: boolean;
   pivot: { action: 'safe' | 'farm'; label: string } | null;
@@ -1295,10 +1295,10 @@ export class DojoOverworldSim {
     let minLv = 5;
     let maxLv = 5;
     let upgradeTier = 0;
-    let badgeName: string | null = null;
+    let badgeName: string | undefined;
     let partyPreview: TacticalBriefingPartyMember[] = [];
-    let rematchNumber: number | null = null;
-    let trialNumber: number | null = null;
+    let rematchNumber: number | undefined;
+    let trialNumber: number | undefined;
     let isAstralTrial = false;
     let isRematch = false;
     let previewSpeciesId = 25;
@@ -1318,12 +1318,12 @@ export class DojoOverworldSim {
       upgradeTier = Math.max(0, Number((spec as { upgradeTier?: number }).upgradeTier ?? (isAstralTrial ? 2 : 0)));
       trialNumber = isAstralTrial
         ? Math.max(1, Number((spec as { trialNumber?: number }).trialNumber ?? ((profile?.shrineTrialCounts?.[shrine.id] ?? 0) + 1)))
-        : null;
+        : undefined;
       const guardianEntry = getSpeciesEntry(spec.guardianId);
       enemyTypes = [guardianEntry.type];
       if (!isAstralTrial && (shrine as { badgeId?: string }).badgeId) {
         const badgeObj = BADGES.find((b) => b.id === (shrine as { badgeId?: string }).badgeId);
-        badgeName = badgeObj ? stripEmojis(badgeObj.name) : null;
+        badgeName = badgeObj ? stripEmojis(badgeObj.name) : undefined;
       }
       partyPreview = [
         {
@@ -1343,7 +1343,7 @@ export class DojoOverworldSim {
       const rival = rivalList.find((r) => r.id === targetId) ?? rivalList[0];
       biomeId = (rival.biome as BiomeId) || biomeId;
       isRematch = Boolean(profile?.rivalsDefeated?.includes(rival.id));
-      rematchNumber = isRematch ? Math.max(1, Number(profile?.rivalRematchCounts?.[rival.id] ?? 0) + 1) : null;
+      rematchNumber = isRematch ? Math.max(1, Number(profile?.rivalRematchCounts?.[rival.id] ?? 0) + 1) : undefined;
       const party = getScaledRivalParty(rival, profile);
       enemyCount = party.length;
       const ace = party[party.length - 1] ?? party[0];
