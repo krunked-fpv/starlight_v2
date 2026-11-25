@@ -57,10 +57,35 @@ interface RegisteredAtlas2D {
   emissiveAlphaData?: Uint8ClampedArray | null;
   emissiveW?: number;
   emissiveH?: number;
-  emissiveRegionCache?: Map<string, boolean>;
+  emissiveRegionCache?: Map<number, boolean>;
+}
+
+interface EmissiveBatchItem {
+  img: CanvasImageSource;
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  dx: number;
+  dy: number;
+  dw: number;
+  dh: number;
+  alpha: number;
+  crisp: boolean;
 }
 
 const MAX_LIGHTS = 24;
+const WATER_DEPTH_BUCKETS = 7;
+const SPARKLE_STYLES: readonly string[] = [
+  'rgba(255, 248, 224, 0.12)',
+  'rgba(255, 248, 224, 0.24)',
+  'rgba(255, 248, 224, 0.36)',
+  'rgba(255, 248, 224, 0.48)',
+  'rgba(255, 248, 224, 0.60)',
+  'rgba(255, 248, 224, 0.72)',
+  'rgba(255, 248, 224, 0.84)',
+  'rgba(255, 248, 224, 0.96)',
+];
 
 export function createDefaultCamera(width = 960, height = 540): CameraState {
   return {
@@ -128,16 +153,28 @@ function rgbaStr(r: number, g: number, b: number, a: number): string {
   return `rgba(${rgb01To255(r)}, ${rgb01To255(g)}, ${rgb01To255(b)}, ${clamp(a, 0, 1).toFixed(4)})`;
 }
 
-function getImageSourceDimensions(src: CanvasImageSource): { width: number; height: number } {
+function getSourceWidth(src: CanvasImageSource): number {
   if ('naturalWidth' in src && typeof src.naturalWidth === 'number' && src.naturalWidth > 0) {
-    return { width: src.naturalWidth, height: (src as HTMLImageElement).naturalHeight || 1 };
+    return src.naturalWidth;
   }
   if ('videoWidth' in src && typeof src.videoWidth === 'number' && src.videoWidth > 0) {
-    return { width: src.videoWidth, height: (src as HTMLVideoElement).videoHeight || 1 };
+    return src.videoWidth;
   }
-  const w = 'width' in src && typeof src.width === 'number' ? src.width : 1;
-  const h = 'height' in src && typeof src.height === 'number' ? src.height : 1;
-  return { width: Math.max(1, w), height: Math.max(1, h) };
+  return Math.max(1, 'width' in src && typeof src.width === 'number' ? src.width : 1);
+}
+
+function getSourceHeight(src: CanvasImageSource): number {
+  if ('naturalHeight' in src && typeof src.naturalHeight === 'number' && src.naturalHeight > 0) {
+    return src.naturalHeight;
+  }
+  if ('videoHeight' in src && typeof src.videoHeight === 'number' && src.videoHeight > 0) {
+    return src.videoHeight;
+  }
+  return Math.max(1, 'height' in src && typeof src.height === 'number' ? src.height : 1);
+}
+
+function getImageSourceDimensions(src: CanvasImageSource): { width: number; height: number } {
+  return { width: getSourceWidth(src), height: getSourceHeight(src) };
 }
 
 function hash2d(x: number, y: number): number {
@@ -177,15 +214,43 @@ export class Canvas2DBackend implements IRenderBackend {
   private atlases = new Map<string, RegisteredAtlas2D>();
   private crtPattern: CanvasPattern | null = null;
   private lightSpriteCache = new Map<string, HTMLCanvasElement>();
+  private particleSpriteCache = new Map<string, HTMLCanvasElement>();
   private cloudSpriteCache = new Map<string, HTMLCanvasElement>();
   private vignetteSpriteCache = new Map<string, HTMLCanvasElement>();
   private vignetteCacheKey = '';
   private vignetteCacheGrad: CanvasGradient | null = null;
 
-  // Per-frame queues
+  // Cached CSS color tables & zero-allocation scratch state
+  private clearColorCss = 'rgba(10, 15, 36, 1.0000)';
+  private clearColorKey = '';
+  private waterPaletteKey = '';
+  private waterTopStyles: string[] = new Array<string>(WATER_DEPTH_BUCKETS);
+  private waterBotStyles: string[] = new Array<string>(WATER_DEPTH_BUCKETS);
+  private waterShimmerStyles: string[] = new Array<string>(WATER_DEPTH_BUCKETS);
+  private waterSeafoamStyle = '';
+  private waterFoamLipStyle = '';
+  private ambientWashKey = '';
+  private ambientWashStyle = '';
+  private tintWashKey = '';
+  private tintWashStyle = '';
+
+  // Per-frame pooled queues (zero GC churn)
   private frameTimeSeconds = 0;
   private clearColor: [number, number, number, number] = [0.04, 0.06, 0.14, 1];
   private worldSegments: WorldSegment[] = [];
+  private segmentPoolWater: Array<{ kind: 'water'; items: WaterQuadCmd[] }> = [];
+  private segmentPoolSprites: Array<{ kind: 'sprites'; items: SpriteDrawCmd[] }> = [];
+  private segmentPoolCustom: Array<{ kind: 'custom2d'; items: Custom2DDrawFn[] }> = [];
+  private waterSegCursor = 0;
+  private spriteSegCursor = 0;
+  private customSegCursor = 0;
+  private waterQuadPool: WaterQuadCmd[] = [];
+  private waterQuadCursor = 0;
+  private spriteSortScratch: SpriteDrawCmd[] = [];
+  private emissiveBatchPool: EmissiveBatchItem[] = [];
+  private emissiveBatchCount = 0;
+  private projX = 0;
+  private projY = 0;
   private lights: PointLight[] = [];
   private particles: ParticleDrawCmd[] = [];
   private postLightDraws: Custom2DDrawFn[] = [];
@@ -240,7 +305,7 @@ export class Canvas2DBackend implements IRenderBackend {
 
     let ctx: CanvasRenderingContext2D | null = null;
     try {
-      ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
+      ctx = canvas.getContext('2d', { alpha: false });
     } catch {
       ctx = null;
     }
@@ -410,7 +475,7 @@ export class Canvas2DBackend implements IRenderBackend {
       emissiveAlphaData,
       emissiveW,
       emissiveH,
-      emissiveRegionCache: emissiveAlphaData ? new Map<string, boolean>() : undefined,
+      emissiveRegionCache: emissiveAlphaData ? new Map<number, boolean>() : undefined,
     });
   }
 
@@ -428,7 +493,7 @@ export class Canvas2DBackend implements IRenderBackend {
     const y0 = Math.max(0, Math.floor(sy));
     const x1 = Math.min(atlas.emissiveW, Math.ceil(sx + sw));
     const y1 = Math.min(atlas.emissiveH, Math.ceil(sy + sh));
-    const key = `${x0},${y0},${x1},${y1}`;
+    const key = ((x0 & 0x7ff) + ((y0 & 0x7ff) << 11)) + (((x1 - x0) & 0x3ff) * 4194304) + (((y1 - y0) & 0x3ff) * 4294967296);
     const cached = atlas.emissiveRegionCache.get(key);
     if (cached !== undefined) return cached;
 
@@ -474,7 +539,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const c = document.createElement('canvas');
       c.width = size;
       c.height = size;
-      const lctx = c.getContext('2d', { willReadFrequently: true });
+      const lctx = c.getContext('2d');
       if (!lctx) return null;
       const grad = lctx.createRadialGradient(half, half, 0, half, half, half);
       grad.addColorStop(0, rgbaStr(r, g, b, 0.17));
@@ -486,6 +551,45 @@ export class Canvas2DBackend implements IRenderBackend {
         this.lightSpriteCache.clear();
       }
       this.lightSpriteCache.set(key, c);
+      return c;
+    } catch {
+      return null;
+    }
+  }
+
+  private getParticleSprite(r: number, g: number, b: number, softness: number): HTMLCanvasElement | null {
+    if (!this.hasRealDomCanvas()) {
+      return null;
+    }
+    const qr = Math.round(clamp(r, 0, 1) * 15);
+    const qg = Math.round(clamp(g, 0, 1) * 15);
+    const qb = Math.round(clamp(b, 0, 1) * 15);
+    const qs = Math.round(clamp(softness, 0.05, 1) * 4);
+    const key = `${qr}_${qg}_${qb}_${qs}`;
+    const cached = this.particleSpriteCache.get(key);
+    if (cached) return cached;
+
+    try {
+      const size = 48;
+      const half = size * 0.5;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const pctx = c.getContext('2d');
+      if (!pctx) return null;
+      const innerStop = clamp(1 - qs * 0.25, 0, 0.85);
+      const grad = pctx.createRadialGradient(half, half, 0, half, half, half);
+      grad.addColorStop(0, rgbaStr(Math.min(1, r * 1.2), Math.min(1, g * 1.2), Math.min(1, b * 1.2), 1));
+      if (innerStop > 0.05) {
+        grad.addColorStop(innerStop, rgbaStr(r, g, b, 0.8));
+      }
+      grad.addColorStop(1, rgbaStr(r, g, b, 0));
+      pctx.fillStyle = grad;
+      pctx.fillRect(0, 0, size, size);
+      if (this.particleSpriteCache.size > 64) {
+        this.particleSpriteCache.clear();
+      }
+      this.particleSpriteCache.set(key, c);
       return c;
     } catch {
       return null;
@@ -505,7 +609,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const c = document.createElement('canvas');
       c.width = size;
       c.height = size;
-      const cctx = c.getContext('2d', { willReadFrequently: true });
+      const cctx = c.getContext('2d');
       if (!cctx) return null;
       const grad = cctx.createRadialGradient(half, half, half * 0.15, half, half, half);
       grad.addColorStop(0, `rgba(10, 16, 36, ${clamp(opacity * 0.22, 0, 0.32).toFixed(3)})`);
@@ -534,7 +638,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const c = document.createElement('canvas');
       c.width = size;
       c.height = size;
-      const vctx = c.getContext('2d', { willReadFrequently: true });
+      const vctx = c.getContext('2d');
       if (!vctx) return null;
       const grad = vctx.createRadialGradient(half, half, outerR * 0.42, half, half, outerR);
       grad.addColorStop(0, 'rgba(6, 10, 24, 0)');
@@ -557,36 +661,65 @@ export class Canvas2DBackend implements IRenderBackend {
   }
 
   setCamera(camera: Partial<CameraState>): void {
-    this.camera = {
-      ...this.camera,
-      ...camera,
-      viewportWidth: camera.viewportWidth ?? this.cssWidth,
-      viewportHeight: camera.viewportHeight ?? this.cssHeight,
-    };
+    const c = this.camera;
+    if (camera.x !== undefined) c.x = camera.x;
+    if (camera.y !== undefined) c.y = camera.y;
+    if (camera.zoom !== undefined) c.zoom = camera.zoom;
+    if (camera.shakeX !== undefined) c.shakeX = camera.shakeX;
+    if (camera.shakeY !== undefined) c.shakeY = camera.shakeY;
+    if (camera.rotation !== undefined) c.rotation = camera.rotation;
+    c.viewportWidth = camera.viewportWidth ?? this.cssWidth;
+    c.viewportHeight = camera.viewportHeight ?? this.cssHeight;
   }
 
   setColorGrade(grade: BiomeColorGrade): void {
-    this.colorGrade = {
-      ...grade,
-      ambientRgb: [...grade.ambientRgb],
-      tintRgb: [...grade.tintRgb],
-    };
+    const g = this.colorGrade;
+    g.biomeId = grade.biomeId;
+    g.ambientRgb[0] = grade.ambientRgb[0];
+    g.ambientRgb[1] = grade.ambientRgb[1];
+    g.ambientRgb[2] = grade.ambientRgb[2];
+    g.ambientStrength = grade.ambientStrength;
+    g.tintRgb[0] = grade.tintRgb[0];
+    g.tintRgb[1] = grade.tintRgb[1];
+    g.tintRgb[2] = grade.tintRgb[2];
+    g.contrast = grade.contrast;
+    g.saturation = grade.saturation;
+    g.bloomIntensity = grade.bloomIntensity;
+    g.bloomThreshold = grade.bloomThreshold;
+    g.vignetteStrength = grade.vignetteStrength;
+    g.skyTopHex = grade.skyTopHex;
+    g.skyHorizonHex = grade.skyHorizonHex;
+    g.starlightGlow = grade.starlightGlow;
   }
 
   setCanopyConfig(config: CanopyShadowConfig): void {
-    this.canopyConfig = {
-      ...config,
-      sunbeamColor: [...config.sunbeamColor],
-    };
+    const c = this.canopyConfig;
+    c.enabled = config.enabled;
+    c.sunbeamIntensity = config.sunbeamIntensity;
+    c.sunbeamAngle = config.sunbeamAngle;
+    c.sunbeamColor[0] = config.sunbeamColor[0];
+    c.sunbeamColor[1] = config.sunbeamColor[1];
+    c.sunbeamColor[2] = config.sunbeamColor[2];
+    c.cloudSpeedX = config.cloudSpeedX;
+    c.cloudSpeedY = config.cloudSpeedY;
+    c.cloudOpacity = config.cloudOpacity;
   }
 
   setWaterConfig(config: WaterConfig): void {
-    this.waterConfig = {
-      ...config,
-      skyTopColor: [...config.skyTopColor],
-      skyBottomColor: [...config.skyBottomColor],
-      foamColor: [...config.foamColor],
-    };
+    const w = this.waterConfig;
+    w.enabled = config.enabled;
+    w.time = config.time;
+    w.skyTopColor[0] = config.skyTopColor[0];
+    w.skyTopColor[1] = config.skyTopColor[1];
+    w.skyTopColor[2] = config.skyTopColor[2];
+    w.skyBottomColor[0] = config.skyBottomColor[0];
+    w.skyBottomColor[1] = config.skyBottomColor[1];
+    w.skyBottomColor[2] = config.skyBottomColor[2];
+    w.starlightIntensity = config.starlightIntensity;
+    w.waveAmplitude = config.waveAmplitude;
+    w.foamColor[0] = config.foamColor[0];
+    w.foamColor[1] = config.foamColor[1];
+    w.foamColor[2] = config.foamColor[2];
   }
 
   setReducedMotion(enabled: boolean): void {
@@ -614,11 +747,23 @@ export class Canvas2DBackend implements IRenderBackend {
       this.smoothedFps = this.smoothedFps * 0.88 + instantFps * 0.12;
     }
 
-    this.clearColor = clearColor
-      ? [clearColor[0], clearColor[1], clearColor[2], clearColor[3]]
-      : [0.04, 0.06, 0.14, 1];
+    if (clearColor) {
+      this.clearColor[0] = clearColor[0];
+      this.clearColor[1] = clearColor[1];
+      this.clearColor[2] = clearColor[2];
+      this.clearColor[3] = clearColor[3];
+    } else {
+      this.clearColor[0] = 0.04;
+      this.clearColor[1] = 0.06;
+      this.clearColor[2] = 0.14;
+      this.clearColor[3] = 1;
+    }
 
     this.worldSegments.length = 0;
+    this.waterSegCursor = 0;
+    this.spriteSegCursor = 0;
+    this.customSegCursor = 0;
+    this.waterQuadCursor = 0;
     this.lights.length = 0;
     this.particles.length = 0;
     this.postLightDraws.length = 0;
@@ -630,7 +775,15 @@ export class Canvas2DBackend implements IRenderBackend {
     if (last && last.kind === 'sprites') {
       last.items.push(cmd);
     } else {
-      this.worldSegments.push({ kind: 'sprites', items: [cmd] });
+      let seg = this.segmentPoolSprites[this.spriteSegCursor++];
+      if (!seg) {
+        seg = { kind: 'sprites', items: [] };
+        this.segmentPoolSprites.push(seg);
+      } else {
+        seg.items.length = 0;
+      }
+      seg.items.push(cmd);
+      this.worldSegments.push(seg);
     }
   }
 
@@ -642,12 +795,31 @@ export class Canvas2DBackend implements IRenderBackend {
     depthFactor: number,
     foamMask: number,
   ): void {
-    const quad: WaterQuadCmd = { x, y, w, h, depthFactor, foamMask };
+    let quad = this.waterQuadPool[this.waterQuadCursor++];
+    if (!quad) {
+      quad = { x, y, w, h, depthFactor, foamMask };
+      this.waterQuadPool.push(quad);
+    } else {
+      quad.x = x;
+      quad.y = y;
+      quad.w = w;
+      quad.h = h;
+      quad.depthFactor = depthFactor;
+      quad.foamMask = foamMask;
+    }
     const last = this.worldSegments[this.worldSegments.length - 1];
     if (last && last.kind === 'water') {
       last.items.push(quad);
     } else {
-      this.worldSegments.push({ kind: 'water', items: [quad] });
+      let seg = this.segmentPoolWater[this.waterSegCursor++];
+      if (!seg) {
+        seg = { kind: 'water', items: [] };
+        this.segmentPoolWater.push(seg);
+      } else {
+        seg.items.length = 0;
+      }
+      seg.items.push(quad);
+      this.worldSegments.push(seg);
     }
   }
 
@@ -672,7 +844,15 @@ export class Canvas2DBackend implements IRenderBackend {
       if (last && last.kind === 'custom2d') {
         last.items.push(drawFn);
       } else {
-        this.worldSegments.push({ kind: 'custom2d', items: [drawFn] });
+        let seg = this.segmentPoolCustom[this.customSegCursor++];
+        if (!seg) {
+          seg = { kind: 'custom2d', items: [] };
+          this.segmentPoolCustom.push(seg);
+        } else {
+          seg.items.length = 0;
+        }
+        seg.items.push(drawFn);
+        this.worldSegments.push(seg);
       }
     }
   }
@@ -692,12 +872,17 @@ export class Canvas2DBackend implements IRenderBackend {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = rgbaStr(
-        this.clearColor[0],
-        this.clearColor[1],
-        this.clearColor[2],
-        this.clearColor[3],
-      );
+      const ccKey = `${this.clearColor[0]},${this.clearColor[1]},${this.clearColor[2]},${this.clearColor[3]}`;
+      if (ccKey !== this.clearColorKey) {
+        this.clearColorKey = ccKey;
+        this.clearColorCss = rgbaStr(
+          this.clearColor[0],
+          this.clearColor[1],
+          this.clearColor[2],
+          this.clearColor[3],
+        );
+      }
+      ctx.fillStyle = this.clearColorCss;
       ctx.fillRect(0, 0, w, h);
       drawCalls += 1;
 
@@ -755,17 +940,15 @@ export class Canvas2DBackend implements IRenderBackend {
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const frameTimeMs = Math.max(0, nowMs - this.frameStartMs);
 
-    this.lastStats = {
-      fps: Math.round(this.smoothedFps * 10) / 10,
-      frameTimeMs: Math.round(frameTimeMs * 100) / 100,
-      clampedDtMs: Math.round(this.clampedDtMs * 100) / 100,
-      drawCalls,
-      activeLights,
-      activeParticles,
-      backend: 'canvas2d',
-      contextLostCount: this.contextLostCount,
-      contextRestoredCount: this.contextRestoredCount,
-    };
+    this.lastStats.fps = Math.round(this.smoothedFps * 10) / 10;
+    this.lastStats.frameTimeMs = Math.round(frameTimeMs * 100) / 100;
+    this.lastStats.clampedDtMs = Math.round(this.clampedDtMs * 100) / 100;
+    this.lastStats.drawCalls = drawCalls;
+    this.lastStats.activeLights = activeLights;
+    this.lastStats.activeParticles = activeParticles;
+    this.lastStats.backend = 'canvas2d';
+    this.lastStats.contextLostCount = this.contextLostCount;
+    this.lastStats.contextRestoredCount = this.contextRestoredCount;
 
     return { ...this.lastStats };
   }
@@ -788,12 +971,19 @@ export class Canvas2DBackend implements IRenderBackend {
   dispose(): void {
     this.disposed = true;
     this.worldSegments.length = 0;
+    this.segmentPoolWater.length = 0;
+    this.segmentPoolSprites.length = 0;
+    this.segmentPoolCustom.length = 0;
+    this.waterQuadPool.length = 0;
+    this.spriteSortScratch.length = 0;
+    this.emissiveBatchPool.length = 0;
     this.lights.length = 0;
     this.particles.length = 0;
     this.postLightDraws.length = 0;
     this.screenDraws.length = 0;
     this.atlases.clear();
     this.lightSpriteCache.clear();
+    this.particleSpriteCache.clear();
     this.cloudSpriteCache.clear();
     this.vignetteSpriteCache.clear();
     this.vignetteCacheKey = '';
@@ -803,7 +993,7 @@ export class Canvas2DBackend implements IRenderBackend {
     this.canvas = null;
   }
 
-  private worldToScreen(wx: number, wy: number): [number, number] {
+  private projectWorldToScreen(wx: number, wy: number): void {
     const cx = this.cssWidth * 0.5;
     const cy = this.cssHeight * 0.5;
     const px = wx - this.camera.x;
@@ -812,16 +1002,16 @@ export class Canvas2DBackend implements IRenderBackend {
     const rot = this.camera.rotation;
 
     if (zoom === 1 && rot === 0) {
-      return [px + this.camera.shakeX, py + this.camera.shakeY];
+      this.projX = px + this.camera.shakeX;
+      this.projY = py + this.camera.shakeY;
+      return;
     }
     const dx = px - cx;
     const dy = py - cy;
     const c = Math.cos(rot);
     const s = Math.sin(rot);
-    return [
-      cx + (dx * c - dy * s) * zoom + this.camera.shakeX,
-      cy + (dx * s + dy * c) * zoom + this.camera.shakeY,
-    ];
+    this.projX = cx + (dx * c - dy * s) * zoom + this.camera.shakeX;
+    this.projY = cy + (dx * s + dy * c) * zoom + this.camera.shakeY;
   }
 
   private applyCameraToContext(ctx: CanvasRenderingContext2D): void {
@@ -838,44 +1028,82 @@ export class Canvas2DBackend implements IRenderBackend {
     ctx.translate(-cx - this.camera.x, -cy - this.camera.y);
   }
 
-  private renderWaterQuads(ctx: CanvasRenderingContext2D, quads: WaterQuadCmd[]): number {
+  private ensureWaterStyleCache(): void {
     const cfg = this.waterConfig;
-    const motionScale = this.reducedMotion ? 0.2 : 1.0;
-    const t = (cfg.time || this.frameTimeSeconds) * motionScale;
-    const amp = clamp(cfg.waveAmplitude, 0, 2.5);
-    let calls = 0;
+    const key = `${Math.round(cfg.skyTopColor[0] * 100)}_${Math.round(cfg.skyTopColor[1] * 100)}_${Math.round(cfg.skyTopColor[2] * 100)}_${Math.round(cfg.skyBottomColor[0] * 100)}_${Math.round(cfg.skyBottomColor[1] * 100)}_${Math.round(cfg.skyBottomColor[2] * 100)}_${Math.round(cfg.foamColor[0] * 100)}_${Math.round(cfg.foamColor[1] * 100)}_${Math.round(cfg.foamColor[2] * 100)}`;
+    if (this.waterPaletteKey === key) return;
+    this.waterPaletteKey = key;
 
-    ctx.save();
-    this.applyCameraToContext(ctx);
-
-    for (const q of quads) {
-      const depth = clamp(q.depthFactor, 0, 1);
+    const maxIdx = WATER_DEPTH_BUCKETS - 1;
+    for (let i = 0; i < WATER_DEPTH_BUCKETS; i++) {
+      const depth = i / maxIdx;
       const alpha = 0.84 + depth * 0.12;
-
-      // Multi-depth pixel-crisp 2-band water + twilight sky reflection (avoids per-tile CanvasGradient allocs)
       const topR = cfg.skyTopColor[0] * 0.5 + (0.14 * (1 - depth) + 0.04 * depth);
       const topG = cfg.skyTopColor[1] * 0.5 + (0.54 * (1 - depth) + 0.14 * depth);
       const topB = cfg.skyTopColor[2] * 0.5 + (0.72 * (1 - depth) + 0.34 * depth);
-
       const botR = cfg.skyBottomColor[0] * 0.45 + (0.18 * (1 - depth) + 0.06 * depth);
       const botG = cfg.skyBottomColor[1] * 0.45 + (0.62 * (1 - depth) + 0.2 * depth);
       const botB = cfg.skyBottomColor[2] * 0.45 + (0.78 * (1 - depth) + 0.42 * depth);
-
-      const halfH = Math.ceil(q.h * 0.5);
-      ctx.fillStyle = rgbaStr(topR, topG, topB, alpha);
-      ctx.fillRect(q.x, q.y, q.w, halfH);
-      ctx.fillStyle = rgbaStr(botR, botG, botB, alpha);
-      ctx.fillRect(q.x, q.y + halfH, q.w, q.h - halfH);
-      calls += 1;
-
-      // Pixel-snapped horizontal ripple shimmer bars
-      const bandCount = Math.max(2, Math.min(5, Math.floor(q.h / 12)));
-      ctx.fillStyle = rgbaStr(
+      this.waterTopStyles[i] = rgbaStr(topR, topG, topB, alpha);
+      this.waterBotStyles[i] = rgbaStr(botR, botG, botB, alpha);
+      this.waterShimmerStyles[i] = rgbaStr(
         cfg.skyBottomColor[0] * 0.7 + 0.3,
         cfg.skyBottomColor[1] * 0.7 + 0.3,
         cfg.skyBottomColor[2] * 0.7 + 0.3,
         0.18 * (1 - depth * 0.35),
       );
+    }
+    this.waterSeafoamStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.72);
+    this.waterFoamLipStyle = rgbaStr(
+      cfg.skyBottomColor[0] * 0.5 + 0.5,
+      cfg.skyBottomColor[1] * 0.5 + 0.5,
+      1.0,
+      0.34,
+    );
+  }
+
+  private renderWaterQuads(ctx: CanvasRenderingContext2D, quads: WaterQuadCmd[]): number {
+    const cfg = this.waterConfig;
+    const motionScale = this.reducedMotion ? 0.2 : 1.0;
+    const t = (cfg.time || this.frameTimeSeconds) * motionScale;
+    const amp = clamp(cfg.waveAmplitude, 0, 2.5);
+    const maxBucket = WATER_DEPTH_BUCKETS - 1;
+    this.ensureWaterStyleCache();
+
+    let calls = 0;
+    let lastFill = '';
+
+    ctx.save();
+    this.applyCameraToContext(ctx);
+
+    for (let qi = 0; qi < quads.length; qi++) {
+      const q = quads[qi];
+      const depth = clamp(q.depthFactor, 0, 1);
+      const bucket = Math.round(depth * maxBucket);
+
+      const halfH = Math.ceil(q.h * 0.5);
+      const topStyle = this.waterTopStyles[bucket];
+      if (lastFill !== topStyle) {
+        ctx.fillStyle = topStyle;
+        lastFill = topStyle;
+      }
+      ctx.fillRect(q.x, q.y, q.w, halfH);
+
+      const botStyle = this.waterBotStyles[bucket];
+      if (lastFill !== botStyle) {
+        ctx.fillStyle = botStyle;
+        lastFill = botStyle;
+      }
+      ctx.fillRect(q.x, q.y + halfH, q.w, q.h - halfH);
+      calls += 1;
+
+      // Pixel-snapped horizontal ripple shimmer bars
+      const bandCount = Math.max(2, Math.min(4, Math.floor(q.h / 12)));
+      const shimmerStyle = this.waterShimmerStyles[bucket];
+      if (lastFill !== shimmerStyle) {
+        ctx.fillStyle = shimmerStyle;
+        lastFill = shimmerStyle;
+      }
       for (let i = 0; i < bandCount; i++) {
         const frac = (i + 0.5) / bandCount;
         const wy = Math.round(q.y + frac * q.h);
@@ -888,7 +1116,7 @@ export class Canvas2DBackend implements IRenderBackend {
         ctx.fillRect(clamp(sx, q.x, q.x + q.w - 2), wy, Math.min(segW, q.w), 1);
       }
 
-      // Pixel-snapped twinkling starlight 4-point cross sparkles
+      // Pixel-snapped twinkling starlight 4-point cross sparkles (LUT-indexed, zero string allocs)
       if (cfg.starlightIntensity > 0.02) {
         const cellX = Math.floor(q.x / 24);
         const cellY = Math.floor(q.y / 24);
@@ -902,7 +1130,12 @@ export class Canvas2DBackend implements IRenderBackend {
               q.x + (0.18 + seed * 0.64) * q.w + Math.sin(t * 1.8 + seed * 10) * 1.5,
             );
             const sy = Math.round(q.y + (0.18 + hash2d(cellY, cellX) * 0.64) * q.h);
-            ctx.fillStyle = `rgba(255, 248, 224, ${clamp(sparkAlpha, 0, 1).toFixed(3)})`;
+            const lutIdx = clamp(Math.floor(sparkAlpha * SPARKLE_STYLES.length), 0, SPARKLE_STYLES.length - 1);
+            const spStyle = SPARKLE_STYLES[lutIdx];
+            if (lastFill !== spStyle) {
+              ctx.fillStyle = spStyle;
+              lastFill = spStyle;
+            }
             ctx.fillRect(sx - 1, sy, 3, 1);
             ctx.fillRect(sx, sy - 1, 1, 3);
           }
@@ -913,25 +1146,37 @@ export class Canvas2DBackend implements IRenderBackend {
       if (q.foamMask > 0.001) {
         const waveOffset = Math.round(Math.sin(t * 2.9 + q.x * 0.15 + q.y * 0.12) * 1.6 * amp);
         const foamThickness = Math.max(2, Math.round(Math.min(q.w, q.h) * 0.09));
-        const seafoam = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.72);
-        const foamLip = rgbaStr(cfg.skyBottomColor[0] * 0.5 + 0.5, cfg.skyBottomColor[1] * 0.5 + 0.5, 1.0, 0.34);
+        const seafoam = this.waterSeafoamStyle;
+        const foamLip = this.waterFoamLipStyle;
 
         if (q.foamMask > 1.01) {
           const mask = Math.round(q.foamMask);
           const inset = Math.max(0, Math.round(waveOffset * 0.5));
           const dashH = (yPos: number, dir: number) => {
-            ctx.fillStyle = foamLip;
+            if (lastFill !== foamLip) {
+              ctx.fillStyle = foamLip;
+              lastFill = foamLip;
+            }
             ctx.fillRect(q.x + 1, yPos + dir * foamThickness, q.w - 2, 1);
-            ctx.fillStyle = seafoam;
+            if (lastFill !== seafoam) {
+              ctx.fillStyle = seafoam;
+              lastFill = seafoam;
+            }
             for (let ox = 0; ox < q.w; ox += 8) {
               const seg = Math.min(6, q.w - ox);
               ctx.fillRect(q.x + ox + 1, yPos, Math.max(2, seg - 1), foamThickness);
             }
           };
           const dashV = (xPos: number, dir: number) => {
-            ctx.fillStyle = foamLip;
+            if (lastFill !== foamLip) {
+              ctx.fillStyle = foamLip;
+              lastFill = foamLip;
+            }
             ctx.fillRect(xPos + dir * foamThickness, q.y + 1, 1, q.h - 2);
-            ctx.fillStyle = seafoam;
+            if (lastFill !== seafoam) {
+              ctx.fillStyle = seafoam;
+              lastFill = seafoam;
+            }
             for (let oy = 0; oy < q.h; oy += 8) {
               const seg = Math.min(6, q.h - oy);
               ctx.fillRect(xPos, q.y + oy + 1, foamThickness, Math.max(2, seg - 1));
@@ -944,7 +1189,11 @@ export class Canvas2DBackend implements IRenderBackend {
         } else {
           const intensity = clamp(q.foamMask, 0, 1);
           const inset = Math.max(0, Math.round(waveOffset * 0.5));
-          ctx.fillStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.66 * intensity);
+          ctx.globalAlpha = intensity;
+          if (lastFill !== seafoam) {
+            ctx.fillStyle = seafoam;
+            lastFill = seafoam;
+          }
           for (let ox = 1; ox < q.w - 1; ox += 8) {
             ctx.fillRect(q.x + ox, q.y + inset, Math.min(5, q.w - ox - 1), foamThickness);
           }
@@ -954,6 +1203,7 @@ export class Canvas2DBackend implements IRenderBackend {
             Math.round(q.w * 0.55),
             1,
           );
+          ctx.globalAlpha = 1;
         }
       }
     }
@@ -963,37 +1213,77 @@ export class Canvas2DBackend implements IRenderBackend {
   }
 
   private renderSprites(ctx: CanvasRenderingContext2D, sprites: SpriteDrawCmd[]): number {
-    if (sprites.length === 0) return 0;
-    const ordered =
-      sprites.length > 1
-        ? [...sprites].sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
-        : sprites;
+    const count = sprites.length;
+    if (count === 0) return 0;
+
+    let ordered = sprites;
+    if (count > 1) {
+      let sorted = true;
+      let prevDepth = sprites[0].depth ?? 0;
+      for (let i = 1; i < count; i++) {
+        const d = sprites[i].depth ?? 0;
+        if (d < prevDepth) {
+          sorted = false;
+          break;
+        }
+        prevDepth = d;
+      }
+      if (!sorted) {
+        const scratch = this.spriteSortScratch;
+        scratch.length = count;
+        for (let i = 0; i < count; i++) scratch[i] = sprites[i];
+        scratch.sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0));
+        ordered = scratch;
+      }
+    }
 
     let calls = 0;
     ctx.save();
     this.applyCameraToContext(ctx);
     let lastSmoothing: boolean | null = null;
-    const emissiveBatch: Array<{
-      img: CanvasImageSource;
-      sx: number;
-      sy: number;
-      sw: number;
-      sh: number;
-      dx: number;
-      dy: number;
-      dw: number;
-      dh: number;
-      alpha: number;
-      crisp: boolean;
-    }> = [];
+    this.emissiveBatchCount = 0;
+
+    const pushEmissive = (
+      img: CanvasImageSource,
+      sx: number,
+      sy: number,
+      sw: number,
+      sh: number,
+      dx: number,
+      dy: number,
+      dw: number,
+      dh: number,
+      alpha: number,
+      crisp: boolean,
+    ) => {
+      let item = this.emissiveBatchPool[this.emissiveBatchCount];
+      if (!item) {
+        item = { img, sx, sy, sw, sh, dx, dy, dw, dh, alpha, crisp };
+        this.emissiveBatchPool.push(item);
+      } else {
+        item.img = img;
+        item.sx = sx;
+        item.sy = sy;
+        item.sw = sw;
+        item.sh = sh;
+        item.dx = dx;
+        item.dy = dy;
+        item.dw = dw;
+        item.dh = dh;
+        item.alpha = alpha;
+        item.crisp = crisp;
+      }
+      this.emissiveBatchCount += 1;
+    };
 
     const flushEmissiveBatch = () => {
-      if (emissiveBatch.length === 0) return;
+      if (this.emissiveBatchCount === 0) return;
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       let lastEmSmooth: boolean | null = null;
       let lastEmAlpha = -1;
-      for (const em of emissiveBatch) {
+      for (let i = 0; i < this.emissiveBatchCount; i++) {
+        const em = this.emissiveBatchPool[i];
         const wantSmooth = !em.crisp;
         if (lastEmSmooth !== wantSmooth) {
           ctx.imageSmoothingEnabled = wantSmooth;
@@ -1006,11 +1296,12 @@ export class Canvas2DBackend implements IRenderBackend {
         ctx.drawImage(em.img, em.sx, em.sy, em.sw, em.sh, em.dx, em.dy, em.dw, em.dh);
       }
       ctx.restore();
-      emissiveBatch.length = 0;
+      this.emissiveBatchCount = 0;
       lastSmoothing = null;
     };
 
-    for (const cmd of ordered) {
+    for (let si = 0; si < ordered.length; si++) {
+      const cmd = ordered[si];
       let source: CanvasImageSource | undefined = cmd.source;
       let atlasRecord: RegisteredAtlas2D | undefined;
       let atlasEmissive: CanvasImageSource | undefined;
@@ -1027,12 +1318,14 @@ export class Canvas2DBackend implements IRenderBackend {
           source = atlas.albedo;
           atlasEmissive = atlas.emissive;
           defaultCrisp = atlas.pixelCrisp;
-          if (cmd.regionId && atlas.regions[cmd.regionId]) {
+          if (cmd.regionId) {
             const r = atlas.regions[cmd.regionId];
-            sx = sx ?? r.x;
-            sy = sy ?? r.y;
-            sw = sw ?? r.w;
-            sh = sh ?? r.h;
+            if (r) {
+              sx = sx ?? r.x;
+              sy = sy ?? r.y;
+              sw = sw ?? r.w;
+              sh = sh ?? r.h;
+            }
           }
         }
       }
@@ -1041,11 +1334,10 @@ export class Canvas2DBackend implements IRenderBackend {
         continue;
       }
 
-      const dims = getImageSourceDimensions(source);
       const srcX = sx ?? 0;
       const srcY = sy ?? 0;
-      const srcW = sw ?? dims.width;
-      const srcH = sh ?? dims.height;
+      const srcW = sw ?? (atlasRecord ? atlasRecord.width : getSourceWidth(source));
+      const srcH = sh ?? (atlasRecord ? atlasRecord.height : getSourceHeight(source));
 
       const alpha = clamp((cmd.alpha ?? 1) * (cmd.tint ? cmd.tint[3] : 1), 0, 1);
       if (alpha <= 0.003) {
@@ -1057,7 +1349,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const isSimple = !cmd.rotation && !cmd.flipX && !hasRim && !cmd.additive && alpha >= 0.999;
 
       if (isSimple) {
-        if (!crisp && emissiveBatch.length > 0) {
+        if (!crisp && this.emissiveBatchCount > 0) {
           flushEmissiveBatch();
         }
         const wantSmooth = !crisp;
@@ -1073,34 +1365,22 @@ export class Canvas2DBackend implements IRenderBackend {
           (cmd.emissive === undefined || cmd.emissive > 0.01) &&
           this.hasEmissivePixels(atlasRecord, srcX, srcY, srcW, srcH)
         ) {
-          emissiveBatch.push({
-            img: atlasEmissive,
-            sx: srcX,
-            sy: srcY,
-            sw: srcW,
-            sh: srcH,
-            dx: cmd.dx,
-            dy: cmd.dy,
-            dw: cmd.dw,
-            dh: cmd.dh,
-            alpha: 0.9,
-            crisp,
-          });
+          pushEmissive(atlasEmissive, srcX, srcY, srcW, srcH, cmd.dx, cmd.dy, cmd.dw, cmd.dh, 0.9, crisp);
         }
         if (cmd.emissive && cmd.emissive > 0.05) {
-          emissiveBatch.push({
-            img: source,
-            sx: srcX,
-            sy: srcY,
-            sw: srcW,
-            sh: srcH,
-            dx: cmd.dx,
-            dy: cmd.dy,
-            dw: cmd.dw,
-            dh: cmd.dh,
-            alpha: clamp(cmd.emissive * 0.45, 0, 0.85),
+          pushEmissive(
+            source,
+            srcX,
+            srcY,
+            srcW,
+            srcH,
+            cmd.dx,
+            cmd.dy,
+            cmd.dw,
+            cmd.dh,
+            clamp(cmd.emissive * 0.45, 0, 0.85),
             crisp,
-          });
+          );
         }
         continue;
       }
@@ -1198,9 +1478,16 @@ export class Canvas2DBackend implements IRenderBackend {
     const ambStrength = clamp(this.colorGrade.ambientStrength, 0, 1);
     if (ambStrength < 0.92) {
       const darkness = clamp((0.92 - ambStrength) * 0.34, 0, 0.24);
-      const [ar, ag, ab] = this.colorGrade.ambientRgb;
+      const ar = this.colorGrade.ambientRgb[0];
+      const ag = this.colorGrade.ambientRgb[1];
+      const ab = this.colorGrade.ambientRgb[2];
+      const ambKey = `${Math.round(ar * 100)}_${Math.round(ag * 100)}_${Math.round(ab * 100)}_${Math.round(darkness * 200)}`;
+      if (this.ambientWashKey !== ambKey) {
+        this.ambientWashKey = ambKey;
+        this.ambientWashStyle = rgbaStr(ar * 0.28, ag * 0.32, ab * 0.45, darkness);
+      }
       ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = rgbaStr(ar * 0.28, ag * 0.32, ab * 0.45, darkness);
+      ctx.fillStyle = this.ambientWashStyle;
       ctx.fillRect(0, 0, w, h);
       drawCalls += 1;
     }
@@ -1208,6 +1495,7 @@ export class Canvas2DBackend implements IRenderBackend {
     // Additive radial PointLight blooms (up to 24 visible lights)
     let activeLights = 0;
     ctx.globalCompositeOperation = 'lighter';
+    ctx.imageSmoothingEnabled = true;
     for (let i = 0; i < this.lights.length && activeLights < MAX_LIGHTS; i++) {
       const light = this.lights[i];
       if (light.intensity <= 0.005 || light.radius <= 0.5) continue;
@@ -1216,7 +1504,9 @@ export class Canvas2DBackend implements IRenderBackend {
       let sy = light.y;
       let radius = light.radius;
       if (!light.screenSpace) {
-        [sx, sy] = this.worldToScreen(light.x, light.y);
+        this.projectWorldToScreen(light.x, light.y);
+        sx = this.projX;
+        sy = this.projY;
         radius = light.radius * this.camera.zoom;
       }
 
@@ -1232,12 +1522,13 @@ export class Canvas2DBackend implements IRenderBackend {
           ? 1 + Math.sin(this.frameTimeSeconds * flickSpeed + i * 2.37) * flickAmt
           : 1;
       const strength = clamp(light.intensity * flicker, 0, 2);
-      const [r, g, b] = light.color;
+      const r = light.color[0];
+      const g = light.color[1];
+      const b = light.color[2];
 
       const lightSprite = this.getPointLightSprite(r, g, b);
       if (lightSprite) {
         ctx.globalAlpha = clamp(strength, 0, 1.45);
-        ctx.imageSmoothingEnabled = true;
         ctx.drawImage(lightSprite, sx - radius, sy - radius, radius * 2, radius * 2);
       } else {
         const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius);
@@ -1265,7 +1556,9 @@ export class Canvas2DBackend implements IRenderBackend {
         ctx.translate(w * 0.5, h * 0.5);
         ctx.rotate(cfg.sunbeamAngle);
         const span = Math.hypot(w, h);
-        const [sr, sg, sb] = cfg.sunbeamColor;
+        const sr = cfg.sunbeamColor[0];
+        const sg = cfg.sunbeamColor[1];
+        const sb = cfg.sunbeamColor[2];
         const beamCount = 5;
         const outerFill = rgbaStr(sr, sg, sb, clamp(cfg.sunbeamIntensity * 0.11, 0, 0.16));
         const innerFill = rgbaStr(sr, sg, sb, clamp(cfg.sunbeamIntensity * 0.14, 0, 0.2));
@@ -1318,50 +1611,100 @@ export class Canvas2DBackend implements IRenderBackend {
 
   private renderParticles(ctx: CanvasRenderingContext2D): number {
     let calls = 0;
+    const useSpriteCache = this.hasRealDomCanvas();
     ctx.save();
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    let lastComp: GlobalCompositeOperation = 'source-over';
 
-    for (const p of this.particles) {
+    for (let i = 0; i < this.particles.length; i++) {
+      const p = this.particles[i];
       const alpha = clamp(p.color[3], 0, 1);
       if (alpha <= 0.004 || p.radius <= 0.2) continue;
 
-      const [sx, sy] = this.worldToScreen(p.x, p.y);
+      this.projectWorldToScreen(p.x, p.y);
+      const sx = this.projX;
+      const sy = this.projY;
       const r = Math.max(0.5, p.radius * this.camera.zoom);
       const stretchX = Math.max(0.05, p.stretchX ?? 1);
       const stretchY = Math.max(0.05, p.stretchY ?? 1);
+      const rot = p.rotation ?? 0;
       const softness = clamp(p.softness ?? 0.7, 0.05, 1);
+      const wantComp: GlobalCompositeOperation = p.additive === false ? 'source-over' : 'lighter';
+      const cr = p.color[0];
+      const cg = p.color[1];
+      const cb = p.color[2];
+
+      if (useSpriteCache) {
+        if (lastComp !== wantComp) {
+          ctx.globalCompositeOperation = wantComp;
+          lastComp = wantComp;
+        }
+        if (r <= 8) {
+          const core = Math.max(1, r * 0.55);
+          if (rot === 0 && stretchX === 1 && stretchY === 1) {
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = rgbaStr(cr, cg, cb, alpha * 0.42);
+            ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+            ctx.fillStyle = rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha);
+            ctx.fillRect(sx - core, sy - core, core * 2, core * 2);
+          } else {
+            ctx.save();
+            ctx.globalAlpha = 1;
+            ctx.translate(sx, sy);
+            if (rot) ctx.rotate(rot);
+            ctx.scale(stretchX, stretchY);
+            ctx.fillStyle = rgbaStr(cr, cg, cb, alpha * 0.42);
+            ctx.fillRect(-r, -r, r * 2, r * 2);
+            ctx.fillStyle = rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha);
+            ctx.fillRect(-core, -core, core * 2, core * 2);
+            ctx.restore();
+          }
+          calls += 1;
+          continue;
+        }
+
+        const sprite = this.getParticleSprite(cr, cg, cb, softness);
+        if (sprite) {
+          if (rot === 0 && stretchX === 1 && stretchY === 1) {
+            ctx.globalAlpha = alpha;
+            ctx.drawImage(sprite, sx - r, sy - r, r * 2, r * 2);
+          } else {
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.translate(sx, sy);
+            if (rot) ctx.rotate(rot);
+            ctx.scale(stretchX, stretchY);
+            ctx.drawImage(sprite, -r, -r, r * 2, r * 2);
+            ctx.restore();
+          }
+          calls += 1;
+          continue;
+        }
+      }
 
       ctx.save();
-      ctx.globalCompositeOperation = p.additive === false ? 'source-over' : 'lighter';
+      ctx.globalCompositeOperation = wantComp;
       ctx.translate(sx, sy);
-      if (p.rotation) {
-        ctx.rotate(p.rotation);
+      if (rot) {
+        ctx.rotate(rot);
       }
       if (stretchX !== 1 || stretchY !== 1) {
         ctx.scale(stretchX, stretchY);
       }
 
-      const [cr, cg, cb] = p.color;
-      if (r <= 8 && typeof document !== 'undefined') {
-        ctx.fillStyle = rgbaStr(cr, cg, cb, alpha * 0.42);
-        ctx.fillRect(-r, -r, r * 2, r * 2);
-        const core = Math.max(1, r * 0.55);
-        ctx.fillStyle = rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha);
-        ctx.fillRect(-core, -core, core * 2, core * 2);
-      } else {
-        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-        const innerStop = clamp(1 - softness, 0, 0.85);
-        grad.addColorStop(0, rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha));
-        if (innerStop > 0.05) {
-          grad.addColorStop(innerStop, rgbaStr(cr, cg, cb, alpha * 0.8));
-        }
-        grad.addColorStop(1, rgbaStr(cr, cg, cb, 0));
-
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+      const innerStop = clamp(1 - softness, 0, 0.85);
+      grad.addColorStop(0, rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha));
+      if (innerStop > 0.05) {
+        grad.addColorStop(innerStop, rgbaStr(cr, cg, cb, alpha * 0.8));
       }
+      grad.addColorStop(1, rgbaStr(cr, cg, cb, 0));
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
       ctx.restore();
       calls += 1;
     }
@@ -1376,16 +1719,23 @@ export class Canvas2DBackend implements IRenderBackend {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
     // Subtle biome color-grade tint wash
-    const [tr, tg, tb] = this.colorGrade.tintRgb;
+    const tr = this.colorGrade.tintRgb[0];
+    const tg = this.colorGrade.tintRgb[1];
+    const tb = this.colorGrade.tintRgb[2];
     const tintDelta = Math.abs(tr - 1) + Math.abs(tg - 1) + Math.abs(tb - 1);
     if (tintDelta > 0.03) {
+      const tKey = `${Math.round(tr * 100)}_${Math.round(tg * 100)}_${Math.round(tb * 100)}`;
+      if (this.tintWashKey !== tKey) {
+        this.tintWashKey = tKey;
+        this.tintWashStyle = rgbaStr(
+          clamp(0.5 + (tr - 1) * 1.4, 0, 1),
+          clamp(0.5 + (tg - 1) * 1.4, 0, 1),
+          clamp(0.5 + (tb - 1) * 1.4, 0, 1),
+          0.06,
+        );
+      }
       ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = rgbaStr(
-        clamp(0.5 + (tr - 1) * 1.4, 0, 1),
-        clamp(0.5 + (tg - 1) * 1.4, 0, 1),
-        clamp(0.5 + (tb - 1) * 1.4, 0, 1),
-        0.06,
-      );
+      ctx.fillStyle = this.tintWashStyle;
       ctx.fillRect(0, 0, w, h);
       calls += 1;
     }
@@ -1442,7 +1792,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const tile = document.createElement('canvas');
       tile.width = 3;
       tile.height = 3;
-      const tctx = tile.getContext('2d', { willReadFrequently: true }) ?? tile.getContext('2d');
+      const tctx = tile.getContext('2d');
       if (!tctx) return;
       // Row 0: crisp dark scanline
       tctx.fillStyle = 'rgba(4, 8, 18, 0.18)';

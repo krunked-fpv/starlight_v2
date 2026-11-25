@@ -209,7 +209,8 @@ export class RenderEngine implements IRenderEngine {
   private canvasHasWebGLContext = false;
   private handledLossCanvases = new WeakSet<HTMLCanvasElement>();
 
-  private dprCap = 2;
+  private dprCap = 1.5;
+  private readonly canvas2dDprCap = 1;
   private reducedMotion = false;
   private crtMode = false;
   private webgl2Supported = false;
@@ -224,6 +225,9 @@ export class RenderEngine implements IRenderEngine {
 
   private contextLostCount = 0;
   private contextRestoredCount = 0;
+  private lastResizeW = -1;
+  private lastResizeH = -1;
+  private lastResizeDpr = -1;
 
   private rafId: number | null = null;
   private loopActive = false;
@@ -268,6 +272,9 @@ export class RenderEngine implements IRenderEngine {
     this.detachCanvasListeners();
     this.canvas = canvas;
     this.canvasHasWebGLContext = false;
+    this.lastResizeW = -1;
+    this.lastResizeH = -1;
+    this.lastResizeDpr = -1;
     this._requestedMode = options.preferredMode;
     this.reducedMotion = Boolean(options.reducedMotion);
     this.crtMode = Boolean(options.crtMode);
@@ -412,7 +419,9 @@ export class RenderEngine implements IRenderEngine {
     const snapshot = this._activeBackend.exportStateSnapshot();
     this.reducedMotion = snapshot.reducedMotion;
     this.crtMode = snapshot.crtMode;
-    this.dprCap = snapshot.dprCap;
+    if (previousKind === 'webgl2') {
+      this.dprCap = snapshot.dprCap;
+    }
 
     if (mode === 'canvas2d') {
       if (previousKind === 'canvas2d') {
@@ -463,7 +472,7 @@ export class RenderEngine implements IRenderEngine {
       }
 
       this._activeBackend = attempt.backend;
-      this._activeBackend.importStateSnapshot(snapshot);
+      this._activeBackend.importStateSnapshot({ ...snapshot, dprCap: this.dprCap });
       this._activeBackend.setContextCounts(this.contextLostCount, this.contextRestoredCount);
       this.canvasHasWebGLContext = true;
       this.attachCanvasListeners(this.canvas);
@@ -598,7 +607,20 @@ export class RenderEngine implements IRenderEngine {
     const dpr =
       typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
 
-    this._activeBackend.resize(Math.max(1, cssWidth), Math.max(1, cssHeight), dpr);
+    const nextW = Math.max(1, cssWidth);
+    const nextH = Math.max(1, cssHeight);
+    if (
+      nextW === this.lastResizeW &&
+      nextH === this.lastResizeH &&
+      dpr === this.lastResizeDpr
+    ) {
+      return;
+    }
+    this.lastResizeW = nextW;
+    this.lastResizeH = nextH;
+    this.lastResizeDpr = dpr;
+
+    this._activeBackend.resize(nextW, nextH, dpr);
   }
 
   getStats(): FrameStats {
@@ -655,7 +677,7 @@ export class RenderEngine implements IRenderEngine {
   ): void {
     const backend = new Canvas2DBackend();
     backend.initSync(canvas, {
-      dprCap: this.dprCap,
+      dprCap: this.canvas2dDprCap,
       reducedMotion: this.reducedMotion,
       crtMode: this.crtMode,
     });
@@ -667,7 +689,7 @@ export class RenderEngine implements IRenderEngine {
         : 'Canvas2D Parity Renderer',
     });
     if (snapshot) {
-      backend.importStateSnapshot(snapshot);
+      backend.importStateSnapshot({ ...snapshot, dprCap: this.canvas2dDprCap });
     }
     backend.setContextCounts(this.contextLostCount, this.contextRestoredCount);
     this._activeBackend = backend;
@@ -784,7 +806,7 @@ export class RenderEngine implements IRenderEngine {
       const attempt = this.tryInitWebGL2Sync(freshCanvas);
       if (attempt.ok && attempt.backend) {
         this._activeBackend = attempt.backend;
-        this._activeBackend.importStateSnapshot(snapshot);
+        this._activeBackend.importStateSnapshot({ ...snapshot, dprCap: this.dprCap });
         this._activeBackend.setContextCounts(this.contextLostCount, this.contextRestoredCount);
         this.canvasHasWebGLContext = true;
         this.attachCanvasListeners(this.canvas);

@@ -56,6 +56,7 @@ interface DynamicSourceTex {
   height: number;
   mutable: boolean;
   pixelCrisp: boolean;
+  lastUploadFrameId: number;
 }
 
 interface HybridLayerTarget {
@@ -64,6 +65,8 @@ interface HybridLayerTarget {
   tex: WebGLTexture;
   uploadedWidth: number;
   uploadedHeight: number;
+  scaleX: number;
+  scaleY: number;
 }
 
 interface RenderTargetFBO {
@@ -74,39 +77,65 @@ interface RenderTargetFBO {
   height: number;
 }
 
+interface ImmutableCanvasLike {
+  __starlightImmutable?: boolean;
+  __starlightMutable?: boolean;
+}
+
 const SOFTWARE_RENDERER_PATTERN =
   /swiftshader|llvmpipe|softpipe|software\s*rasterizer|microsoft\s*basic\s*render\s*driver|mesa\s*offscreen/i;
 
 const SPRITE_FLOATS_PER_INSTANCE = 20;
 const WATER_FLOATS_PER_INSTANCE = 6;
 const PARTICLE_FLOATS_PER_INSTANCE = 11;
+const MAX_SOFTWARE_SPRITE_LIGHTS = 6;
+const MAX_SOFTWARE_DEFERRED_LIGHTS = 8;
+const MAX_WEBGL_PIXEL_AREA = 2_100_000; // ~1920x1080 cap on Retina/4K displays for crisp 60fps+
 
 function clamp(v: number, min: number, max: number): number {
   return v < min ? min : v > max ? max : v;
 }
 
-function getSourceDims(src: CanvasImageSource): { width: number; height: number } {
+function getSourceWidth(src: CanvasImageSource): number {
   if ('naturalWidth' in src && typeof src.naturalWidth === 'number' && src.naturalWidth > 0) {
-    return { width: src.naturalWidth, height: (src as HTMLImageElement).naturalHeight || 1 };
+    return src.naturalWidth;
   }
   if ('videoWidth' in src && typeof src.videoWidth === 'number' && src.videoWidth > 0) {
-    return { width: src.videoWidth, height: (src as HTMLVideoElement).videoHeight || 1 };
+    return src.videoWidth;
   }
-  const w = 'width' in src && typeof src.width === 'number' ? src.width : 1;
-  const h = 'height' in src && typeof src.height === 'number' ? src.height : 1;
-  return { width: Math.max(1, w), height: Math.max(1, h) };
+  return Math.max(1, 'width' in src && typeof src.width === 'number' ? src.width : 1);
 }
 
-function isMutableCanvasSource(src: CanvasImageSource): boolean {
-  if (typeof HTMLCanvasElement !== 'undefined' && src instanceof HTMLCanvasElement) {
-    return true;
+function getSourceHeight(src: CanvasImageSource): number {
+  if ('naturalHeight' in src && typeof src.naturalHeight === 'number' && src.naturalHeight > 0) {
+    return src.naturalHeight;
   }
-  if (typeof OffscreenCanvas !== 'undefined' && src instanceof OffscreenCanvas) {
-    return true;
+  if ('videoHeight' in src && typeof src.videoHeight === 'number' && src.videoHeight > 0) {
+    return src.videoHeight;
   }
+  return Math.max(1, 'height' in src && typeof src.height === 'number' ? src.height : 1);
+}
+
+function getSourceDims(src: CanvasImageSource): { width: number; height: number } {
+  return { width: getSourceWidth(src), height: getSourceHeight(src) };
+}
+
+function isMutableCanvasSource(
+  src: CanvasImageSource,
+  _width: number,
+  _height: number,
+  staticHint?: boolean,
+): boolean {
+  if (staticHint === true) return false;
+  if (staticHint === false) return true;
+  const tagged = src as unknown as ImmutableCanvasLike;
+  if (tagged.__starlightImmutable === true) return false;
+  if (tagged.__starlightMutable === true) return true;
   if (typeof HTMLVideoElement !== 'undefined' && src instanceof HTMLVideoElement) {
     return true;
   }
+  // Baked sprite frames, character rigs, contours, and terrain chunks are static offscreen canvases;
+  // callers that mutate a canvas in-place must opt in via staticSource: false or __starlightMutable = true.
   return false;
 }
 
@@ -133,14 +162,17 @@ export class WebGL2Backend implements IRenderBackend {
 
   private spriteVao: WebGLVertexArrayObject | null = null;
   private spriteInstanceVbo: WebGLBuffer | null = null;
+  private spriteVboBytes = 0;
   private spriteData = new Float32Array(256 * SPRITE_FLOATS_PER_INSTANCE);
 
   private waterVao: WebGLVertexArrayObject | null = null;
   private waterInstanceVbo: WebGLBuffer | null = null;
+  private waterVboBytes = 0;
   private waterData = new Float32Array(256 * WATER_FLOATS_PER_INSTANCE);
 
   private particleVao: WebGLVertexArrayObject | null = null;
   private particleInstanceVbo: WebGLBuffer | null = null;
+  private particleVboBytes = 0;
   private particleData = new Float32Array(256 * PARTICLE_FLOATS_PER_INSTANCE);
 
   private sceneTarget: RenderTargetFBO | null = null;
@@ -150,21 +182,29 @@ export class WebGL2Backend implements IRenderBackend {
   private fallbackBlackTex: WebGLTexture | null = null;
   private fallbackNormalTex: WebGLTexture | null = null;
 
-  private worldLayer: HybridLayerTarget | null = null;
+  private worldLayerA: HybridLayerTarget | null = null;
+  private worldLayerB: HybridLayerTarget | null = null;
+  private worldLayerToggle = 0;
   private postLightLayer: HybridLayerTarget | null = null;
   private screenLayer: HybridLayerTarget | null = null;
+
+  private drawBuf0: number[] = [];
+  private drawBuf1: number[] = [];
+  private drawBuf01: number[] = [];
 
   private atlases = new Map<string, RegisteredAtlasGL>();
   private dynamicSourceCache = new WeakMap<object, DynamicSourceTex>();
   private dynamicTextures: WebGLTexture[] = [];
 
-  private dprCap = 2;
+  private dprCap = 1.5;
   private dpr = 1;
   private cssWidth = 960;
   private cssHeight = 540;
   private pixelWidth = 960;
   private pixelHeight = 540;
   private disposed = false;
+  private frameSeq = 0;
+  private frameHasEmissive = false;
 
   private camera: CameraState = createDefaultCamera();
   private colorGrade: BiomeColorGrade = createDefaultColorGrade();
@@ -173,10 +213,21 @@ export class WebGL2Backend implements IRenderBackend {
   private reducedMotion = false;
   private crtMode = false;
 
-  // Per-frame queues
+  // Per-frame pooled queues (zero GC churn)
   private frameTimeSeconds = 0;
   private clearColor: [number, number, number, number] = [0.04, 0.06, 0.14, 1];
   private worldSegments: WorldSegment[] = [];
+  private segmentPoolWater: Array<{ kind: 'water'; items: WaterQuadCmd[] }> = [];
+  private segmentPoolSprites: Array<{ kind: 'sprites'; items: SpriteDrawCmd[] }> = [];
+  private segmentPoolCustom: Array<{ kind: 'custom2d'; items: Custom2DDrawFn[] }> = [];
+  private waterSegCursor = 0;
+  private spriteSegCursor = 0;
+  private customSegCursor = 0;
+  private waterQuadPool: WaterQuadCmd[] = [];
+  private waterQuadCursor = 0;
+  private spriteSortScratch: SpriteDrawCmd[] = [];
+  private projX = 0;
+  private projY = 0;
   private lights: PointLight[] = [];
   private particles: ParticleDrawCmd[] = [];
   private postLightDraws: Custom2DDrawFn[] = [];
@@ -296,9 +347,15 @@ export class WebGL2Backend implements IRenderBackend {
       this.shaders = createShaderLibrary(gl);
       this.initGeometry(gl);
       this.initFallbackTextures(gl);
-      this.worldLayer = this.createHybridLayer(gl);
-      this.postLightLayer = this.createHybridLayer(gl);
-      this.screenLayer = this.createHybridLayer(gl);
+      this.worldLayerA = this.createHybridLayer(gl, isSoftwareRasterizer);
+      this.worldLayerB = this.createHybridLayer(gl, isSoftwareRasterizer);
+      this.postLightLayer = this.createHybridLayer(gl, isSoftwareRasterizer);
+      this.screenLayer = this.createHybridLayer(gl, isSoftwareRasterizer);
+      if (typeof gl.COLOR_ATTACHMENT0 === 'number' && typeof gl.COLOR_ATTACHMENT1 === 'number') {
+        this.drawBuf0 = [gl.COLOR_ATTACHMENT0];
+        this.drawBuf1 = [gl.NONE ?? 0, gl.COLOR_ATTACHMENT1];
+        this.drawBuf01 = [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1];
+      }
 
       const initialW = canvas.clientWidth || canvas.width || 960;
       const initialH = canvas.clientHeight || canvas.height || 540;
@@ -386,9 +443,17 @@ export class WebGL2Backend implements IRenderBackend {
     const safeH = Math.max(1, Math.round(cssHeight));
     const rawDpr =
       dpr ?? (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1);
-    const effectiveDpr = this._capabilities.isSoftwareRasterizer
-      ? (safeW <= 1440 ? 0.58 : 0.5)
+    let effectiveDpr = this._capabilities.isSoftwareRasterizer
+      ? (safeW <= 1440 ? 0.52 : 0.48)
       : clamp(rawDpr, 1, this.dprCap);
+
+    // Cap total WebGL backing area to ~1080p on high-DPR monitors so 32x32 pixel art never saturates fillrate
+    if (!this._capabilities.isSoftwareRasterizer && effectiveDpr > 1) {
+      const area = safeW * safeH * effectiveDpr * effectiveDpr;
+      if (area > MAX_WEBGL_PIXEL_AREA) {
+        effectiveDpr = clamp(Math.sqrt(MAX_WEBGL_PIXEL_AREA / Math.max(1, safeW * safeH)), 1, effectiveDpr);
+      }
+    }
 
     this.cssWidth = safeW;
     this.cssHeight = safeH;
@@ -408,9 +473,13 @@ export class WebGL2Backend implements IRenderBackend {
       if (this.canvas.height !== pixelH) this.canvas.height = pixelH;
     }
 
-    this.resizeHybridLayer(this.worldLayer, pixelW, pixelH);
-    this.resizeHybridLayer(this.postLightLayer, pixelW, pixelH);
-    this.resizeHybridLayer(this.screenLayer, pixelW, pixelH);
+    // World/post-light pixel-art overlays run at <=1x CSS resolution (saves 4x pixels on Retina!)
+    const worldHybridW = Math.max(1, Math.min(pixelW, safeW));
+    const worldHybridH = Math.max(1, Math.min(pixelH, safeH));
+    this.resizeHybridLayer(this.worldLayerA, worldHybridW, worldHybridH, safeW, safeH);
+    this.resizeHybridLayer(this.worldLayerB, worldHybridW, worldHybridH, safeW, safeH);
+    this.resizeHybridLayer(this.postLightLayer, worldHybridW, worldHybridH, safeW, safeH);
+    this.resizeHybridLayer(this.screenLayer, pixelW, pixelH, safeW, safeH);
 
     const gl = this.gl;
     if (!gl || this.disposed || gl.isContextLost()) {
@@ -473,36 +542,65 @@ export class WebGL2Backend implements IRenderBackend {
   }
 
   setCamera(camera: Partial<CameraState>): void {
-    this.camera = {
-      ...this.camera,
-      ...camera,
-      viewportWidth: camera.viewportWidth ?? this.cssWidth,
-      viewportHeight: camera.viewportHeight ?? this.cssHeight,
-    };
+    const c = this.camera;
+    if (camera.x !== undefined) c.x = camera.x;
+    if (camera.y !== undefined) c.y = camera.y;
+    if (camera.zoom !== undefined) c.zoom = camera.zoom;
+    if (camera.shakeX !== undefined) c.shakeX = camera.shakeX;
+    if (camera.shakeY !== undefined) c.shakeY = camera.shakeY;
+    if (camera.rotation !== undefined) c.rotation = camera.rotation;
+    c.viewportWidth = camera.viewportWidth ?? this.cssWidth;
+    c.viewportHeight = camera.viewportHeight ?? this.cssHeight;
   }
 
   setColorGrade(grade: BiomeColorGrade): void {
-    this.colorGrade = {
-      ...grade,
-      ambientRgb: [...grade.ambientRgb],
-      tintRgb: [...grade.tintRgb],
-    };
+    const g = this.colorGrade;
+    g.biomeId = grade.biomeId;
+    g.ambientRgb[0] = grade.ambientRgb[0];
+    g.ambientRgb[1] = grade.ambientRgb[1];
+    g.ambientRgb[2] = grade.ambientRgb[2];
+    g.ambientStrength = grade.ambientStrength;
+    g.tintRgb[0] = grade.tintRgb[0];
+    g.tintRgb[1] = grade.tintRgb[1];
+    g.tintRgb[2] = grade.tintRgb[2];
+    g.contrast = grade.contrast;
+    g.saturation = grade.saturation;
+    g.bloomIntensity = grade.bloomIntensity;
+    g.bloomThreshold = grade.bloomThreshold;
+    g.vignetteStrength = grade.vignetteStrength;
+    g.skyTopHex = grade.skyTopHex;
+    g.skyHorizonHex = grade.skyHorizonHex;
+    g.starlightGlow = grade.starlightGlow;
   }
 
   setCanopyConfig(config: CanopyShadowConfig): void {
-    this.canopyConfig = {
-      ...config,
-      sunbeamColor: [...config.sunbeamColor],
-    };
+    const c = this.canopyConfig;
+    c.enabled = config.enabled;
+    c.sunbeamIntensity = config.sunbeamIntensity;
+    c.sunbeamAngle = config.sunbeamAngle;
+    c.sunbeamColor[0] = config.sunbeamColor[0];
+    c.sunbeamColor[1] = config.sunbeamColor[1];
+    c.sunbeamColor[2] = config.sunbeamColor[2];
+    c.cloudSpeedX = config.cloudSpeedX;
+    c.cloudSpeedY = config.cloudSpeedY;
+    c.cloudOpacity = config.cloudOpacity;
   }
 
   setWaterConfig(config: WaterConfig): void {
-    this.waterConfig = {
-      ...config,
-      skyTopColor: [...config.skyTopColor],
-      skyBottomColor: [...config.skyBottomColor],
-      foamColor: [...config.foamColor],
-    };
+    const w = this.waterConfig;
+    w.enabled = config.enabled;
+    w.time = config.time;
+    w.skyTopColor[0] = config.skyTopColor[0];
+    w.skyTopColor[1] = config.skyTopColor[1];
+    w.skyTopColor[2] = config.skyTopColor[2];
+    w.skyBottomColor[0] = config.skyBottomColor[0];
+    w.skyBottomColor[1] = config.skyBottomColor[1];
+    w.skyBottomColor[2] = config.skyBottomColor[2];
+    w.starlightIntensity = config.starlightIntensity;
+    w.waveAmplitude = config.waveAmplitude;
+    w.foamColor[0] = config.foamColor[0];
+    w.foamColor[1] = config.foamColor[1];
+    w.foamColor[2] = config.foamColor[2];
   }
 
   setReducedMotion(enabled: boolean): void {
@@ -522,6 +620,8 @@ export class WebGL2Backend implements IRenderBackend {
   ): void {
     this.frameStartMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     this.frameTimeSeconds = Number.isFinite(timeSeconds) ? timeSeconds : 0;
+    this.frameSeq += 1;
+    this.frameHasEmissive = false;
 
     const clampedDtSec = clamp(Number.isFinite(dtSeconds) ? dtSeconds : 0, 0, 0.05);
     this.clampedDtMs = clampedDtSec * 1000;
@@ -530,11 +630,24 @@ export class WebGL2Backend implements IRenderBackend {
       this.smoothedFps = this.smoothedFps * 0.88 + instantFps * 0.12;
     }
 
-    this.clearColor = clearColor
-      ? [clearColor[0], clearColor[1], clearColor[2], clearColor[3]]
-      : [0.04, 0.06, 0.14, 1];
+    if (clearColor) {
+      this.clearColor[0] = clearColor[0];
+      this.clearColor[1] = clearColor[1];
+      this.clearColor[2] = clearColor[2];
+      this.clearColor[3] = clearColor[3];
+    } else {
+      this.clearColor[0] = 0.04;
+      this.clearColor[1] = 0.06;
+      this.clearColor[2] = 0.14;
+      this.clearColor[3] = 1;
+    }
 
     this.worldSegments.length = 0;
+    this.waterSegCursor = 0;
+    this.spriteSegCursor = 0;
+    this.customSegCursor = 0;
+    this.waterQuadCursor = 0;
+    this.worldLayerToggle = 0;
     this.lights.length = 0;
     this.particles.length = 0;
     this.postLightDraws.length = 0;
@@ -546,7 +659,15 @@ export class WebGL2Backend implements IRenderBackend {
     if (last && last.kind === 'sprites') {
       last.items.push(cmd);
     } else {
-      this.worldSegments.push({ kind: 'sprites', items: [cmd] });
+      let seg = this.segmentPoolSprites[this.spriteSegCursor++];
+      if (!seg) {
+        seg = { kind: 'sprites', items: [] };
+        this.segmentPoolSprites.push(seg);
+      } else {
+        seg.items.length = 0;
+      }
+      seg.items.push(cmd);
+      this.worldSegments.push(seg);
     }
   }
 
@@ -558,12 +679,31 @@ export class WebGL2Backend implements IRenderBackend {
     depthFactor: number,
     foamMask: number,
   ): void {
-    const quad: WaterQuadCmd = { x, y, w, h, depthFactor, foamMask };
+    let quad = this.waterQuadPool[this.waterQuadCursor++];
+    if (!quad) {
+      quad = { x, y, w, h, depthFactor, foamMask };
+      this.waterQuadPool.push(quad);
+    } else {
+      quad.x = x;
+      quad.y = y;
+      quad.w = w;
+      quad.h = h;
+      quad.depthFactor = depthFactor;
+      quad.foamMask = foamMask;
+    }
     const last = this.worldSegments[this.worldSegments.length - 1];
     if (last && last.kind === 'water') {
       last.items.push(quad);
     } else {
-      this.worldSegments.push({ kind: 'water', items: [quad] });
+      let seg = this.segmentPoolWater[this.waterSegCursor++];
+      if (!seg) {
+        seg = { kind: 'water', items: [] };
+        this.segmentPoolWater.push(seg);
+      } else {
+        seg.items.length = 0;
+      }
+      seg.items.push(quad);
+      this.worldSegments.push(seg);
     }
   }
 
@@ -588,7 +728,15 @@ export class WebGL2Backend implements IRenderBackend {
       if (last && last.kind === 'custom2d') {
         last.items.push(drawFn);
       } else {
-        this.worldSegments.push({ kind: 'custom2d', items: [drawFn] });
+        let seg = this.segmentPoolCustom[this.customSegCursor++];
+        if (!seg) {
+          seg = { kind: 'custom2d', items: [] };
+          this.segmentPoolCustom.push(seg);
+        } else {
+          seg.items.length = 0;
+        }
+        seg.items.push(drawFn);
+        this.worldSegments.push(seg);
       }
     }
   }
@@ -618,7 +766,7 @@ export class WebGL2Backend implements IRenderBackend {
           typeof gl.drawBuffers === 'function' &&
           typeof gl.COLOR_ATTACHMENT1 === 'number';
         if (hasSceneEmissive) {
-          gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+          gl.drawBuffers(this.drawBuf0);
           gl.clearColor(
             this.clearColor[0],
             this.clearColor[1],
@@ -626,10 +774,10 @@ export class WebGL2Backend implements IRenderBackend {
             this.clearColor[3],
           );
           gl.clear(gl.COLOR_BUFFER_BIT);
-          gl.drawBuffers([gl.NONE ?? 0, gl.COLOR_ATTACHMENT1]);
+          gl.drawBuffers(this.drawBuf1);
           gl.clearColor(0, 0, 0, 0);
           gl.clear(gl.COLOR_BUFFER_BIT);
-          gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+          gl.drawBuffers(this.drawBuf01);
         } else {
           gl.clearColor(
             this.clearColor[0],
@@ -647,28 +795,33 @@ export class WebGL2Backend implements IRenderBackend {
           gl.ONE_MINUS_SRC_ALPHA,
         );
 
-        for (const seg of this.worldSegments) {
+        for (let si = 0; si < this.worldSegments.length; si++) {
+          const seg = this.worldSegments[si];
           if (seg.kind === 'water') {
             if (this.waterConfig.enabled && seg.items.length > 0) {
               drawCalls += this.executeWaterPass(gl, seg.items);
             }
           } else if (seg.kind === 'sprites') {
             drawCalls += this.executeSpritePass(gl, seg.items);
-          } else if (this.worldLayer && seg.items.length > 0) {
-            drawCalls += this.executeHybridLayerBlit(gl, this.worldLayer, seg.items);
+          } else if (seg.items.length > 0) {
+            const targetLayer = (this.worldLayerToggle++ & 1) === 0 ? this.worldLayerA : (this.worldLayerB ?? this.worldLayerA);
+            if (targetLayer) {
+              drawCalls += this.executeHybridLayerBlit(gl, targetLayer, seg.items);
+            }
           }
         }
 
         // ============================================================
         // PASS 2: Lit FBO — Deferred 2D PointLights + Emissive + Canopy
         // ============================================================
+        const activeEmissiveTex = this.frameHasEmissive ? this.sceneTarget.emissiveTex : null;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.litTarget.fbo);
         gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
         gl.disable(gl.BLEND);
         const lightPass = this.executeLightingPass(
           gl,
           this.sceneTarget.tex,
-          this.sceneTarget.emissiveTex,
+          activeEmissiveTex,
         );
         drawCalls += lightPass.drawCalls;
         activeLights = lightPass.activeLights;
@@ -700,7 +853,7 @@ export class WebGL2Backend implements IRenderBackend {
         drawCalls += this.executeBloomCompositePass(
           gl,
           this.litTarget.tex,
-          this.sceneTarget.emissiveTex,
+          activeEmissiveTex,
         );
 
         // Screen-space 2D HUD overlays composited cleanly on top
@@ -722,17 +875,15 @@ export class WebGL2Backend implements IRenderBackend {
     const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const frameTimeMs = Math.max(0, nowMs - this.frameStartMs);
 
-    this.lastStats = {
-      fps: Math.round(this.smoothedFps * 10) / 10,
-      frameTimeMs: Math.round(frameTimeMs * 100) / 100,
-      clampedDtMs: Math.round(this.clampedDtMs * 100) / 100,
-      drawCalls,
-      activeLights,
-      activeParticles,
-      backend: 'webgl2',
-      contextLostCount: this.contextLostCount,
-      contextRestoredCount: this.contextRestoredCount,
-    };
+    this.lastStats.fps = Math.round(this.smoothedFps * 10) / 10;
+    this.lastStats.frameTimeMs = Math.round(frameTimeMs * 100) / 100;
+    this.lastStats.clampedDtMs = Math.round(this.clampedDtMs * 100) / 100;
+    this.lastStats.drawCalls = drawCalls;
+    this.lastStats.activeLights = activeLights;
+    this.lastStats.activeParticles = activeParticles;
+    this.lastStats.backend = 'webgl2';
+    this.lastStats.contextLostCount = this.contextLostCount;
+    this.lastStats.contextRestoredCount = this.contextRestoredCount;
 
     return { ...this.lastStats };
   }
@@ -784,7 +935,8 @@ export class WebGL2Backend implements IRenderBackend {
         if (this.fallbackBlackTex) gl.deleteTexture(this.fallbackBlackTex);
         if (this.fallbackNormalTex) gl.deleteTexture(this.fallbackNormalTex);
 
-        if (this.worldLayer) gl.deleteTexture(this.worldLayer.tex);
+        if (this.worldLayerA) gl.deleteTexture(this.worldLayerA.tex);
+        if (this.worldLayerB) gl.deleteTexture(this.worldLayerB.tex);
         if (this.postLightLayer) gl.deleteTexture(this.postLightLayer.tex);
         if (this.screenLayer) gl.deleteTexture(this.screenLayer.tex);
 
@@ -806,21 +958,30 @@ export class WebGL2Backend implements IRenderBackend {
     this.fullscreenVao = null;
     this.spriteVao = null;
     this.spriteInstanceVbo = null;
+    this.spriteVboBytes = 0;
     this.waterVao = null;
     this.waterInstanceVbo = null;
+    this.waterVboBytes = 0;
     this.particleVao = null;
     this.particleInstanceVbo = null;
+    this.particleVboBytes = 0;
     this.sceneTarget = null;
     this.litTarget = null;
     this.fallbackWhiteTex = null;
     this.fallbackBlackTex = null;
     this.fallbackNormalTex = null;
-    this.worldLayer = null;
+    this.worldLayerA = null;
+    this.worldLayerB = null;
     this.postLightLayer = null;
     this.screenLayer = null;
     this.atlases.clear();
     this.dynamicTextures.length = 0;
     this.worldSegments.length = 0;
+    this.segmentPoolWater.length = 0;
+    this.segmentPoolSprites.length = 0;
+    this.segmentPoolCustom.length = 0;
+    this.waterQuadPool.length = 0;
+    this.spriteSortScratch.length = 0;
     this.lights.length = 0;
     this.particles.length = 0;
     this.postLightDraws.length = 0;
@@ -971,14 +1132,21 @@ export class WebGL2Backend implements IRenderBackend {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
   }
 
-  private createHybridLayer(gl: WebGL2RenderingContext): HybridLayerTarget | null {
+  private createHybridLayer(
+    gl: WebGL2RenderingContext,
+    isSoftwareRasterizer = false,
+  ): HybridLayerTarget | null {
     if (typeof document === 'undefined') {
       return null;
     }
     const canvas = document.createElement('canvas');
     canvas.width = this.pixelWidth;
     canvas.height = this.pixelHeight;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    // Hardware GPU: keep GPU-backed 2D canvas for zero-copy GPU-to-GPU texSubImage2D.
+    // Software rasterizer (SwiftShader): keep CPU-backed 2D canvas to avoid cross-process GPU->CPU readback stalls!
+    const ctx =
+      canvas.getContext('2d', { alpha: true, willReadFrequently: isSoftwareRasterizer }) ??
+      canvas.getContext('2d');
     if (!ctx) {
       return null;
     }
@@ -1002,13 +1170,29 @@ export class WebGL2Backend implements IRenderBackend {
       gl.UNSIGNED_BYTE,
       new Uint8Array([0, 0, 0, 0]),
     );
-    return { canvas, ctx, tex, uploadedWidth: 1, uploadedHeight: 1 };
+    return {
+      canvas,
+      ctx,
+      tex,
+      uploadedWidth: 1,
+      uploadedHeight: 1,
+      scaleX: 1,
+      scaleY: 1,
+    };
   }
 
-  private resizeHybridLayer(layer: HybridLayerTarget | null, width: number, height: number): void {
+  private resizeHybridLayer(
+    layer: HybridLayerTarget | null,
+    width: number,
+    height: number,
+    cssW: number,
+    cssH: number,
+  ): void {
     if (!layer) return;
     if (layer.canvas.width !== width) layer.canvas.width = width;
     if (layer.canvas.height !== height) layer.canvas.height = height;
+    layer.scaleX = width / Math.max(1, cssW);
+    layer.scaleY = height / Math.max(1, cssH);
   }
 
   private ensureRenderTarget(
@@ -1077,21 +1261,65 @@ export class WebGL2Backend implements IRenderBackend {
     return { fbo, tex, emissiveTex, width, height };
   }
 
+  private uploadInstanceData(
+    gl: WebGL2RenderingContext,
+    vbo: WebGLBuffer,
+    view: Float32Array,
+    slot: 'sprite' | 'water' | 'particle',
+  ): void {
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    if (typeof gl.bufferSubData === 'function') {
+      const byteLen = view.byteLength;
+      const curCap =
+        slot === 'sprite'
+          ? this.spriteVboBytes
+          : slot === 'water'
+            ? this.waterVboBytes
+            : this.particleVboBytes;
+      if (byteLen > curCap) {
+        const nextCap = Math.max(byteLen, curCap * 2, 16384);
+        gl.bufferData(gl.ARRAY_BUFFER, nextCap, gl.DYNAMIC_DRAW);
+        if (slot === 'sprite') this.spriteVboBytes = nextCap;
+        else if (slot === 'water') this.waterVboBytes = nextCap;
+        else this.particleVboBytes = nextCap;
+      }
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, view);
+    } else {
+      gl.bufferData(gl.ARRAY_BUFFER, view, gl.DYNAMIC_DRAW);
+    }
+  }
+
   private resolveDynamicSourceTexture(
     gl: WebGL2RenderingContext,
     source: CanvasImageSource,
     pixelCrisp = true,
+    staticHint?: boolean,
   ): DynamicSourceTex {
     const key = source as object;
-    const dims = getSourceDims(source);
+    const width = getSourceWidth(source);
+    const height = getSourceHeight(source);
     const cached = this.dynamicSourceCache.get(key);
     if (cached) {
-      if (cached.mutable) {
+      if (staticHint === true) {
+        cached.mutable = false;
+      } else if (staticHint === false) {
+        cached.mutable = true;
+      }
+      if (cached.mutable && cached.lastUploadFrameId !== this.frameSeq) {
         gl.bindTexture(gl.TEXTURE_2D, cached.tex);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource);
-        cached.width = dims.width;
-        cached.height = dims.height;
+        if (
+          cached.width === width &&
+          cached.height === height &&
+          typeof gl.texSubImage2D === 'function'
+        ) {
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource);
+        } else {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource);
+          cached.width = width;
+          cached.height = height;
+        }
+        cached.lastUploadFrameId = this.frameSeq;
       }
       return cached;
     }
@@ -1099,10 +1327,11 @@ export class WebGL2Backend implements IRenderBackend {
     const tex = this.createImageTexture(gl, source, pixelCrisp);
     const entry: DynamicSourceTex = {
       tex,
-      width: dims.width,
-      height: dims.height,
-      mutable: isMutableCanvasSource(source),
+      width,
+      height,
+      mutable: isMutableCanvasSource(source, width, height, staticHint),
       pixelCrisp,
+      lastUploadFrameId: this.frameSeq,
     };
     this.dynamicSourceCache.set(key, entry);
     this.dynamicTextures.push(tex);
@@ -1165,10 +1394,10 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform1f(prog.getUniform('uReducedMotion'), this.reducedMotion ? 1 : 0);
 
     gl.bindVertexArray(this.waterVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.waterInstanceVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, this.waterData.subarray(0, offset), gl.DYNAMIC_DRAW);
+    this.uploadInstanceData(gl, this.waterInstanceVbo, this.waterData.subarray(0, offset), 'water');
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, quads.length);
     gl.bindVertexArray(null);
+    this.frameHasEmissive = true;
 
     return 1;
   }
@@ -1178,10 +1407,26 @@ export class WebGL2Backend implements IRenderBackend {
       return 0;
     }
 
-    const ordered =
-      sprites.length > 1
-        ? [...sprites].sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
-        : sprites;
+    let ordered = sprites;
+    if (sprites.length > 1) {
+      let sorted = true;
+      let prevDepth = sprites[0].depth ?? 0;
+      for (let i = 1; i < sprites.length; i++) {
+        const d = sprites[i].depth ?? 0;
+        if (d < prevDepth) {
+          sorted = false;
+          break;
+        }
+        prevDepth = d;
+      }
+      if (!sorted) {
+        const scratch = this.spriteSortScratch;
+        scratch.length = sprites.length;
+        for (let i = 0; i < sprites.length; i++) scratch[i] = sprites[i];
+        scratch.sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0));
+        ordered = scratch;
+      }
+    }
 
     const spriteLightCount = this.collectSpriteWorldLights();
 
@@ -1223,19 +1468,27 @@ export class WebGL2Backend implements IRenderBackend {
     let batchAdditive = false;
     let batchPixelCrisp = true;
     let batchCount = 0;
+    let activeBlendAdditive = false;
+
+    const uHasNormalLoc = prog.getUniform('uHasNormal');
+    const uHasEmissiveLoc = prog.getUniform('uHasEmissive');
+    const uTexelSizeLoc = prog.getUniform('uTexelSize');
 
     const flush = (): void => {
       if (batchCount === 0 || !batchAlbedo) return;
 
-      if (batchAdditive) {
-        gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      } else {
-        gl.blendFuncSeparate(
-          gl.SRC_ALPHA,
-          gl.ONE_MINUS_SRC_ALPHA,
-          gl.ONE,
-          gl.ONE_MINUS_SRC_ALPHA,
-        );
+      if (batchAdditive !== activeBlendAdditive) {
+        if (batchAdditive) {
+          gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        } else {
+          gl.blendFuncSeparate(
+            gl.SRC_ALPHA,
+            gl.ONE_MINUS_SRC_ALPHA,
+            gl.ONE,
+            gl.ONE_MINUS_SRC_ALPHA,
+          );
+        }
+        activeBlendAdditive = batchAdditive;
       }
 
       gl.activeTexture(gl.TEXTURE0);
@@ -1257,24 +1510,24 @@ export class WebGL2Backend implements IRenderBackend {
 
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, batchNormal ?? this.fallbackNormalTex);
-      gl.uniform1i(prog.getUniform('uHasNormal'), batchNormal ? 1 : 0);
+      gl.uniform1i(uHasNormalLoc, batchNormal ? 1 : 0);
 
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, batchEmissive ?? this.fallbackBlackTex);
-      gl.uniform1i(prog.getUniform('uHasEmissive'), batchEmissive ? 1 : 0);
+      gl.uniform1i(uHasEmissiveLoc, batchEmissive ? 1 : 0);
 
       gl.uniform2f(
-        prog.getUniform('uTexelSize'),
+        uTexelSizeLoc,
         1 / Math.max(batchWidth, 1),
         1 / Math.max(batchHeight, 1),
       );
 
       gl.bindVertexArray(this.spriteVao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteInstanceVbo);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
+      this.uploadInstanceData(
+        gl,
+        this.spriteInstanceVbo!,
         this.spriteData.subarray(0, batchCount * SPRITE_FLOATS_PER_INSTANCE),
-        gl.DYNAMIC_DRAW,
+        'sprite',
       );
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batchCount);
       gl.bindVertexArray(null);
@@ -1283,7 +1536,8 @@ export class WebGL2Backend implements IRenderBackend {
       batchCount = 0;
     };
 
-    for (const cmd of ordered) {
+    for (let si = 0; si < ordered.length; si++) {
+      const cmd = ordered[si];
       let tex: WebGLTexture | null = null;
       let normTex: WebGLTexture | null = null;
       let emTex: WebGLTexture | null = null;
@@ -1298,7 +1552,7 @@ export class WebGL2Backend implements IRenderBackend {
       const wantCrisp = cmd.pixelCrisp !== false;
 
       if (cmd.source) {
-        const dyn = this.resolveDynamicSourceTexture(gl, cmd.source, wantCrisp);
+        const dyn = this.resolveDynamicSourceTexture(gl, cmd.source, wantCrisp, cmd.staticSource);
         tex = dyn.tex;
         dynRef = dyn;
         texW = dyn.width;
@@ -1312,17 +1566,23 @@ export class WebGL2Backend implements IRenderBackend {
           emTex = atlas.emissiveTex;
           texW = atlas.width;
           texH = atlas.height;
-          if (cmd.regionId && atlas.regions[cmd.regionId]) {
+          if (cmd.regionId) {
             const region = atlas.regions[cmd.regionId];
-            sx = sx ?? region.x;
-            sy = sy ?? region.y;
-            sw = sw ?? region.w;
-            sh = sh ?? region.h;
+            if (region) {
+              sx = sx ?? region.x;
+              sy = sy ?? region.y;
+              sw = sw ?? region.w;
+              sh = sh ?? region.h;
+            }
           }
         }
       }
 
       if (!tex) continue;
+
+      if (emTex !== null || (cmd.emissive ?? 0) > 0.001) {
+        this.frameHasEmissive = true;
+      }
 
       const additive = Boolean(cmd.additive);
       if (
@@ -1359,7 +1619,6 @@ export class WebGL2Backend implements IRenderBackend {
       const rawSh = sh ?? texH;
       // Inset packed atlas sub-rects slightly so GPU/SwiftShader fixed-point UV
       // interpolation at quad edges never crosses onto a neighboring tile in the sheet
-      // (e.g. tile_8's bright bevel row directly beneath tile_0 grass in terrain-atlas.png).
       const uvInset = wantCrisp ? 0.125 : 0.5;
       const insetX = rawSw < texW && rawSw > 1 ? Math.min(uvInset, rawSw * 0.25) : 0;
       const insetY = rawSh < texH && rawSh > 1 ? Math.min(uvInset, rawSh * 0.25) : 0;
@@ -1367,8 +1626,8 @@ export class WebGL2Backend implements IRenderBackend {
       const v0 = (rawSy + insetY) / texH;
       const uSpan = (rawSw - insetX * 2) / texW;
       const vSpan = (rawSh - insetY * 2) / texH;
-      const tint = cmd.tint ?? [1, 1, 1, 1];
-      const rim = cmd.rimColor ?? [0, 0, 0, 0];
+      const tint = cmd.tint;
+      const rim = cmd.rimColor;
 
       let o = batchCount * SPRITE_FLOATS_PER_INSTANCE;
       this.spriteData[o++] = cmd.dx;
@@ -1386,23 +1645,39 @@ export class WebGL2Backend implements IRenderBackend {
       this.spriteData[o++] = cmd.alpha ?? 1;
       this.spriteData[o++] = cmd.emissive ?? 0;
 
-      this.spriteData[o++] = tint[0];
-      this.spriteData[o++] = tint[1];
-      this.spriteData[o++] = tint[2];
-      this.spriteData[o++] = tint[3];
+      if (tint) {
+        this.spriteData[o++] = tint[0];
+        this.spriteData[o++] = tint[1];
+        this.spriteData[o++] = tint[2];
+        this.spriteData[o++] = tint[3];
+      } else {
+        this.spriteData[o++] = 1;
+        this.spriteData[o++] = 1;
+        this.spriteData[o++] = 1;
+        this.spriteData[o++] = 1;
+      }
 
-      this.spriteData[o++] = rim[0];
-      this.spriteData[o++] = rim[1];
-      this.spriteData[o++] = rim[2];
-      this.spriteData[o++] = rim[3];
+      if (rim) {
+        this.spriteData[o++] = rim[0];
+        this.spriteData[o++] = rim[1];
+        this.spriteData[o++] = rim[2];
+        this.spriteData[o++] = rim[3];
+      } else {
+        this.spriteData[o++] = 0;
+        this.spriteData[o++] = 0;
+        this.spriteData[o++] = 0;
+        this.spriteData[o++] = 0;
+      }
 
       batchCount += 1;
     }
 
     flush();
 
-    // Restore standard blend func
-    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    // Restore standard blend func if last batch was additive
+    if (activeBlendAdditive) {
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    }
     return drawCalls;
   }
 
@@ -1415,14 +1690,14 @@ export class WebGL2Backend implements IRenderBackend {
       return 0;
     }
 
-    const { canvas, ctx, tex } = layer;
+    const { canvas, ctx, tex, scaleX, scaleY } = layer;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    for (const fn of draws) {
+    for (let i = 0; i < draws.length; i++) {
       ctx.save();
-      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-      fn(ctx, this.cssWidth, this.cssHeight, this.dpr);
+      ctx.setTransform(scaleX, 0, 0, scaleY, 0, 0);
+      draws[i](ctx, this.cssWidth, this.cssHeight, scaleX);
       ctx.restore();
     }
 
@@ -1494,15 +1769,14 @@ export class WebGL2Backend implements IRenderBackend {
     d[19] = 0;
 
     gl.bindVertexArray(this.spriteVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.spriteInstanceVbo);
-    gl.bufferData(gl.ARRAY_BUFFER, d.subarray(0, SPRITE_FLOATS_PER_INSTANCE), gl.DYNAMIC_DRAW);
+    this.uploadInstanceData(gl, this.spriteInstanceVbo, d.subarray(0, SPRITE_FLOATS_PER_INSTANCE), 'sprite');
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 1);
     gl.bindVertexArray(null);
 
     return 1;
   }
 
-  private worldToScreen(wx: number, wy: number): [number, number] {
+  private projectWorldToScreen(wx: number, wy: number): void {
     const cx = this.cssWidth * 0.5;
     const cy = this.cssHeight * 0.5;
     const px = wx - this.camera.x;
@@ -1511,19 +1785,19 @@ export class WebGL2Backend implements IRenderBackend {
     const rot = this.camera.rotation;
 
     if (zoom === 1 && rot === 0) {
-      return [px + this.camera.shakeX, py + this.camera.shakeY];
+      this.projX = px + this.camera.shakeX;
+      this.projY = py + this.camera.shakeY;
+      return;
     }
     const dx = px - cx;
     const dy = py - cy;
     const c = Math.cos(rot);
     const s = Math.sin(rot);
-    return [
-      cx + (dx * c - dy * s) * zoom + this.camera.shakeX,
-      cy + (dx * s + dy * c) * zoom + this.camera.shakeY,
-    ];
+    this.projX = cx + (dx * c - dy * s) * zoom + this.camera.shakeX;
+    this.projY = cy + (dx * s + dy * c) * zoom + this.camera.shakeY;
   }
 
-  private screenToWorld(sx: number, sy: number): [number, number] {
+  private projectScreenToWorld(sx: number, sy: number): void {
     const cx = this.cssWidth * 0.5;
     const cy = this.cssHeight * 0.5;
     const zoom = Math.max(this.camera.zoom, 0.05);
@@ -1532,21 +1806,24 @@ export class WebGL2Backend implements IRenderBackend {
     const ry = (sy - this.camera.shakeY - cy) / zoom;
 
     if (rot === 0) {
-      return [rx + cx + this.camera.x, ry + cy + this.camera.y];
+      this.projX = rx + cx + this.camera.x;
+      this.projY = ry + cy + this.camera.y;
+      return;
     }
     const c = Math.cos(-rot);
     const s = Math.sin(-rot);
-    return [
-      rx * c - ry * s + cx + this.camera.x,
-      rx * s + ry * c + cy + this.camera.y,
-    ];
+    this.projX = rx * c - ry * s + cx + this.camera.x;
+    this.projY = rx * s + ry * c + cy + this.camera.y;
   }
 
   private collectSpriteWorldLights(): number {
     const motionScale = this.reducedMotion ? 0.15 : 1.0;
+    const lightLimit = this._capabilities.isSoftwareRasterizer
+      ? MAX_SOFTWARE_SPRITE_LIGHTS
+      : MAX_POINT_LIGHTS;
     let activeCount = 0;
 
-    for (let i = 0; i < this.lights.length && activeCount < MAX_POINT_LIGHTS; i++) {
+    for (let i = 0; i < this.lights.length && activeCount < lightLimit; i++) {
       const light = this.lights[i];
       if (light.intensity <= 0.005 || light.radius <= 0.5) continue;
 
@@ -1558,10 +1835,14 @@ export class WebGL2Backend implements IRenderBackend {
       let worldRad = light.radius;
 
       if (light.screenSpace) {
-        [wx, wy] = this.screenToWorld(light.x, light.y);
+        this.projectScreenToWorld(light.x, light.y);
+        wx = this.projX;
+        wy = this.projY;
         worldRad = light.radius / Math.max(this.camera.zoom, 0.05);
       } else {
-        [sx, sy] = this.worldToScreen(light.x, light.y);
+        this.projectWorldToScreen(light.x, light.y);
+        sx = this.projX;
+        sy = this.projY;
         screenRad = light.radius * this.camera.zoom;
       }
 
@@ -1608,8 +1889,12 @@ export class WebGL2Backend implements IRenderBackend {
       return { drawCalls: 0, activeLights: 0 };
     }
 
+    const motionScale = this.reducedMotion ? 0.15 : 1.0;
+    const lightLimit = this._capabilities.isSoftwareRasterizer
+      ? MAX_SOFTWARE_DEFERRED_LIGHTS
+      : MAX_POINT_LIGHTS;
     let activeCount = 0;
-    for (let i = 0; i < this.lights.length && activeCount < MAX_POINT_LIGHTS; i++) {
+    for (let i = 0; i < this.lights.length && activeCount < lightLimit; i++) {
       const light = this.lights[i];
       if (light.intensity <= 0.005 || light.radius <= 0.5) continue;
 
@@ -1617,7 +1902,9 @@ export class WebGL2Backend implements IRenderBackend {
       let sy = light.y;
       let radius = light.radius;
       if (!light.screenSpace) {
-        [sx, sy] = this.worldToScreen(light.x, light.y);
+        this.projectWorldToScreen(light.x, light.y);
+        sx = this.projX;
+        sy = this.projY;
         radius = light.radius * this.camera.zoom;
       }
 
@@ -1630,18 +1917,27 @@ export class WebGL2Backend implements IRenderBackend {
         continue;
       }
 
+      // Pre-compute animated flicker ONCE on CPU instead of 2 sin() calls per light per pixel in GLSL!
+      const flickSpeed = Math.max(light.flickerSpeed ?? 3.0, 0.5);
+      const flickAmt = (light.flickerAmount ?? 0) * motionScale;
+      let flicker = 1.0;
+      if (flickAmt > 0.001) {
+        const phase = this.frameTimeSeconds * flickSpeed + activeCount * 2.37;
+        flicker = 1.0 + (Math.sin(phase) * 0.65 + Math.sin(phase * 2.13) * 0.35) * flickAmt;
+      }
+
       const p4 = activeCount * 4;
       this.lightPosRadiusBuf[p4] = sx;
       this.lightPosRadiusBuf[p4 + 1] = sy;
       this.lightPosRadiusBuf[p4 + 2] = radius;
-      this.lightPosRadiusBuf[p4 + 3] = light.flickerSpeed ?? 3.0;
+      this.lightPosRadiusBuf[p4 + 3] = flickSpeed;
 
       this.lightColorIntBuf[p4] = light.color[0];
       this.lightColorIntBuf[p4 + 1] = light.color[1];
       this.lightColorIntBuf[p4 + 2] = light.color[2];
-      this.lightColorIntBuf[p4 + 3] = light.intensity;
+      this.lightColorIntBuf[p4 + 3] = Math.max(0, light.intensity * flicker);
 
-      this.lightFlickerBuf[activeCount] = light.flickerAmount ?? 0;
+      this.lightFlickerBuf[activeCount] = 0;
       activeCount += 1;
     }
 
@@ -1743,11 +2039,11 @@ export class WebGL2Backend implements IRenderBackend {
         );
       }
       gl.bindVertexArray(this.particleVao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.particleInstanceVbo);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
+      this.uploadInstanceData(
+        gl,
+        this.particleInstanceVbo!,
         this.particleData.subarray(0, batchCount * PARTICLE_FLOATS_PER_INSTANCE),
-        gl.DYNAMIC_DRAW,
+        'particle',
       );
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, batchCount);
       gl.bindVertexArray(null);

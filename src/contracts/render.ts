@@ -137,6 +137,8 @@ export interface SpriteDrawCmd {
   emissive?: number;
   additive?: boolean;
   depth?: number;
+  /** Optional hint that a dynamic HTMLCanvasElement/OffscreenCanvas source is static after first upload. */
+  staticSource?: boolean;
 }
 
 export interface ParticleDrawCmd {
