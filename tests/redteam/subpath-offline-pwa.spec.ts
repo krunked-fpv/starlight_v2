@@ -232,7 +232,7 @@ test.describe('Red-Team: GitHub Pages Subpath (/starlight_v2/), Offline PWA & An
     expect(errors.pageErrors).toEqual([]);
   });
 
-  test('executes full gameplay loop offline after starlight-v2-cache-3.0.0 SW activation with zero errors or broken images', async ({
+  test('executes full gameplay loop offline after starlight-v2-cache-3.1.0 SW activation with zero errors or broken images', async ({
     context,
     page,
   }) => {
@@ -264,7 +264,7 @@ test.describe('Red-Team: GitHub Pages Subpath (/starlight_v2/), Offline PWA & An
     });
     expect(swStatus.supported).toBe(true);
     expect(swStatus.active).toBe(true);
-    expect(swStatus.cacheNames).toContain('starlight-v2-cache-3.0.0');
+    expect(swStatus.cacheNames).toContain('starlight-v2-cache-3.1.0');
     expect(swStatus.cachedCount).toBeGreaterThanOrEqual(30);
 
     // Cut network completely — true offline PWA mode

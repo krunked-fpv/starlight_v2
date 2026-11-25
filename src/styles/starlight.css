@@ -4583,22 +4583,31 @@ button:focus-visible {
 }
 
 /* ==========================================================================
-   SOFTWARE RENDERER / CANVAS2D COMPOSITOR FAST-PATH (Zero-Blur Pixel-Glass!)
+   SOFTWARE RENDERER / CANVAS2D COMPOSITOR FAST-PATH (Zero-Stall Pixel-Glass!)
    On hardware WebGL2 GPUs (data-software-renderer='false'), full multi-layer
-   linen lacquer gradients and soft ambient shadows render natively.
-   Under SwiftShader / Canvas2D (data-software-renderer='true'), strip ONLY
-   blur-expensive properties (backdrop-filter, CSS filter, blurred box/text
-   shadows, and heavy repeating weave overlays) while KEEPING lush 2-stop
-   static gradients & crisp 0-blur pixel bevel borders (`0 3px 0 #060813`)
-   so BOTH 60 FPS performance AND crafted HD-2D RPG visual polish shine!
+   linen lacquer gradients, shadows, and animations render natively.
+   Under SwiftShader / Canvas2D (data-software-renderer='true'), Chromium runs
+   Skia GPU compositing on the CPU where CSS box-shadow and stacked gradient
+   background-image shaders queue multi-second RendererCompositor backlogs.
+   Strip box-shadow / text-shadow / filter / backdrop-filter / background-image
+   while preserving rich solid HD-2D jewel & lacquer colors, crisp 3px pixel
+   border-bottom button lips, recessed disabled states, and antique-brass trim!
    ========================================================================== */
 html[data-software-renderer='true'] *,
 html[data-software-renderer='true'] *::before,
 html[data-software-renderer='true'] *::after {
   box-shadow: none !important;
+  text-shadow: none !important;
   filter: none !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
+  animation: none !important;
+}
+
+html[data-software-renderer='true'] *:not(.crt-overlay):not(.sl-style-swatch),
+html[data-software-renderer='true'] *::before,
+html[data-software-renderer='true'] *::after {
+  background-image: none !important;
 }
 
 html[data-software-renderer='true'] .sl-holo-foil,
@@ -4606,91 +4615,60 @@ html[data-software-renderer='true'] .sl-holo-glare {
   opacity: 0;
 }
 
-/* Simplify stacked repeating-weave panel backgrounds to crisp 2-stop lacquer gradients */
+/* Primary HD-2D Lacquer Windows & Panels */
 html[data-software-renderer='true'] .sl-glass,
 html[data-software-renderer='true'] .sl-modal-panel,
 html[data-software-renderer='true'] .sl-briefing-drawer,
 html[data-software-renderer='true'] .sl-dialogue-box,
-html[data-software-renderer='true'] .sl-battle-deck-shell {
-  background-image: linear-gradient(180deg, #1c2450 0%, #0d122f 100%);
-  box-shadow:
-    0 0 0 2px #060813,
-    inset 0 1px 0 rgba(255, 246, 214, 0.24),
-    inset 0 -2px 0 rgba(4, 6, 16, 0.72) !important;
-}
-
-html[data-software-renderer='true'] .sl-battle-result-banner,
-html[data-software-renderer='true'] .sl-badge-toast {
-  box-shadow:
-    0 0 0 2px #060813,
-    inset 0 1px 0 rgba(255, 246, 214, 0.3) !important;
-}
-
+html[data-software-renderer='true'] .sl-battle-deck-shell,
 html[data-software-renderer='true'] .sl-battle-switch-drawer,
-html[data-software-renderer='true'] .sl-holo-card,
-html[data-software-renderer='true'] .sl-hud-plate,
+html[data-software-renderer='true'] .sl-holo-card {
+  background-color: #13193e;
+}
+
+html[data-software-renderer='true'] .sl-modal-header,
+html[data-software-renderer='true'] .sl-drawer-header,
+html[data-software-renderer='true'] .sl-briefing-head {
+  background-color: #1c2450;
+}
+
+html[data-software-renderer='true'] .sl-glass-soft,
 html[data-software-renderer='true'] .sl-pixel-card,
-html[data-software-renderer='true'] .sl-combatant-card {
-  box-shadow:
-    0 0 0 2px #060813,
-    inset 0 1px 0 rgba(255, 246, 214, 0.22) !important;
-}
-
-html[data-software-renderer='true'] .sl-battle-message-wrap {
-  box-shadow:
-    0 0 0 1.5px #060813,
-    inset 0 0 0 2px #090d22,
-    inset 0 0 0 3px rgba(255, 232, 166, 0.26) !important;
-}
-
-html[data-software-renderer='true'] .sl-rpg-ornate::before,
-html[data-software-renderer='true'] .sl-rpg-ornate::after {
-  box-shadow: 0 0 0 1.5px #060813 !important;
-}
-
-html[data-software-renderer='true'] .sl-portrait-canvas,
-html[data-software-renderer='true'] .sl-portrait-canvas-sm,
-html[data-software-renderer='true'] .sl-hud-portrait,
-html[data-software-renderer='true'] .sl-holo-portrait,
-html[data-software-renderer='true'] .sl-style-canvas {
-  box-shadow: 0 0 0 2px #060813 !important;
-}
-
-/* Crisp 0-blur 3D pixel button lips (zero blur radius = 0ms compositor cost!) */
-html[data-software-renderer='true'] .sl-btn,
-html[data-software-renderer='true'] .sl-move-card,
-html[data-software-renderer='true'] .sl-style-option,
-html[data-software-renderer='true'] .sl-swatch-btn,
-html[data-software-renderer='true'] .sl-dex-filter-chip,
+html[data-software-renderer='true'] .sl-hud-plate,
+html[data-software-renderer='true'] .sl-combatant-card,
+html[data-software-renderer='true'] .sl-willow-banner,
+html[data-software-renderer='true'] .sl-starter-wardrobe,
 html[data-software-renderer='true'] .sl-dex-tile {
-  box-shadow:
-    0 3px 0 #060813,
-    inset 0 1px 0 rgba(255, 250, 230, 0.24) !important;
+  background-color: #161e47;
 }
 
-html[data-software-renderer='true'] .sl-btn-primary,
-html[data-software-renderer='true'] .sl-btn.sl-drawer-tab.is-active,
-html[data-software-renderer='true'] .sl-btn.sl-drawer-tab[aria-selected='true'],
-html[data-software-renderer='true'] .sl-seg-btn.is-active {
-  box-shadow:
-    0 3px 0 #5c3606,
-    inset 0 1px 0 rgba(255, 252, 234, 0.78) !important;
+html[data-software-renderer='true'] .sl-dex-tile[data-caught='true'] {
+  background-color: #14362c;
 }
 
-html[data-software-renderer='true'] .sl-btn:disabled,
-html[data-software-renderer='true'] .sl-move-card:disabled {
-  box-shadow: none !important;
-  background: #0d1229 !important;
-  border-color: rgba(132, 148, 194, 0.24) !important;
-  color: rgba(176, 188, 224, 0.44) !important;
+html[data-software-renderer='true'] .sl-dex-tile.is-selected {
+  background-color: #3f3116;
 }
 
-html[data-software-renderer='true'] .sl-title-heading {
-  text-shadow: 0 3px 0 #5b3406, 0 5px 0 #060813 !important;
+html[data-software-renderer='true'] .sl-dex-tile-mystery,
+html[data-software-renderer='true'] .sl-dex-lore-box,
+html[data-software-renderer='true'] .sl-battle-message-wrap,
+html[data-software-renderer='true'] .sl-bar-track,
+html[data-software-renderer='true'] .sl-input,
+html[data-software-renderer='true'] .sl-compass-dial {
+  background-color: #0b0f26;
+}
+
+html[data-software-renderer='true'] .sl-badge-velvet {
+  background-color: #161538;
+}
+
+html[data-software-renderer='true'] .sl-badge-card[data-earned='true'] {
+  background-color: #3c2e14;
 }
 
 html[data-software-renderer='true'] .sl-badge-card[data-earned='false'] {
-  background: #0a0f24 !important;
+  background-color: #0a0f24 !important;
   border-color: rgba(138, 154, 200, 0.22) !important;
   color: rgba(182, 196, 232, 0.72) !important;
   opacity: 0.68;
@@ -4700,9 +4678,191 @@ html[data-software-renderer='true'] .sl-badge-card[data-earned='false'] .sl-icon
   opacity: 0.34;
 }
 
-html[data-software-renderer='true'] .sl-bar-fill {
-  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.28), inset 0 -1px 0 rgba(0, 0, 0, 0.32) !important;
+html[data-software-renderer='true'] .sl-badge-pedestal {
+  background-color: #1b224a;
 }
+
+html[data-software-renderer='true'] .sl-battle-result-banner,
+html[data-software-renderer='true'] .sl-badge-toast {
+  background-color: #211a4a;
+}
+
+html[data-software-renderer='true'] .sl-dialogue-nameplate {
+  background-color: #271e52;
+}
+
+html[data-software-renderer='true'] .sl-ability-banner {
+  background-color: #4f3512;
+}
+
+html[data-software-renderer='true'] .sl-toast {
+  background-color: #161e44;
+}
+
+html[data-software-renderer='true'] .sl-title-kicker {
+  background-color: #111838;
+}
+
+html[data-software-renderer='true'] .sl-title-sub {
+  background-color: rgba(11, 16, 40, 0.88);
+}
+
+html[data-software-renderer='true'] .sl-parent-zone {
+  background-color: #361322;
+}
+
+html[data-software-renderer='true'] .sl-profile-card[data-trainer-id='violet']::before {
+  background-color: #c68cff;
+}
+
+html[data-software-renderer='true'] .sl-profile-card[data-trainer-id='ozias']::before {
+  background-color: #4cc9ff;
+}
+
+/* Tactile RPG Buttons & 0-cost Pixel Border-Bottom Lips */
+html[data-software-renderer='true'] .sl-btn,
+html[data-software-renderer='true'] .sl-select,
+html[data-software-renderer='true'] .sl-style-option,
+html[data-software-renderer='true'] .sl-dpad-btn {
+  background-color: #1f2859;
+  border-bottom-width: 3px;
+}
+
+html[data-software-renderer='true'] .sl-move-card,
+html[data-software-renderer='true'] .sl-swatch-btn,
+html[data-software-renderer='true'] .sl-dex-filter-chip,
+html[data-software-renderer='true'] .sl-dex-tile {
+  border-bottom-width: 3px;
+}
+
+html[data-software-renderer='true'] .sl-btn-ghost {
+  background-color: #161d42;
+}
+
+html[data-software-renderer='true'] .sl-btn.is-active,
+html[data-software-renderer='true'] .sl-swatch-btn.is-active,
+html[data-software-renderer='true'] .sl-dex-filter-chip.is-active,
+html[data-software-renderer='true'] .sl-style-option.is-active {
+  background-color: #6b4c16;
+  border-color: var(--sl-brass-bright);
+  color: var(--sl-brass-bright);
+}
+
+html[data-software-renderer='true'] .sl-btn-primary,
+html[data-software-renderer='true'] .sl-btn.sl-drawer-tab.is-active,
+html[data-software-renderer='true'] .sl-btn.sl-drawer-tab[aria-selected='true'],
+html[data-software-renderer='true'] .sl-seg-btn.is-active,
+html[data-software-renderer='true'] .sl-battle-turn-badge {
+  background-color: #ebb74d;
+  border-bottom-color: #5c3606;
+  color: #171005;
+}
+
+html[data-software-renderer='true'] .sl-btn:disabled,
+html[data-software-renderer='true'] .sl-move-card:disabled {
+  background-color: #0d1229 !important;
+  border-color: rgba(132, 148, 194, 0.24) !important;
+  border-bottom-width: 1px !important;
+  color: rgba(176, 188, 224, 0.44) !important;
+}
+
+html[data-software-renderer='true'] .sl-btn-cyan {
+  background-color: #16658f;
+}
+
+/* Battle Action Jewel Buttons */
+html[data-software-renderer='true'] .sl-act-poke   { background-color: #8f2032; }
+html[data-software-renderer='true'] .sl-act-great  { background-color: #195ca8; }
+html[data-software-renderer='true'] .sl-act-star   { background-color: #62329c; }
+html[data-software-renderer='true'] .sl-act-potion { background-color: #176c3e; }
+html[data-software-renderer='true'] .sl-act-switch { background-color: #462a7e; }
+html[data-software-renderer='true'] .sl-act-run    { background-color: #323d5e; }
+
+/* Crests, Level Pills & Composure Chips */
+html[data-software-renderer='true'] .sl-combatant-lv { background-color: #5c4012; }
+html[data-software-renderer='true'] .sl-pill-gold    { background-color: #5c4012; }
+html[data-software-renderer='true'] .sl-pill-cyan    { background-color: #124869; }
+html[data-software-renderer='true'] .sl-pill-emerald { background-color: #145331; }
+html[data-software-renderer='true'] .sl-pill-rose    { background-color: #6e182a; }
+html[data-software-renderer='true'] .sl-composure-chip[data-state='ready']  { background-color: #113a59; }
+html[data-software-renderer='true'] .sl-composure-chip[data-state='braced'] { background-color: #5e4110; }
+html[data-software-renderer='true'] .sl-composure-chip[data-state='spent']  { background-color: #171d38; }
+
+/* Dual-Layer HP, XP, Dash & Stat Bars */
+html[data-software-renderer='true'] .sl-bar-trail    { background-color: #facc15; }
+html[data-software-renderer='true'] .sl-bar-hp       { background-color: #22c55e; }
+html[data-software-renderer='true'] .sl-bar-hp[data-mid='true'] { background-color: #eab308; }
+html[data-software-renderer='true'] .sl-bar-hp[data-low='true'] { background-color: #ef4444; }
+html[data-software-renderer='true'] .sl-bar-xp       { background-color: #38bdf8; }
+html[data-software-renderer='true'] .sl-bar-dash     { background-color: #facc15; }
+html[data-software-renderer='true'] .sl-bar-stat-hp  { background-color: #22c55e; }
+html[data-software-renderer='true'] .sl-bar-stat-atk { background-color: #f97316; }
+html[data-software-renderer='true'] .sl-bar-stat-def { background-color: #3b82f6; }
+html[data-software-renderer='true'] .sl-bar-stat-spd { background-color: #06b6d4; }
+html[data-software-renderer='true'] .sl-hold-fill    { background-color: rgba(244, 63, 94, 0.72); }
+
+/* Starter Shrines */
+html[data-software-renderer='true'] .sl-starter-card[data-type='grass'] { background-color: #112d21; }
+html[data-software-renderer='true'] .sl-starter-card[data-type='fire']  { background-color: #331717; }
+html[data-software-renderer='true'] .sl-starter-card[data-type='water'] { background-color: #112645; }
+
+/* All 18 Elemental Type Pills & Active Pokédex Filter Chips (Crisp Solid Fills) */
+html[data-software-renderer='true'] .sl-type-pill[data-type='normal'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='normal'].is-active   { background-color: #706f5a; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='fire'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='fire'].is-active     { background-color: #b83b14; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='water'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='water'].is-active    { background-color: #1c6bc2; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='grass'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='grass'].is-active    { background-color: #20853a; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='electric'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='electric'].is-active { background-color: #b07c08; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='ice'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='ice'].is-active      { background-color: #1e84a3; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='fighting'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='fighting'].is-active { background-color: #a12520; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='poison'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='poison'].is-active   { background-color: #822799; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='ground'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='ground'].is-active   { background-color: #966b25; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='flying'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='flying'].is-active   { background-color: #5068c2; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='psychic'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='psychic'].is-active  { background-color: #b52a68; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='bug'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='bug'].is-active      { background-color: #698a12; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='rock'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='rock'].is-active     { background-color: #877136; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='ghost'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='ghost'].is-active    { background-color: #523594; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='dragon'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='dragon'].is-active   { background-color: #4230bf; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='dark'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='dark'].is-active     { background-color: #45384d; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='steel'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='steel'].is-active    { background-color: #5b718c; color: #fff; }
+html[data-software-renderer='true'] .sl-type-pill[data-type='fairy'],
+html[data-software-renderer='true'] .sl-dex-filter-chip[data-type='fairy'].is-active    { background-color: #bd4789; color: #fff; }
+
+/* All 18 Vibrant Solid Jewel Elemental Move Tiles */
+html[data-software-renderer='true'] .sl-move-card[data-type='normal']   { background-color: #48473b; }
+html[data-software-renderer='true'] .sl-move-card[data-type='fire']     { background-color: #82240f; }
+html[data-software-renderer='true'] .sl-move-card[data-type='water']    { background-color: #134887; }
+html[data-software-renderer='true'] .sl-move-card[data-type='grass']    { background-color: #165c33; }
+html[data-software-renderer='true'] .sl-move-card[data-type='electric'] { background-color: #7c5907; }
+html[data-software-renderer='true'] .sl-move-card[data-type='ice']      { background-color: #145e78; }
+html[data-software-renderer='true'] .sl-move-card[data-type='fighting'] { background-color: #7a1c19; }
+html[data-software-renderer='true'] .sl-move-card[data-type='poison']   { background-color: #601a75; }
+html[data-software-renderer='true'] .sl-move-card[data-type='ground']   { background-color: #704c18; }
+html[data-software-renderer='true'] .sl-move-card[data-type='flying']   { background-color: #324687; }
+html[data-software-renderer='true'] .sl-move-card[data-type='psychic']  { background-color: #7e1c53; }
+html[data-software-renderer='true'] .sl-move-card[data-type='bug']      { background-color: #4c660f; }
+html[data-software-renderer='true'] .sl-move-card[data-type='rock']     { background-color: #625124; }
+html[data-software-renderer='true'] .sl-move-card[data-type='ghost']    { background-color: #432675; }
+html[data-software-renderer='true'] .sl-move-card[data-type='dragon']   { background-color: #31248a; }
+html[data-software-renderer='true'] .sl-move-card[data-type='dark']     { background-color: #392e40; }
+html[data-software-renderer='true'] .sl-move-card[data-type='steel']    { background-color: #3c4d63; }
+html[data-software-renderer='true'] .sl-move-card[data-type='fairy']    { background-color: #802a5b; }
 
 /* ==========================================================================
    REDUCED MOTION SAFEGUARDS

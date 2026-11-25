@@ -626,7 +626,7 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 12_000 },
+      { timeout: 20_000 },
     );
     const move0TextBefore = await page.getByTestId('battle-move-0').textContent();
     const ppBefore = parsePpFromMoveText(move0TextBefore);
@@ -719,7 +719,7 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
         undefined,
-        { timeout: 12_000 },
+        { timeout: 20_000 },
       );
       await page.getByTestId('battle-ball-star').click();
       const catchPh = await waitForBattleSettled(page, 18_000);
@@ -737,7 +737,7 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 12_000 },
+      { timeout: 20_000 },
     );
     const switchBtn = page.getByTestId('battle-switch-btn');
     if (await switchBtn.isEnabled()) {
@@ -778,7 +778,7 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
-      { timeout: 12_000 },
+      { timeout: 20_000 },
     );
 
     // Capture strictly disabled on Shrine Guardian

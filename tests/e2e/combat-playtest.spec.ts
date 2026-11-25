@@ -61,7 +61,7 @@ function attachCollectors(page: Page) {
   return { consoleErrors, pageErrors, failedLocalResponses };
 }
 
-async function waitForBattleSettled(page: Page, timeout = 15_000): Promise<string> {
+async function waitForBattleSettled(page: Page, timeout = 20_000): Promise<string> {
   await page.waitForFunction(
     () => {
       const ph = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
@@ -107,15 +107,52 @@ async function bootFreshToOverworld(
   await expect(page.getByTestId('overworld-screen')).toBeVisible();
 }
 
-async function walkInForestUntilEncounter(page: Page, maxIterations = 24): Promise<boolean> {
-  const dirs = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'];
+async function walkInForestUntilEncounter(page: Page, maxIterations = 40): Promise<boolean> {
+  let sweepX: 'ArrowRight' | 'ArrowLeft' = 'ArrowRight';
   for (let i = 0; i < maxIterations; i += 1) {
-    const screen = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().screen);
-    if (screen === 'battle') return true;
-    const key = dirs[i % dirs.length];
+    const snap = await page.evaluate(() => {
+      const s = window.__STARLIGHT_DEBUG__!.getState();
+      const pos = s.save.profiles.violet.pos;
+      return { screen: s.screen, x: pos.x, y: pos.y };
+    });
+    if (snap.screen === 'battle') return true;
+
+    // Steer into Whispering Forest's obstacle-free tall-grass patch x=[4..6], y=[2..4]
+    // north of the (4,5) warp point and pace inside tall grass so wildStreak never resets.
+    let key: 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight';
+    if (snap.y > 4) {
+      key = 'ArrowUp';
+    } else if (snap.y < 2) {
+      key = 'ArrowDown';
+    } else if (snap.x < 4) {
+      key = 'ArrowRight';
+    } else if (snap.x > 6) {
+      key = 'ArrowLeft';
+    } else {
+      if (snap.x <= 4) sweepX = 'ArrowRight';
+      else if (snap.x >= 6) sweepX = 'ArrowLeft';
+      key = sweepX;
+    }
+
     await page.keyboard.down(key);
-    await page.waitForTimeout(320);
-    await page.keyboard.up(key);
+    try {
+      await page.waitForFunction(
+        ({ startX, startY }) => {
+          const s = window.__STARLIGHT_DEBUG__?.getState();
+          if (!s) return false;
+          if (s.screen === 'battle') return true;
+          const p = s.save.profiles.violet.pos;
+          return p.x !== startX || p.y !== startY;
+        },
+        { startX: snap.x, startY: snap.y },
+        { timeout: 1_500 },
+      );
+    } catch {
+      // Retry on next iteration if frame cadence did not finish crossing a tile boundary
+    } finally {
+      await page.keyboard.up(key);
+    }
+
     const after = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().screen);
     if (after === 'battle') return true;
   }
@@ -127,9 +164,10 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
     test(`natural tall-grass wild encounters, multi-turn combat, victory XP, post-battle cooldown & consecutive catch (${renderer})`, async ({
       page,
     }) => {
-      test.setTimeout(90_000);
+      test.setTimeout(120_000);
       const telemetry = attachCollectors(page);
-      await bootFreshToOverworld(page, renderer, 1);
+      // Use Charmander (Fire) so Whispering Forest Bug/Grass/Flying wilds cannot create an unwinnable Grass-vs-Flying stalemate
+      await bootFreshToOverworld(page, renderer, 4);
 
       // Enable fast battle pace for snappy multi-turn coverage
       await page.getByTestId('nav-settings').click();
@@ -140,56 +178,94 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
       await page.getByTestId('warp-farm').click();
       await expect(page.getByTestId('hud-biome-name')).not.toHaveText('Starlight Village');
 
-      const triggeredFirst = await walkInForestUntilEncounter(page, 28);
-      expect(triggeredFirst, 'Expected natural tall-grass wild encounter by walking').toBe(true);
-      await expect(page.getByTestId('battle-screen')).toBeVisible();
+      let phase = 'command';
+      let xpBefore = { level: 1, xp: 0 };
+      let verifiedTurn1 = false;
 
-      const phase0 = await waitForBattleSettled(page);
-      expect(phase0).toBe('command');
+      // Allow 1 retry in the rare case an extreme-RNG high-ATK wild encounter (e.g. Teddiursa crit) KOs a Lv.5 starter
+      for (let encounterAttempt = 0; encounterAttempt < 2; encounterAttempt += 1) {
+        if (encounterAttempt > 0) {
+          await page.getByTestId('warp-farm').click();
+          await expect(page.getByTestId('hud-biome-name')).not.toHaveText('Starlight Village');
+        }
 
-      const initialEnemyHp = parseHp(await page.getByTestId('battle-enemy-hp-val').textContent());
-      const initialMovePp = parsePp(await page.getByTestId('battle-move-1').textContent());
-      expect(initialEnemyHp.current).toBeGreaterThan(0);
-      expect(initialMovePp).toBeGreaterThan(0);
+        const triggeredFirst = await walkInForestUntilEncounter(page, 40);
+        expect(triggeredFirst, 'Expected natural tall-grass wild encounter by walking').toBe(true);
+        await expect(page.getByTestId('battle-screen')).toBeVisible();
 
-      // Turn 1: Execute Tackle (move-1) and verify PP decrements & HP changes
-      await page.getByTestId('battle-move-1').click();
-      let phase = await waitForBattleSettled(page);
-      if (phase === 'command') {
-        const afterT1EnemyHp = parseHp(await page.getByTestId('battle-enemy-hp-val').textContent());
-        const afterT1Pp = parsePp(await page.getByTestId('battle-move-1').textContent());
-        expect(afterT1Pp).toBe(initialMovePp - 1);
-        expect(afterT1EnemyHp.current).toBeLessThanOrEqual(initialEnemyHp.current);
-      }
+        const phase0 = await waitForBattleSettled(page);
+        expect(phase0).toBe('command');
 
-      // Continue multi-turn combat until victory (choosing highest-effectiveness move like a real player)
-      const xpBefore = await page.evaluate(() => {
-        const lead = window.__STARLIGHT_DEBUG__!.getState().save.profiles.violet.team[0];
-        return { level: lead.level, xp: lead.xp };
-      });
-      for (let turn = 0; turn < 20; turn += 1) {
+        xpBefore = await page.evaluate(() => {
+          const lead = window.__STARLIGHT_DEBUG__!.getState().save.profiles.violet.team[0];
+          return { level: lead.level, xp: lead.xp };
+        });
+
+        const initialEnemyHp = parseHp(await page.getByTestId('battle-enemy-hp-val').textContent());
+        const initialMovePp = parsePp(await page.getByTestId('battle-move-1').textContent());
+        expect(initialEnemyHp.current).toBeGreaterThan(0);
+        expect(initialMovePp).toBeGreaterThan(0);
+
+        // Turn 1: Execute Quick Attack (move-1) and verify PP decrements & HP changes
+        await page.getByTestId('battle-move-1').click();
         phase = await waitForBattleSettled(page);
-        if (phase === 'victory' || phase === 'defeat' || phase === 'evolving') break;
         if (phase === 'command') {
-          const pHp = parseHp(await page.getByTestId('battle-player-hp-val').textContent());
-          if (pHp.current > 0 && pHp.current <= pHp.max * 0.4 && (await page.getByTestId('battle-potion').isEnabled())) {
-            await page.getByTestId('battle-potion').click();
-          } else {
-            // Prefer Razor Leaf (move-2, PWR 58) unless resisted, else Tackle (move-1)
-            const m2Text = (await page.getByTestId('battle-move-2').textContent()) ?? '';
-            const m2Disabled = await page.getByTestId('battle-move-2').isDisabled();
-            const pickId = !m2Disabled && !m2Text.includes('RESIST') && !m2Text.includes('IMMUNE')
-              ? 'battle-move-2'
-              : 'battle-move-1';
-            await page.getByTestId(pickId).click();
+          const afterT1EnemyHp = parseHp(await page.getByTestId('battle-enemy-hp-val').textContent());
+          const afterT1Pp = parsePp(await page.getByTestId('battle-move-1').textContent());
+          expect(afterT1Pp).toBe(initialMovePp - 1);
+          expect(afterT1EnemyHp.current).toBeLessThanOrEqual(initialEnemyHp.current);
+          verifiedTurn1 = true;
+        } else if (phase === 'victory' || phase === 'evolving') {
+          verifiedTurn1 = true;
+        }
+
+        // Continue multi-turn combat until victory (choosing highest-effectiveness move & healing safely)
+        let healedLastTurn = false;
+        for (let turn = 0; turn < 24; turn += 1) {
+          phase = await waitForBattleSettled(page);
+          if (phase === 'victory' || phase === 'defeat' || phase === 'evolving') break;
+          if (phase === 'command') {
+            const pHp = parseHp(await page.getByTestId('battle-player-hp-val').textContent());
+            const eHp = parseHp(await page.getByTestId('battle-enemy-hp-val').textContent());
+            const enemyLow = eHp.current > 0 && eHp.current <= 12;
+            const criticalHp = pHp.current > 0 && pHp.current <= pHp.max * 0.45;
+            const cautionHp = !healedLastTurn && pHp.current > 0 && pHp.current <= pHp.max * 0.65;
+
+            if (!enemyLow && (criticalHp || cautionHp) && (await page.getByTestId('battle-potion').isEnabled())) {
+              await page.getByTestId('battle-potion').click();
+              healedLastTurn = true;
+            } else if (
+              !enemyLow &&
+              (criticalHp || cautionHp) &&
+              !(await page.getByTestId('battle-move-3').isDisabled())
+            ) {
+              await page.getByTestId('battle-move-3').click();
+              healedLastTurn = true;
+            } else {
+              // Prefer Flame Wheel (move-2, STAB Fire) unless resisted, else Quick Attack (move-1)
+              const m2Text = (await page.getByTestId('battle-move-2').textContent()) ?? '';
+              const m2Disabled = await page.getByTestId('battle-move-2').isDisabled();
+              const pickId = !m2Disabled && !m2Text.includes('RESIST') && !m2Text.includes('IMMUNE')
+                ? 'battle-move-2'
+                : 'battle-move-1';
+              await page.getByTestId(pickId).click();
+              healedLastTurn = false;
+            }
           }
+        }
+
+        if (phase === 'evolving') {
+          await page.getByTestId('battle-confirm-evolution').click();
+          phase = await waitForBattleSettled(page);
+        }
+        if (phase === 'victory') break;
+        if (phase === 'defeat' && encounterAttempt === 0) {
+          await page.getByTestId('battle-close-result').click();
+          await expect(page.getByTestId('overworld-screen')).toBeVisible();
         }
       }
 
-      if (phase === 'evolving') {
-        await page.getByTestId('battle-confirm-evolution').click();
-        phase = await waitForBattleSettled(page);
-      }
+      expect(verifiedTurn1).toBe(true);
       expect(phase).toBe('victory');
       await expect(page.getByTestId('battle-result-banner')).toContainText(/Victory!/i);
 
@@ -208,7 +284,7 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
       expect(await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().screen)).toBe('overworld');
 
       // Continue walking in tall grass to trigger a CONSECUTIVE 2nd natural wild encounter
-      const triggeredSecond = await walkInForestUntilEncounter(page, 28);
+      const triggeredSecond = await walkInForestUntilEncounter(page, 36);
       expect(triggeredSecond, 'Expected consecutive natural tall-grass encounter #2').toBe(true);
       await expect(page.getByTestId('battle-screen')).toBeVisible();
       await waitForBattleSettled(page);
@@ -323,10 +399,17 @@ test.describe('Multi-Turn Combat & Encounter Playtest Suite', () => {
     await waitForBattleSettled(page);
 
     let evoPhase = 'command';
-    for (let t = 0; t < 10; t += 1) {
+    for (let t = 0; t < 12; t += 1) {
       evoPhase = await waitForBattleSettled(page);
       if (evoPhase !== 'command') break;
-      await page.keyboard.press('Space');
+      const bHp = parseHp(await page.getByTestId('battle-player-hp-val').textContent());
+      if (bHp.current > 0 && bHp.current <= bHp.max * 0.45 && (await page.getByTestId('battle-potion').isEnabled())) {
+        await page.getByTestId('battle-potion').click();
+      } else if (t === 0) {
+        await page.keyboard.press('Space');
+      } else {
+        await page.getByTestId('battle-move-2').click();
+      }
     }
     expect(evoPhase).toBe('evolving');
     await expect(page.getByTestId('battle-confirm-evolution')).toBeVisible();

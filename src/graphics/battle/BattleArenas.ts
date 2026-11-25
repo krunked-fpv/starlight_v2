@@ -627,6 +627,43 @@ function getFocalSeparationTuning(arena: BattleArenaDescriptor): FocalSeparation
   }
 }
 
+const FOCAL_SPRITE_CACHE = new Map<string, HTMLCanvasElement>();
+
+function getCachedRadialDiscSprite(
+  hex: string,
+  stops: ReadonlyArray<readonly [number, number]>,
+): HTMLCanvasElement | null {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    return null;
+  }
+  const key = `${hex}|${stops.map(([o, a]) => `${o.toFixed(2)}:${a.toFixed(2)}`).join(',')}`;
+  const cached = FOCAL_SPRITE_CACHE.get(key);
+  if (cached) return cached;
+
+  try {
+    const size = 64;
+    const half = size * 0.5;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const cctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    if (!cctx) return null;
+    const grad = cctx.createRadialGradient(half, half, half * 0.08, half, half, half);
+    for (const [offset, alpha] of stops) {
+      grad.addColorStop(offset, hexToRgba(hex, alpha));
+    }
+    cctx.fillStyle = grad;
+    cctx.fillRect(0, 0, size, size);
+    if (FOCAL_SPRITE_CACHE.size > 64) {
+      FOCAL_SPRITE_CACHE.clear();
+    }
+    FOCAL_SPRITE_CACHE.set(key, canvas);
+    return canvas;
+  } catch {
+    return null;
+  }
+}
+
 function drawCombatZoneFocalSeparation(
   ctx: CanvasRenderingContext2D,
   pad: BattlePadAnchor,
@@ -641,19 +678,32 @@ function drawCombatZoneFocalSeparation(
   // directly behind the Pokémon silhouette while keeping the full scenic arena intact.
   const veilRx = pad.size * 0.96;
   const veilRy = pad.size * 0.74;
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(1, veilRy / Math.max(1, veilRx));
-  const veilGrad = ctx.createRadialGradient(0, 0, veilRx * 0.12, 0, 0, veilRx);
-  veilGrad.addColorStop(0, hexToRgba(tuning.veilHex, tuning.veilAlpha));
-  veilGrad.addColorStop(0.54, hexToRgba(tuning.veilHex, tuning.veilAlpha * 0.56));
-  veilGrad.addColorStop(0.82, hexToRgba(tuning.veilHex, tuning.veilAlpha * 0.18));
-  veilGrad.addColorStop(1, hexToRgba(tuning.veilHex, 0));
-  ctx.fillStyle = veilGrad;
-  ctx.beginPath();
-  ctx.arc(0, 0, veilRx, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  const veilSprite = getCachedRadialDiscSprite(tuning.veilHex, [
+    [0, tuning.veilAlpha],
+    [0.54, tuning.veilAlpha * 0.56],
+    [0.82, tuning.veilAlpha * 0.18],
+    [1, 0],
+  ]);
+  if (veilSprite) {
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(veilSprite, cx - veilRx, cy - veilRy, veilRx * 2, veilRy * 2);
+    ctx.restore();
+  } else {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, veilRy / Math.max(1, veilRx));
+    const veilGrad = ctx.createRadialGradient(0, 0, veilRx * 0.12, 0, 0, veilRx);
+    veilGrad.addColorStop(0, hexToRgba(tuning.veilHex, tuning.veilAlpha));
+    veilGrad.addColorStop(0.54, hexToRgba(tuning.veilHex, tuning.veilAlpha * 0.56));
+    veilGrad.addColorStop(0.82, hexToRgba(tuning.veilHex, tuning.veilAlpha * 0.18));
+    veilGrad.addColorStop(1, hexToRgba(tuning.veilHex, 0));
+    ctx.fillStyle = veilGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, veilRx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   // 2. Subtle studio-grade luminous rim-backlight directly behind upper torso/head
   // Gives dark-colored Pokémon crisp separation even in caves, forests, and rifts.
@@ -661,18 +711,32 @@ function drawCombatZoneFocalSeparation(
   const haloRy = pad.size * 0.46;
   const haloCy = pad.spriteCy - pad.size * 0.08;
   const haloAlpha = clamp(tuning.backlightAlpha + pulse * 0.10, 0.10, 0.36);
-  ctx.save();
-  ctx.translate(cx, haloCy);
-  ctx.scale(1, haloRy / Math.max(1, haloRx));
-  const haloGrad = ctx.createRadialGradient(0, 0, haloRx * 0.08, 0, 0, haloRx);
-  haloGrad.addColorStop(0, hexToRgba(tuning.backlightHex, haloAlpha));
-  haloGrad.addColorStop(0.5, hexToRgba(tuning.backlightHex, haloAlpha * 0.42));
-  haloGrad.addColorStop(1, hexToRgba(tuning.backlightHex, 0));
-  ctx.fillStyle = haloGrad;
-  ctx.beginPath();
-  ctx.arc(0, 0, haloRx, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  // Quantize pulse-driven alpha to 0.02 steps so sprite cache stays bounded & hot
+  const qHaloAlpha = Math.round(haloAlpha * 50) / 50;
+  const haloSprite = getCachedRadialDiscSprite(tuning.backlightHex, [
+    [0, qHaloAlpha],
+    [0.5, qHaloAlpha * 0.42],
+    [1, 0],
+  ]);
+  if (haloSprite) {
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(haloSprite, cx - haloRx, haloCy - haloRy, haloRx * 2, haloRy * 2);
+    ctx.restore();
+  } else {
+    ctx.save();
+    ctx.translate(cx, haloCy);
+    ctx.scale(1, haloRy / Math.max(1, haloRx));
+    const haloGrad = ctx.createRadialGradient(0, 0, haloRx * 0.08, 0, 0, haloRx);
+    haloGrad.addColorStop(0, hexToRgba(tuning.backlightHex, haloAlpha));
+    haloGrad.addColorStop(0.5, hexToRgba(tuning.backlightHex, haloAlpha * 0.42));
+    haloGrad.addColorStop(1, hexToRgba(tuning.backlightHex, 0));
+    ctx.fillStyle = haloGrad;
+    ctx.beginPath();
+    ctx.arc(0, 0, haloRx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 function drawCraftedBattlePlatform(
@@ -1098,12 +1162,14 @@ export function renderArenaForeground(
       ctx.fillRect(width - fx - px, fy, px, px);
     }
 
-    // Soft pixel-stepped bottom frame shade
-    const shadeGrad = ctx.createLinearGradient(0, height * 0.86, 0, height + 20);
-    shadeGrad.addColorStop(0, 'rgba(8, 11, 28, 0)');
-    shadeGrad.addColorStop(1, 'rgba(8, 11, 28, 0.34)');
-    ctx.fillStyle = shadeGrad;
-    ctx.fillRect(-40, height * 0.86, width + 80, height * 0.2);
+    // Soft pixel-stepped bottom frame shade (zero per-frame CanvasGradient allocations)
+    const shadeTop = Math.round(height * 0.86);
+    const shadeH = Math.max(8, Math.ceil((height + 20 - shadeTop) / 4));
+    const shadeAlphas = [0.06, 0.14, 0.24, 0.34];
+    for (let b = 0; b < 4; b++) {
+      ctx.fillStyle = `rgba(8, 11, 28, ${shadeAlphas[b]})`;
+      ctx.fillRect(-40, shadeTop + b * shadeH, width + 80, shadeH + 1);
+    }
 
     ctx.restore();
   }, 'world');
