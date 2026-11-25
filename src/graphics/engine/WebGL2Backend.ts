@@ -46,6 +46,7 @@ interface RegisteredAtlasGL {
   emissiveTex: WebGLTexture | null;
   width: number;
   height: number;
+  pixelCrisp: boolean;
   regions: Record<string, AtlasRegion>;
 }
 
@@ -54,6 +55,7 @@ interface DynamicSourceTex {
   width: number;
   height: number;
   mutable: boolean;
+  pixelCrisp: boolean;
 }
 
 interface HybridLayerTarget {
@@ -65,6 +67,7 @@ interface HybridLayerTarget {
 interface RenderTargetFBO {
   fbo: WebGLFramebuffer;
   tex: WebGLTexture;
+  emissiveTex: WebGLTexture | null;
   width: number;
   height: number;
 }
@@ -181,6 +184,8 @@ export class WebGL2Backend implements IRenderBackend {
   private lightPosRadiusBuf = new Float32Array(MAX_POINT_LIGHTS * 4);
   private lightColorIntBuf = new Float32Array(MAX_POINT_LIGHTS * 4);
   private lightFlickerBuf = new Float32Array(MAX_POINT_LIGHTS);
+  private spriteLightPosRadBuf = new Float32Array(MAX_POINT_LIGHTS * 4);
+  private spriteLightColIntBuf = new Float32Array(MAX_POINT_LIGHTS * 4);
 
   // Telemetry
   private smoothedFps = 60;
@@ -411,8 +416,8 @@ export class WebGL2Backend implements IRenderBackend {
     }
 
     try {
-      this.sceneTarget = this.ensureRenderTarget(gl, this.sceneTarget, pixelW, pixelH);
-      this.litTarget = this.ensureRenderTarget(gl, this.litTarget, pixelW, pixelH);
+      this.sceneTarget = this.ensureRenderTarget(gl, this.sceneTarget, pixelW, pixelH, true);
+      this.litTarget = this.ensureRenderTarget(gl, this.litTarget, pixelW, pixelH, false);
     } catch {
       // Safe degradation if resize fails during context loss
     }
@@ -423,6 +428,7 @@ export class WebGL2Backend implements IRenderBackend {
     albedo: HTMLImageElement | HTMLCanvasElement,
     normal?: HTMLImageElement | HTMLCanvasElement,
     emissive?: HTMLImageElement | HTMLCanvasElement,
+    pixelCrisp = true,
   ): void {
     const gl = this.gl;
     if (!gl || this.disposed || gl.isContextLost()) {
@@ -437,9 +443,10 @@ export class WebGL2Backend implements IRenderBackend {
         if (existing.emissiveTex) gl.deleteTexture(existing.emissiveTex);
       }
 
-      const albedoTex = this.createImageTexture(gl, albedo);
-      const normalTex = normal ? this.createImageTexture(gl, normal) : null;
-      const emissiveTex = emissive ? this.createImageTexture(gl, emissive) : null;
+      const crisp = pixelCrisp !== false;
+      const albedoTex = this.createImageTexture(gl, albedo, crisp);
+      const normalTex = normal ? this.createImageTexture(gl, normal, crisp) : null;
+      const emissiveTex = emissive ? this.createImageTexture(gl, emissive, crisp) : null;
       const dims = getSourceDims(albedo);
 
       this.atlases.set(sheetId, {
@@ -448,6 +455,7 @@ export class WebGL2Backend implements IRenderBackend {
         emissiveTex,
         width: dims.width,
         height: dims.height,
+        pixelCrisp: crisp,
         regions,
       });
     } catch {
@@ -603,13 +611,32 @@ export class WebGL2Backend implements IRenderBackend {
         // ============================================================
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.fbo);
         gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
-        gl.clearColor(
-          this.clearColor[0],
-          this.clearColor[1],
-          this.clearColor[2],
-          this.clearColor[3],
-        );
-        gl.clear(gl.COLOR_BUFFER_BIT);
+        const hasSceneEmissive =
+          this.sceneTarget.emissiveTex !== null &&
+          typeof gl.drawBuffers === 'function' &&
+          typeof gl.COLOR_ATTACHMENT1 === 'number';
+        if (hasSceneEmissive) {
+          gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+          gl.clearColor(
+            this.clearColor[0],
+            this.clearColor[1],
+            this.clearColor[2],
+            this.clearColor[3],
+          );
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.drawBuffers([gl.COLOR_ATTACHMENT1]);
+          gl.clearColor(0, 0, 0, 0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+        } else {
+          gl.clearColor(
+            this.clearColor[0],
+            this.clearColor[1],
+            this.clearColor[2],
+            this.clearColor[3],
+          );
+          gl.clear(gl.COLOR_BUFFER_BIT);
+        }
         gl.enable(gl.BLEND);
         gl.blendFuncSeparate(
           gl.SRC_ALPHA,
@@ -631,12 +658,16 @@ export class WebGL2Backend implements IRenderBackend {
         }
 
         // ============================================================
-        // PASS 2: Lit FBO — Deferred 2D PointLights + Canopy Gobos
+        // PASS 2: Lit FBO — Deferred 2D PointLights + Emissive + Canopy
         // ============================================================
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.litTarget.fbo);
         gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
         gl.disable(gl.BLEND);
-        const lightPass = this.executeLightingPass(gl, this.sceneTarget.tex);
+        const lightPass = this.executeLightingPass(
+          gl,
+          this.sceneTarget.tex,
+          this.sceneTarget.emissiveTex,
+        );
         drawCalls += lightPass.drawCalls;
         activeLights = lightPass.activeLights;
 
@@ -659,12 +690,16 @@ export class WebGL2Backend implements IRenderBackend {
         }
 
         // ============================================================
-        // PASS 4: Bloom + Biome Color-Grade LUT + Vignette + CRT
+        // PASS 4: Dual-Kawase Bloom + Biome Color-Grade LUT + Vignette + CRT
         // ============================================================
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, this.pixelWidth, this.pixelHeight);
         gl.disable(gl.BLEND);
-        drawCalls += this.executeBloomCompositePass(gl, this.litTarget.tex);
+        drawCalls += this.executeBloomCompositePass(
+          gl,
+          this.litTarget.tex,
+          this.sceneTarget.emissiveTex,
+        );
 
         // Screen-space 2D HUD overlays composited cleanly on top
         if (this.screenLayer && this.screenDraws.length > 0) {
@@ -728,10 +763,12 @@ export class WebGL2Backend implements IRenderBackend {
         if (this.sceneTarget) {
           gl.deleteFramebuffer(this.sceneTarget.fbo);
           gl.deleteTexture(this.sceneTarget.tex);
+          if (this.sceneTarget.emissiveTex) gl.deleteTexture(this.sceneTarget.emissiveTex);
         }
         if (this.litTarget) {
           gl.deleteFramebuffer(this.litTarget.fbo);
           gl.deleteTexture(this.litTarget.tex);
+          if (this.litTarget.emissiveTex) gl.deleteTexture(this.litTarget.emissiveTex);
         }
 
         if (this.fallbackWhiteTex) gl.deleteTexture(this.fallbackWhiteTex);
@@ -899,17 +936,30 @@ export class WebGL2Backend implements IRenderBackend {
   private createImageTexture(
     gl: WebGL2RenderingContext,
     source: CanvasImageSource,
+    pixelCrisp = true,
   ): WebGLTexture {
     const tex = gl.createTexture();
     if (!tex) throw new Error('Failed to create image WebGL2 texture');
+    const filter = pixelCrisp ? (gl.NEAREST ?? 0x2600) : gl.LINEAR;
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source as TexImageSource);
     return tex;
+  }
+
+  private setTextureFilter(
+    gl: WebGL2RenderingContext,
+    tex: WebGLTexture,
+    pixelCrisp: boolean,
+  ): void {
+    const filter = pixelCrisp ? (gl.NEAREST ?? 0x2600) : gl.LINEAR;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
   }
 
   private createHybridLayer(gl: WebGL2RenderingContext): HybridLayerTarget | null {
@@ -957,8 +1007,18 @@ export class WebGL2Backend implements IRenderBackend {
     existing: RenderTargetFBO | null,
     width: number,
     height: number,
+    withEmissive = false,
   ): RenderTargetFBO {
-    if (existing && existing.width === width && existing.height === height) {
+    const wantEmissive =
+      withEmissive &&
+      typeof gl.drawBuffers === 'function' &&
+      typeof gl.COLOR_ATTACHMENT1 === 'number';
+    if (
+      existing &&
+      existing.width === width &&
+      existing.height === height &&
+      Boolean(existing.emissiveTex) === wantEmissive
+    ) {
       return existing;
     }
 
@@ -968,6 +1028,7 @@ export class WebGL2Backend implements IRenderBackend {
       throw new Error('Failed to allocate WebGL2 FBO target');
     }
 
+    // Keep linear filtering strictly on FBO bloom/post-process render targets
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -975,8 +1036,28 @@ export class WebGL2Backend implements IRenderBackend {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
+    let emissiveTex: WebGLTexture | null = existing?.emissiveTex ?? null;
+    if (wantEmissive) {
+      emissiveTex = emissiveTex ?? gl.createTexture();
+      if (!emissiveTex) {
+        throw new Error('Failed to allocate WebGL2 emissive FBO target');
+      }
+      gl.bindTexture(gl.TEXTURE_2D, emissiveTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    } else if (emissiveTex) {
+      gl.deleteTexture(emissiveTex);
+      emissiveTex = null;
+    }
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (emissiveTex) {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, emissiveTex, 0);
+    }
 
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -984,12 +1065,13 @@ export class WebGL2Backend implements IRenderBackend {
       throw new Error(`Incomplete WebGL2 FBO status: 0x${status.toString(16)}`);
     }
 
-    return { fbo, tex, width, height };
+    return { fbo, tex, emissiveTex, width, height };
   }
 
   private resolveDynamicSourceTexture(
     gl: WebGL2RenderingContext,
     source: CanvasImageSource,
+    pixelCrisp = true,
   ): DynamicSourceTex {
     const key = source as object;
     const dims = getSourceDims(source);
@@ -1005,12 +1087,13 @@ export class WebGL2Backend implements IRenderBackend {
       return cached;
     }
 
-    const tex = this.createImageTexture(gl, source);
+    const tex = this.createImageTexture(gl, source, pixelCrisp);
     const entry: DynamicSourceTex = {
       tex,
       width: dims.width,
       height: dims.height,
       mutable: isMutableCanvasSource(source),
+      pixelCrisp,
     };
     this.dynamicSourceCache.set(key, entry);
     this.dynamicTextures.push(tex);
@@ -1091,6 +1174,8 @@ export class WebGL2Backend implements IRenderBackend {
         ? [...sprites].sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
         : sprites;
 
+    const spriteLightCount = this.collectSpriteWorldLights();
+
     const prog = this.shaders.sprite;
     gl.useProgram(prog.program);
     gl.uniform2f(prog.getUniform('uResolution'), this.cssWidth, this.cssHeight);
@@ -1104,14 +1189,30 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform2f(prog.getUniform('uCameraShake'), this.camera.shakeX, this.camera.shakeY);
     gl.uniform1f(prog.getUniform('uApplyCamera'), 1.0);
     gl.uniform1i(prog.getUniform('uAlbedoTex'), 0);
-    gl.uniform1i(prog.getUniform('uEmissiveTex'), 1);
+    gl.uniform1i(prog.getUniform('uNormalTex'), 1);
+    gl.uniform1i(prog.getUniform('uEmissiveTex'), 2);
+    gl.uniform1i(prog.getUniform('uLightCount'), spriteLightCount);
+    if (spriteLightCount > 0) {
+      gl.uniform4fv(
+        prog.getUniform('uLightPosRad[0]') ?? prog.getUniform('uLightPosRad'),
+        this.spriteLightPosRadBuf.subarray(0, spriteLightCount * 4),
+      );
+      gl.uniform4fv(
+        prog.getUniform('uLightColInt[0]') ?? prog.getUniform('uLightColInt'),
+        this.spriteLightColIntBuf.subarray(0, spriteLightCount * 4),
+      );
+    }
 
     let drawCalls = 0;
     let batchAlbedo: WebGLTexture | null = null;
+    let batchNormal: WebGLTexture | null = null;
     let batchEmissive: WebGLTexture | null = null;
+    let batchAtlas: RegisteredAtlasGL | null = null;
+    let batchDynamic: DynamicSourceTex | null = null;
     let batchWidth = 1;
     let batchHeight = 1;
     let batchAdditive = false;
+    let batchPixelCrisp = true;
     let batchCount = 0;
 
     const flush = (): void => {
@@ -1130,9 +1231,29 @@ export class WebGL2Backend implements IRenderBackend {
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, batchAlbedo);
+      if (batchAtlas && batchAtlas.pixelCrisp !== batchPixelCrisp) {
+        this.setTextureFilter(gl, batchAtlas.albedoTex, batchPixelCrisp);
+        if (batchAtlas.normalTex) {
+          this.setTextureFilter(gl, batchAtlas.normalTex, batchPixelCrisp);
+        }
+        if (batchAtlas.emissiveTex) {
+          this.setTextureFilter(gl, batchAtlas.emissiveTex, batchPixelCrisp);
+        }
+        batchAtlas.pixelCrisp = batchPixelCrisp;
+        gl.bindTexture(gl.TEXTURE_2D, batchAlbedo);
+      } else if (batchDynamic && batchDynamic.pixelCrisp !== batchPixelCrisp) {
+        this.setTextureFilter(gl, batchDynamic.tex, batchPixelCrisp);
+        batchDynamic.pixelCrisp = batchPixelCrisp;
+      }
+
       gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, batchNormal ?? this.fallbackNormalTex);
+      gl.uniform1i(prog.getUniform('uHasNormal'), batchNormal ? 1 : 0);
+
+      gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, batchEmissive ?? this.fallbackBlackTex);
-      gl.uniform1f(prog.getUniform('uHasEmissive'), batchEmissive ? 1.0 : 0.0);
+      gl.uniform1i(prog.getUniform('uHasEmissive'), batchEmissive ? 1 : 0);
+
       gl.uniform2f(
         prog.getUniform('uTexelSize'),
         1 / Math.max(batchWidth, 1),
@@ -1155,23 +1276,30 @@ export class WebGL2Backend implements IRenderBackend {
 
     for (const cmd of ordered) {
       let tex: WebGLTexture | null = null;
+      let normTex: WebGLTexture | null = null;
       let emTex: WebGLTexture | null = null;
+      let atlasRef: RegisteredAtlasGL | null = null;
+      let dynRef: DynamicSourceTex | null = null;
       let texW = 1;
       let texH = 1;
       let sx = cmd.sx;
       let sy = cmd.sy;
       let sw = cmd.sw;
       let sh = cmd.sh;
+      const wantCrisp = cmd.pixelCrisp !== false;
 
       if (cmd.source) {
-        const dyn = this.resolveDynamicSourceTexture(gl, cmd.source);
+        const dyn = this.resolveDynamicSourceTexture(gl, cmd.source, wantCrisp);
         tex = dyn.tex;
+        dynRef = dyn;
         texW = dyn.width;
         texH = dyn.height;
       } else if (cmd.sheetId) {
         const atlas = this.atlases.get(cmd.sheetId);
         if (atlas) {
+          atlasRef = atlas;
           tex = atlas.albedoTex;
+          normTex = cmd.useNormalMap !== false ? atlas.normalTex : null;
           emTex = atlas.emissiveTex;
           texW = atlas.width;
           texH = atlas.height;
@@ -1190,16 +1318,24 @@ export class WebGL2Backend implements IRenderBackend {
       const additive = Boolean(cmd.additive);
       if (
         batchCount > 0 &&
-        (tex !== batchAlbedo || emTex !== batchEmissive || additive !== batchAdditive)
+        (tex !== batchAlbedo ||
+          normTex !== batchNormal ||
+          emTex !== batchEmissive ||
+          additive !== batchAdditive ||
+          wantCrisp !== batchPixelCrisp)
       ) {
         flush();
       }
 
       batchAlbedo = tex;
+      batchNormal = normTex;
       batchEmissive = emTex;
+      batchAtlas = atlasRef;
+      batchDynamic = dynRef;
       batchWidth = texW;
       batchHeight = texH;
       batchAdditive = additive;
+      batchPixelCrisp = wantCrisp;
 
       const needed = (batchCount + 1) * SPRITE_FLOATS_PER_INSTANCE;
       if (this.spriteData.length < needed) {
@@ -1278,6 +1414,9 @@ export class WebGL2Backend implements IRenderBackend {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
 
     gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.fallbackNormalTex);
+
+    gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.fallbackBlackTex);
 
     const prog = this.shaders.sprite;
@@ -1287,8 +1426,11 @@ export class WebGL2Backend implements IRenderBackend {
     gl.uniform2f(prog.getUniform('uCameraShake'), 0, 0);
     gl.uniform1f(prog.getUniform('uApplyCamera'), 0.0);
     gl.uniform1i(prog.getUniform('uAlbedoTex'), 0);
-    gl.uniform1i(prog.getUniform('uEmissiveTex'), 1);
-    gl.uniform1f(prog.getUniform('uHasEmissive'), 0.0);
+    gl.uniform1i(prog.getUniform('uNormalTex'), 1);
+    gl.uniform1i(prog.getUniform('uEmissiveTex'), 2);
+    gl.uniform1i(prog.getUniform('uHasNormal'), 0);
+    gl.uniform1i(prog.getUniform('uHasEmissive'), 0);
+    gl.uniform1i(prog.getUniform('uLightCount'), 0);
     gl.uniform2f(
       prog.getUniform('uTexelSize'),
       1 / Math.max(canvas.width, 1),
@@ -1352,9 +1494,86 @@ export class WebGL2Backend implements IRenderBackend {
     ];
   }
 
+  private screenToWorld(sx: number, sy: number): [number, number] {
+    const cx = this.cssWidth * 0.5;
+    const cy = this.cssHeight * 0.5;
+    const zoom = Math.max(this.camera.zoom, 0.05);
+    const rot = this.camera.rotation;
+    const rx = (sx - this.camera.shakeX - cx) / zoom;
+    const ry = (sy - this.camera.shakeY - cy) / zoom;
+
+    if (rot === 0) {
+      return [rx + cx + this.camera.x, ry + cy + this.camera.y];
+    }
+    const c = Math.cos(-rot);
+    const s = Math.sin(-rot);
+    return [
+      rx * c - ry * s + cx + this.camera.x,
+      rx * s + ry * c + cy + this.camera.y,
+    ];
+  }
+
+  private collectSpriteWorldLights(): number {
+    const motionScale = this.reducedMotion ? 0.15 : 1.0;
+    let activeCount = 0;
+
+    for (let i = 0; i < this.lights.length && activeCount < MAX_POINT_LIGHTS; i++) {
+      const light = this.lights[i];
+      if (light.intensity <= 0.005 || light.radius <= 0.5) continue;
+
+      let sx = light.x;
+      let sy = light.y;
+      let screenRad = light.radius;
+      let wx = light.x;
+      let wy = light.y;
+      let worldRad = light.radius;
+
+      if (light.screenSpace) {
+        [wx, wy] = this.screenToWorld(light.x, light.y);
+        worldRad = light.radius / Math.max(this.camera.zoom, 0.05);
+      } else {
+        [sx, sy] = this.worldToScreen(light.x, light.y);
+        screenRad = light.radius * this.camera.zoom;
+      }
+
+      if (
+        sx + screenRad < 0 ||
+        sx - screenRad > this.cssWidth ||
+        sy + screenRad < 0 ||
+        sy - screenRad > this.cssHeight
+      ) {
+        continue;
+      }
+
+      const flickAmt = (light.flickerAmount ?? 0) * motionScale;
+      const flickSpeed = Math.max(light.flickerSpeed ?? 3.0, 0.5);
+      let flicker = 1.0;
+      if (flickAmt > 0.001) {
+        const phase = this.frameTimeSeconds * flickSpeed + activeCount * 2.37;
+        flicker = 1.0 + (Math.sin(phase) * 0.65 + Math.sin(phase * 2.13) * 0.35) * flickAmt;
+      }
+
+      const p4 = activeCount * 4;
+      this.spriteLightPosRadBuf[p4] = wx;
+      this.spriteLightPosRadBuf[p4 + 1] = wy;
+      this.spriteLightPosRadBuf[p4 + 2] = worldRad;
+      this.spriteLightPosRadBuf[p4 + 3] = clamp(worldRad * 0.36, 24, 96);
+
+      this.spriteLightColIntBuf[p4] = light.color[0];
+      this.spriteLightColIntBuf[p4 + 1] = light.color[1];
+      this.spriteLightColIntBuf[p4 + 2] = light.color[2];
+      this.spriteLightColIntBuf[p4 + 3] = Math.max(0, light.intensity * flicker);
+
+      activeCount += 1;
+    }
+
+    return activeCount;
+  }
+
   private executeLightingPass(
     gl: WebGL2RenderingContext,
     sceneTex: WebGLTexture,
+    emissiveTex: WebGLTexture | null,
   ): { drawCalls: number; activeLights: number } {
     if (!this.shaders || !this.fullscreenVao) {
       return { drawCalls: 0, activeLights: 0 };
@@ -1405,13 +1624,13 @@ export class WebGL2Backend implements IRenderBackend {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.fallbackNormalTex);
     gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, this.fallbackBlackTex);
+    gl.bindTexture(gl.TEXTURE_2D, emissiveTex ?? this.fallbackBlackTex);
 
     gl.uniform1i(prog.getUniform('uSceneTex'), 0);
     gl.uniform1i(prog.getUniform('uNormalTex'), 1);
     gl.uniform1f(prog.getUniform('uHasNormal'), 0.0);
     gl.uniform1i(prog.getUniform('uEmissiveTex'), 2);
-    gl.uniform1f(prog.getUniform('uHasEmissive'), 0.0);
+    gl.uniform1f(prog.getUniform('uHasEmissive'), emissiveTex ? 1.0 : 0.0);
 
     gl.uniform2f(prog.getUniform('uResolution'), this.cssWidth, this.cssHeight);
     gl.uniform1f(prog.getUniform('uTime'), this.frameTimeSeconds);
@@ -1547,6 +1766,7 @@ export class WebGL2Backend implements IRenderBackend {
   private executeBloomCompositePass(
     gl: WebGL2RenderingContext,
     litTex: WebGLTexture,
+    emissiveTex: WebGLTexture | null,
   ): number {
     if (!this.shaders || !this.fullscreenVao) {
       return 0;
@@ -1558,6 +1778,10 @@ export class WebGL2Backend implements IRenderBackend {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, litTex);
     gl.uniform1i(prog.getUniform('uLitTex'), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, emissiveTex ?? this.fallbackBlackTex);
+    gl.uniform1i(prog.getUniform('uEmissiveTex'), 1);
+    gl.uniform1f(prog.getUniform('uHasEmissive'), emissiveTex ? 1.0 : 0.0);
     gl.uniform2f(
       prog.getUniform('uTexelSize'),
       1 / Math.max(this.pixelWidth, 1),

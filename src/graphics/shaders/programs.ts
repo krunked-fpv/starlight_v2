@@ -25,8 +25,11 @@ export const MAX_POINT_LIGHTS = 24;
 
 /**
  * 1) SPRITE_SHADER
- * Instanced/batched textured quads with UV sub-rect, alpha, RGBA tint,
- * optional silhouette rim-light highlight, and emissive boost.
+ * Instanced/batched crisp pixel-art quads with UV sub-rect, alpha, RGBA tint,
+ * tangent-space normal-map diffuse + gentle specular lighting against up to 24
+ * real-time world-space point lights, unattenuated emissive self-illumination
+ * (MRT output for Dual-Kawase bloom), optional silhouette rim-light highlight,
+ * and scalar emissive boost.
  */
 export const SPRITE_SHADER: ShaderProgramSource = {
   name: 'SPRITE_SHADER',
@@ -51,6 +54,8 @@ out vec4 vTint;
 out vec4 vRimColor;
 out float vAlpha;
 out float vEmissive;
+out vec2 vWorldPos;
+out vec2 vSpriteRotFlip;
 
 vec2 applyCameraTransform(vec2 worldPos) {
   vec2 shifted = worldPos - uCameraPosZoom.xy;
@@ -97,10 +102,15 @@ void main() {
   vRimColor = aRimColor;
   vAlpha = aTransform.z;
   vEmissive = aTransform.w;
+  vWorldPos = pos;
+  vSpriteRotFlip = vec2(aTransform.x, aTransform.y);
 }
 `,
   fragment: `#version 300 es
 precision highp float;
+precision highp int;
+
+const int MAX_LIGHTS = 24;
 
 in vec2 vUv;
 in vec4 vUvBounds;
@@ -108,13 +118,22 @@ in vec4 vTint;
 in vec4 vRimColor;
 in float vAlpha;
 in float vEmissive;
+in vec2 vWorldPos;
+in vec2 vSpriteRotFlip;
 
 uniform sampler2D uAlbedoTex;
+uniform sampler2D uNormalTex;
 uniform sampler2D uEmissiveTex;
-uniform float uHasEmissive;
+uniform int uHasNormal;
+uniform int uHasEmissive;
 uniform vec2 uTexelSize;
 
-out vec4 fragColor;
+uniform int uLightCount;
+uniform vec4 uLightPosRad[MAX_LIGHTS]; // x, y (world px), radius (world px), zHeight
+uniform vec4 uLightColInt[MAX_LIGHTS]; // r, g, b, flickered intensity
+
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec4 fragEmissive;
 
 float sampleClampedAlpha(vec2 offset) {
   vec2 uv = clamp(vUv + offset, vUvBounds.xy, vUvBounds.zw);
@@ -128,7 +147,61 @@ void main() {
     discard;
   }
 
-  vec3 color = albedo.rgb * vTint.rgb;
+  vec3 baseColor = albedo.rgb * vTint.rgb;
+  vec3 color = baseColor;
+
+  // True HD-2D tangent-space normal-map lighting against up to 24 real-time point lights
+  if (uHasNormal == 1) {
+    vec3 rawN = texture(uNormalTex, vUv).rgb * 2.0 - 1.0;
+    vec3 N = dot(rawN, rawN) > 0.0001 ? normalize(rawN) : vec3(0.0, 0.0, 1.0);
+    if (vSpriteRotFlip.y > 0.5) {
+      N.x = -N.x;
+    }
+    if (abs(vSpriteRotFlip.x) > 0.001) {
+      float cn = cos(vSpriteRotFlip.x);
+      float sn = sin(vSpriteRotFlip.x);
+      N.xy = vec2(N.x * cn - N.y * sn, N.x * sn + N.y * cn);
+    }
+
+    // Gentle overhead-left key light gives crisp 2.5D pixel bevel relief everywhere
+    vec3 keyDir = normalize(vec3(-0.32, -0.46, 0.83));
+    float keyDiff = max(dot(N, keyDir), 0.0);
+    vec3 diffuseAccum = vec3(0.76 + 0.30 * keyDiff);
+    vec3 specAccum = vec3(0.0);
+    vec3 viewDir = vec3(0.0, 0.0, 1.0);
+
+    for (int i = 0; i < MAX_LIGHTS; i++) {
+      if (i >= uLightCount) {
+        break;
+      }
+      vec4 posRad = uLightPosRad[i];
+      vec4 colInt = uLightColInt[i];
+      float radius = max(posRad.z, 1.0);
+      vec2 delta = posRad.xy - vWorldPos;
+      float dist = length(delta);
+
+      if (dist < radius) {
+        float normDist = dist / radius;
+        float att = 1.0 - normDist;
+        att = att * att * (3.0 - 2.0 * att);
+
+        float lightZ = max(posRad.w, 24.0);
+        vec3 L = normalize(vec3(delta.x, delta.y, lightZ));
+        float ndotl = max(dot(N, L), 0.0);
+        float wrapDiff = clamp((dot(N, L) + 0.25) / 1.25, 0.0, 1.0);
+        float energy = max(colInt.a, 0.0) * att;
+
+        diffuseAccum += colInt.rgb * energy * (wrapDiff * 0.55);
+
+        vec3 H = normalize(L + viewDir);
+        float spec = pow(max(dot(N, H), 0.0), 20.0) * ndotl;
+        specAccum += colInt.rgb * energy * spec * 0.24;
+      }
+    }
+
+    diffuseAccum = diffuseAccum / (1.0 + max(diffuseAccum - vec3(1.15), vec3(0.0)) * 0.45);
+    color = color * diffuseAccum + specAccum;
+  }
 
   // Optional silhouette rim-light highlight via 4-neighbor alpha gradient
   if (vRimColor.a > 0.005) {
@@ -141,28 +214,36 @@ void main() {
     color = mix(color, color + vRimColor.rgb * 1.15, edgeMask * vRimColor.a);
   }
 
-  // Optional atlas emissive texture contribution
-  if (uHasEmissive > 0.5) {
+  // Unattenuated self-illumination channel (flows directly into Lighting & Dual-Kawase Bloom)
+  vec3 emissiveOut = vec3(0.0);
+
+  // Optional atlas emissive texture contribution (lantern glass, cottage windows, shrine crystals, lava)
+  if (uHasEmissive == 1) {
     vec4 em = texture(uEmissiveTex, vUv);
-    color += em.rgb * em.a * 1.35;
+    vec3 emContrib = em.rgb * em.a;
+    color += emContrib * 0.65;
+    emissiveOut += emContrib * 1.25;
   }
 
-  // Scalar emissive boost (pushes pixels above bloom threshold in post-process)
+  // Scalar emissive boost (animated Pokemon sprites & glowing elemental VFX)
   if (vEmissive > 0.001) {
-    color += color * vEmissive;
+    vec3 scalarEm = baseColor * vEmissive;
+    color += scalarEm * 0.75;
+    emissiveOut += scalarEm * 0.90;
   }
 
-  fragColor = vec4(color, clamp(outAlpha, 0.0, 1.0));
+  float clampedAlpha = clamp(outAlpha, 0.0, 1.0);
+  fragColor = vec4(color, clampedAlpha);
+  fragEmissive = vec4(emissiveOut, clampedAlpha);
 }
 `,
 };
 
 /**
  * 2) WATER_SHADER
- * Translucent multi-depth water shader synthesizing animated shoreline surf foam
- * (via foamMask + sin waves), rippled twilight sky reflection gradient
- * (uSkyTop, uSkyBottom), twinkling starlight specular highlights
- * (uStarlightIntensity), and depth absorption.
+ * Pixel-snapped HD-2D translucent multi-depth Starlight water shader synthesizing
+ * crisp quantized pixel ripples, stepped twilight sky reflection bands, 4-point
+ * pixel starlight sparkles, and pixelated shoreline surf foam.
  */
 export const WATER_SHADER: ShaderProgramSource = {
   name: 'WATER_SHADER',
@@ -210,6 +291,7 @@ void main() {
 `,
   fragment: `#version 300 es
 precision highp float;
+precision highp int;
 
 in vec2 vLocalUv;
 in vec2 vWorldPos;
@@ -225,7 +307,8 @@ uniform float uWaveAmplitude;
 uniform vec3 uFoamColor;
 uniform float uReducedMotion;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec4 fragEmissive;
 
 float hash21(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -237,69 +320,99 @@ void main() {
   float motionScale = mix(1.0, 0.2, step(0.5, uReducedMotion));
   float t = uTime * motionScale;
 
-  // Seamless world-space multi-octave ripple field
-  float w1 = sin(vWorldPos.x * 0.085 + t * 2.1 + sin(vWorldPos.y * 0.045) * 1.4);
-  float w2 = sin(vWorldPos.y * 0.115 - t * 1.65 + vWorldPos.x * 0.032);
-  float w3 = cos((vWorldPos.x - vWorldPos.y) * 0.065 + t * 1.25);
-  float ripple = (w1 * 0.5 + w2 * 0.35 + w3 * 0.15) * clamp(uWaveAmplitude, 0.0, 2.5);
+  // Snap world & tile coordinates cleanly onto a crisp pixel-art texel grid
+  vec2 pxWorld = floor(vWorldPos);
+  vec2 pxCell = floor(vWorldPos * 0.5) * 2.0;
+  vec2 pxLocalUv = (floor(vLocalUv * 32.0) + 0.5) / 32.0;
+  float pxScreenY = floor(vScreenUv.y * 180.0) / 180.0;
 
-  // Depth absorption between crystalline coastal shallows and deep twilight sapphire
+  // Quantized multi-octave pixel ripple field
+  float w1 = sin(pxWorld.x * 0.095 + t * 2.1 + sin(pxCell.y * 0.055) * 1.4);
+  float w2 = sin(pxCell.y * 0.125 - t * 1.65 + pxWorld.x * 0.036);
+  float w3 = cos((pxWorld.x - pxCell.y) * 0.070 + t * 1.25);
+  float rippleRaw = (w1 * 0.5 + w2 * 0.35 + w3 * 0.15) * clamp(uWaveAmplitude, 0.0, 2.5);
+  float ripple = floor(rippleRaw * 4.0 + 0.5) * 0.25;
+
+  // Stepped depth absorption between crystalline coastal shallows and deep twilight sapphire
   vec3 shallowWater = mix(vec3(0.16, 0.58, 0.72), uSkyBottom * 0.88 + vec3(0.06, 0.18, 0.22), 0.45);
   vec3 deepWater = mix(vec3(0.04, 0.14, 0.32), uSkyTop * 0.75 + vec3(0.02, 0.06, 0.16), 0.5);
-  vec3 absorbed = mix(shallowWater, deepWater, smoothstep(0.0, 1.0, vDepthFactor));
+  float steppedDepth = floor(vDepthFactor * 6.0 + 0.5) / 6.0;
+  vec3 absorbed = mix(shallowWater, deepWater, smoothstep(0.0, 1.0, steppedDepth));
 
-  // Subtle shallow water caustics
-  float caustic = pow(clamp(0.5 + 0.5 * sin(vWorldPos.x * 0.14 + w2 * 1.7 + t * 1.8) * cos(vWorldPos.y * 0.14 - w1 * 1.5 - t * 1.3), 0.0, 1.0), 4.0);
-  absorbed += vec3(0.14, 0.28, 0.34) * caustic * (1.0 - vDepthFactor * 0.75) * 0.55;
+  // Crisp pixel-snapped shallow water caustics
+  float causticRaw = 0.5 + 0.5 * sin(pxCell.x * 0.16 + w2 * 1.6 + t * 1.8) * cos(pxCell.y * 0.16 - w1 * 1.4 - t * 1.3);
+  float caustic = step(0.76, causticRaw) * 0.55 + step(0.88, causticRaw) * 0.45;
+  absorbed += vec3(0.14, 0.28, 0.36) * caustic * (1.0 - vDepthFactor * 0.75) * 0.42;
 
-  // Rippled twilight sky reflection gradient
-  float reflectGrad = clamp(1.0 - vScreenUv.y + ripple * 0.08, 0.0, 1.0);
+  // Stepped pixel-art twilight sky reflection bands + crisp 1px horizontal shimmer dashes
+  float reflectGradRaw = clamp(1.0 - pxScreenY + ripple * 0.09, 0.0, 1.0);
+  float reflectGrad = floor(reflectGradRaw * 6.0) / 6.0;
   vec3 skyReflection = mix(uSkyBottom, uSkyTop, reflectGrad);
-  float fresnel = mix(0.24, 0.52, vDepthFactor) + ripple * 0.05;
+  float fresnel = mix(0.24, 0.52, steppedDepth) + ripple * 0.05;
   vec3 waterColor = mix(absorbed, skyReflection, clamp(fresnel, 0.12, 0.68));
 
-  // Twinkling starlight specular highlights on wave crests
+  // Horizontal 1px pixel-art wave highlight dashes on quantized rows
+  float rowMask = step(0.5, 1.0 - mod(pxWorld.y, 4.0));
+  float dashPhase = floor((pxWorld.x + floor(t * 7.0 + pxWorld.y * 0.25)) / 6.0);
+  float dashRnd = hash21(vec2(dashPhase, floor(pxWorld.y / 4.0)));
+  float dashHighlight = rowMask * step(0.74, dashRnd) * step(0.15, rippleRaw);
+  waterColor += mix(uSkyBottom, vec3(0.85, 0.96, 1.0), 0.55) * dashHighlight * 0.18;
+
+  // Pixel-snapped 4-point cross starlight sparkles on integer pixel grid
+  vec3 sparkleEmissive = vec3(0.0);
   if (uStarlightIntensity > 0.01) {
-    vec2 starCell = floor((vWorldPos + vec2(ripple * 4.5, w2 * 3.0)) * 0.085);
-    vec2 starLocal = fract((vWorldPos + vec2(ripple * 4.5, w2 * 3.0)) * 0.085) - 0.5;
+    vec2 driftPx = pxWorld + vec2(floor(ripple * 4.0), 0.0);
+    vec2 starCell = floor(driftPx / 10.0);
+    vec2 cellPx = floor(mod(driftPx, 10.0)) - vec2(4.0);
     float rnd = hash21(starCell);
-    float starMask = step(0.84, rnd);
-    float twinkle = 0.5 + 0.5 * sin(t * (2.6 + rnd * 4.5) + rnd * 31.4159);
-    float dist = length(starLocal);
-    float sparkle = exp(-dist * dist * 42.0) * starMask * twinkle;
-    float crestGlint = smoothstep(0.52, 0.96, 0.5 + 0.5 * (w1 * w3)) * 0.22;
-    vec3 starTint = mix(vec3(0.85, 0.93, 1.0), vec3(1.0, 0.94, 0.76), fract(rnd * 17.3));
-    waterColor += starTint * (sparkle * 1.15 + crestGlint) * uStarlightIntensity;
+    float starMask = step(0.82, rnd);
+    float twinkleRaw = 0.5 + 0.5 * sin(t * (2.6 + rnd * 4.2) + rnd * 31.4159);
+    float twinkle = floor(twinkleRaw * 4.0) / 4.0;
+
+    float ax = abs(cellPx.x);
+    float ay = abs(cellPx.y);
+    float corePx = step(ax, 0.5) * step(ay, 0.5);
+    float armPx = max(step(ax, 1.5) * step(ay, 0.5), step(ay, 1.5) * step(ax, 0.5));
+    float crossShape = max(corePx, armPx * step(0.5, twinkle) * 0.65);
+
+    float sparkle = crossShape * starMask * twinkle;
+    float crestGlint = step(0.78, 0.5 + 0.5 * (w1 * w3)) * rowMask * 0.22;
+    vec3 starTint = mix(vec3(0.86, 0.94, 1.0), vec3(1.0, 0.94, 0.76), fract(rnd * 17.3));
+    vec3 glintColor = starTint * (sparkle * 1.15 + crestGlint) * uStarlightIntensity;
+    waterColor += glintColor;
+    sparkleEmissive = starTint * sparkle * uStarlightIntensity * 0.85;
   }
 
-  // Animated shoreline surf foam supporting both 0..1 intensity and 4-bit cardinal mask (N=1, E=2, S=4, W=8)
+  // Pixel-snapped animated shoreline surf foam (0..1 intensity & 4-bit N=1, E=2, S=4, W=8 mask)
   float foamFactor = 0.0;
   if (vFoamMask > 0.001) {
-    float surfWave = 0.05 * sin(vWorldPos.x * 0.18 + vWorldPos.y * 0.14 - t * 3.4);
-    float foamLace = 0.55 + 0.45 * sin(vWorldPos.x * 0.35 - t * 2.2) * cos(vWorldPos.y * 0.35 + t * 1.9);
+    float surfWave = floor(sin(pxCell.x * 0.18 + pxCell.y * 0.14 - t * 3.2) * 2.0 + 0.5) * 0.03125;
+    float laceWave = 0.55 + 0.45 * sin(pxCell.x * 0.34 - t * 2.1) * cos(pxCell.y * 0.34 + t * 1.8);
+    float foamLace = step(0.32, laceWave) * 0.65 + step(0.68, laceWave) * 0.35;
 
     if (vFoamMask > 1.01) {
       int mask = int(floor(vFoamMask + 0.5));
-      float edgeN = ((mask & 1) != 0) ? smoothstep(0.28 + surfWave, 0.02, vLocalUv.y) : 0.0;
-      float edgeE = ((mask & 2) != 0) ? smoothstep(0.72 - surfWave, 0.98, vLocalUv.x) : 0.0;
-      float edgeS = ((mask & 4) != 0) ? smoothstep(0.72 - surfWave, 0.98, vLocalUv.y) : 0.0;
-      float edgeW = ((mask & 8) != 0) ? smoothstep(0.28 + surfWave, 0.02, vLocalUv.x) : 0.0;
+      float edgeN = ((mask & 1) != 0) ? (step(pxLocalUv.y, 0.22 + surfWave) * 0.6 + step(pxLocalUv.y, 0.10 + surfWave) * 0.4) : 0.0;
+      float edgeE = ((mask & 2) != 0) ? (step(0.78 - surfWave, pxLocalUv.x) * 0.6 + step(0.90 - surfWave, pxLocalUv.x) * 0.4) : 0.0;
+      float edgeS = ((mask & 4) != 0) ? (step(0.78 - surfWave, pxLocalUv.y) * 0.6 + step(0.90 - surfWave, pxLocalUv.y) * 0.4) : 0.0;
+      float edgeW = ((mask & 8) != 0) ? (step(pxLocalUv.x, 0.22 + surfWave) * 0.6 + step(pxLocalUv.x, 0.10 + surfWave) * 0.4) : 0.0;
       float edge = max(max(edgeN, edgeS), max(edgeE, edgeW));
       foamFactor = edge * foamLace;
     } else {
-      float edgeDist = min(min(vLocalUv.x, 1.0 - vLocalUv.x), min(vLocalUv.y, 1.0 - vLocalUv.y));
-      float rimFoam = smoothstep(0.26 + surfWave, 0.02, edgeDist);
-      float crestFoam = smoothstep(0.62, 0.95, 0.5 + 0.5 * w1) * 0.35;
+      float edgeDist = min(min(pxLocalUv.x, 1.0 - pxLocalUv.x), min(pxLocalUv.y, 1.0 - pxLocalUv.y));
+      float rimFoam = step(edgeDist, 0.20 + surfWave) * 0.6 + step(edgeDist, 0.09 + surfWave) * 0.4;
+      float crestFoam = step(0.72, 0.5 + 0.5 * w1) * rowMask * 0.38;
       foamFactor = clamp((rimFoam + crestFoam) * foamLace * vFoamMask, 0.0, 1.0);
     }
   }
 
-  waterColor = mix(waterColor, uFoamColor, clamp(foamFactor * 0.88, 0.0, 0.92));
+  waterColor = mix(waterColor, uFoamColor, clamp(foamFactor * 0.90, 0.0, 0.94));
 
   float alpha = mix(0.84, 0.96, vDepthFactor);
-  alpha = max(alpha, foamFactor * 0.96);
+  alpha = clamp(max(alpha, foamFactor * 0.96), 0.0, 1.0);
 
-  fragColor = vec4(waterColor, clamp(alpha, 0.0, 1.0));
+  fragColor = vec4(waterColor, alpha);
+  fragEmissive = vec4(sparkleEmissive, alpha);
 }
 `,
 };
@@ -450,12 +563,6 @@ void main() {
   vec3 lit = scene.rgb * (ambientLight + pointAccum) + haloAccum;
   lit = lit / (1.0 + max(lit - vec3(0.84), vec3(0.0)) * 0.55);
 
-  // Optional emissive FBO contribution
-  if (uHasEmissive > 0.5) {
-    vec4 emissive = texture(uEmissiveTex, vUv);
-    lit += emissive.rgb * emissive.a;
-  }
-
   // Diagonal forest canopy sunbeam shafts & drifting cloud shadows
   if (uCanopyEnabled > 0.5) {
     float ca = cos(uSunbeamAngle);
@@ -480,6 +587,13 @@ void main() {
     }
   }
 
+  // Emissive FBO contribution added after ambient & canopy attenuation so lanterns,
+  // cottage windows, shrine crystals, and lava fissures glow vibrantly even in dark biomes
+  if (uHasEmissive > 0.5) {
+    vec4 emissive = texture(uEmissiveTex, vUv);
+    lit += emissive.rgb * 0.95;
+  }
+
   fragColor = vec4(lit, scene.a);
 }
 `,
@@ -488,10 +602,10 @@ void main() {
 /**
  * 4) BLOOM_COMPOSITE_SHADER
  * Post-process pass performing soft multi-tap Dual-Kawase-inspired bloom halo
- * extraction & blend (uBloomIntensity, uBloomThreshold), per-biome color-grade
- * LUT transform (uTintRgb, uContrast, uSaturation), radial vignette
- * (uVignetteStrength), and optional crisp CRT scanline + subtle phosphor mask
- * toggle (uCrtEnabled).
+ * extraction & blend (uBloomIntensity, uBloomThreshold + dedicated uEmissiveTex),
+ * per-biome color-grade LUT transform (uTintRgb, uContrast, uSaturation), radial
+ * vignette (uVignetteStrength), and optional crisp CRT scanline + subtle phosphor
+ * mask toggle (uCrtEnabled).
  */
 export const BLOOM_COMPOSITE_SHADER: ShaderProgramSource = {
   name: 'BLOOM_COMPOSITE_SHADER',
@@ -513,6 +627,8 @@ precision highp float;
 in vec2 vUv;
 
 uniform sampler2D uLitTex;
+uniform sampler2D uEmissiveTex;
+uniform float uHasEmissive;
 uniform vec2 uTexelSize;
 uniform vec2 uResolution;
 uniform float uTime;
@@ -531,11 +647,19 @@ uniform float uReducedMotion;
 out vec4 fragColor;
 
 vec3 extractBloom(vec2 uv, float threshold) {
-  vec3 c = texture(uLitTex, clamp(uv, vec2(0.001), vec2(0.999))).rgb;
+  vec2 safeUv = clamp(uv, vec2(0.001), vec2(0.999));
+  vec3 c = texture(uLitTex, safeUv).rgb;
   float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  float effectiveThresh = max(threshold, 0.80);
-  float softKnee = smoothstep(effectiveThresh - 0.08, effectiveThresh + 0.16, luma);
-  return c * softKnee;
+  float peak = max(c.r, max(c.g, c.b));
+  float energy = max(luma, peak * 0.86);
+  float effectiveThresh = max(threshold, 0.76);
+  float softKnee = smoothstep(effectiveThresh - 0.08, effectiveThresh + 0.16, energy);
+  vec3 result = c * softKnee;
+  if (uHasEmissive > 0.5) {
+    vec3 em = texture(uEmissiveTex, safeUv).rgb;
+    result += em * 0.85;
+  }
+  return result;
 }
 
 void main() {
