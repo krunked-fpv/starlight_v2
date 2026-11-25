@@ -16,6 +16,7 @@ import {
   type UIRenderSnapshot,
 } from '../contracts';
 import {
+  BALANCE,
   getAllEvolutionItems,
   getBiomeVisualProfile,
   getCleanTrainerName,
@@ -165,6 +166,51 @@ function getLeadMaxHp(lead: DojoProfileState['team'][number]): number {
   }
 }
 
+type ComposureState = 'braced' | 'ready' | 'spent';
+
+function resolveComposureState(
+  side: 'player' | 'enemy',
+  hp: number,
+  maxHp: number,
+  selfLevel: number,
+  otherLevel: number,
+  isBoss: boolean,
+  bracedFlash: number,
+): ComposureState {
+  if (bracedFlash > 0.05) return 'braced';
+  const cfg = BALANCE.combat.composure;
+  if (!cfg.enabled || maxHp <= 1 || hp < maxHp) return 'spent';
+  const gap = otherLevel - selfLevel;
+  if (side === 'player') {
+    return gap <= cfg.playerGapHardCap ? 'ready' : 'spent';
+  }
+  if (isBoss) {
+    return gap <= cfg.playerGapHardCap ? 'ready' : 'spent';
+  }
+  return gap <= cfg.wildMaxLevelAdvantage ? 'ready' : 'spent';
+}
+
+function renderComposureGauge(state: ComposureState): string {
+  const label = state === 'braced' ? 'BRACED' : state === 'ready' ? 'GUARD' : 'OPEN';
+  const title =
+    state === 'braced'
+      ? 'Composure Guard braced the opening heavy blow!'
+      : state === 'ready'
+        ? 'Full-HP Composure Guard active: braces against opening one-shot'
+        : 'Composure Guard spent (requires full HP)';
+  const litCount = state === 'spent' ? 0 : 3;
+  const pips = [0, 1, 2]
+    .map((i) => `<span class="sl-composure-seg${i < litCount ? ' is-lit' : ''}"></span>`)
+    .join('');
+  return `
+    <span class="sl-composure-chip" data-composure="${state}" data-state="${state}" title="${title}">
+      ${createIconSvg('icon-composure', 'sl-icon-sm')}
+      <span class="sl-composure-label">${label}</span>
+      <span class="sl-composure-bar" aria-hidden="true">${pips}</span>
+    </span>
+  `;
+}
+
 export class CelestialUIController implements ICelestialUIController {
   private root: HTMLElement | null = null;
   private shellEl: HTMLElement | null = null;
@@ -245,21 +291,25 @@ export class CelestialUIController implements ICelestialUIController {
   private skyhopDockBtn: HTMLButtonElement | null = null;
 
   // Battle refs
+  private enemyCardEl: HTMLElement | null = null;
   private enemyNameEl: HTMLElement | null = null;
   private enemyBadgesEl: HTMLElement | null = null;
   private enemyHpBarEl: HTMLElement | null = null;
   private enemyHpTrailEl: HTMLElement | null = null;
   private enemyHpValEl: HTMLElement | null = null;
+  private enemyComposureEl: HTMLElement | null = null;
   private enemyRivalDotsEl: HTMLElement | null = null;
   private enemyBuffsEl: HTMLElement | null = null;
   private enemyAbilityBannerEl: HTMLElement | null = null;
 
+  private playerCardEl: HTMLElement | null = null;
   private playerNameEl: HTMLElement | null = null;
   private playerBadgesEl: HTMLElement | null = null;
   private playerHpBarEl: HTMLElement | null = null;
   private playerHpTrailEl: HTMLElement | null = null;
   private playerHpValEl: HTMLElement | null = null;
   private playerXpBarEl: HTMLElement | null = null;
+  private playerComposureEl: HTMLElement | null = null;
   private playerBuffsEl: HTMLElement | null = null;
   private playerAbilityBannerEl: HTMLElement | null = null;
 
@@ -381,7 +431,7 @@ export class CelestialUIController implements ICelestialUIController {
               <div class="sl-profile-top">
                 <div class="sl-profile-visuals">
                   <canvas class="sl-portrait-canvas" width="76" height="76" data-testid="profile-violet-portrait" aria-hidden="true"></canvas>
-                  <canvas class="sl-profile-lead-canvas" width="56" height="56" data-testid="profile-violet-lead" aria-hidden="true"></canvas>
+                  <canvas class="sl-profile-lead-canvas" width="56" height="56" data-testid="profile-violet-lead" aria-hidden="true" hidden></canvas>
                 </div>
                 <div class="sl-profile-meta" data-testid="profile-violet-meta"></div>
               </div>
@@ -396,7 +446,7 @@ export class CelestialUIController implements ICelestialUIController {
               <div class="sl-profile-top">
                 <div class="sl-profile-visuals">
                   <canvas class="sl-portrait-canvas" width="76" height="76" data-testid="profile-ozias-portrait" aria-hidden="true"></canvas>
-                  <canvas class="sl-profile-lead-canvas" width="56" height="56" data-testid="profile-ozias-lead" aria-hidden="true"></canvas>
+                  <canvas class="sl-profile-lead-canvas" width="56" height="56" data-testid="profile-ozias-lead" aria-hidden="true" hidden></canvas>
                 </div>
                 <div class="sl-profile-meta" data-testid="profile-ozias-meta"></div>
               </div>
@@ -507,14 +557,14 @@ export class CelestialUIController implements ICelestialUIController {
           <!-- Top Band: Enemy Crest Plate + Ability Ribbon TOP-LEFT, Rig Toggle TOP-RIGHT -->
           <div class="sl-battle-top-row">
             <div class="sl-combatant-stack">
-              <div class="sl-combatant-card sl-combatant-enemy sl-hud-plate" data-testid="battle-enemy-card">
+              <div class="sl-combatant-card sl-combatant-enemy sl-hud-plate" data-testid="battle-enemy-card" data-type="normal">
                 <div class="sl-combatant-head">
                   <strong class="sl-combatant-name" data-testid="battle-enemy-name">Wild Foe Lv.5</strong>
                   <div class="sl-combatant-badges" data-testid="battle-enemy-badges"></div>
                 </div>
                 <div class="sl-gauge-row">
                   <span class="sl-gauge-label">HP</span>
-                  <div class="sl-bar-track">
+                  <div class="sl-bar-track sl-bar-track-hp">
                     <div class="sl-bar-trail" data-testid="battle-enemy-hp-trail" style="--trail:1;"></div>
                     <div class="sl-bar-fill sl-bar-hp" data-testid="battle-enemy-hp-bar" style="--fill:1;"></div>
                   </div>
@@ -522,10 +572,13 @@ export class CelestialUIController implements ICelestialUIController {
                 </div>
                 <div class="sl-battle-meta-row">
                   <div class="sl-battle-buffs" data-testid="battle-enemy-buffs"></div>
-                  <div class="sl-rival-dots" data-testid="battle-rival-dots"></div>
+                  <div class="sl-battle-meta-right">
+                    <span data-testid="battle-enemy-composure"></span>
+                    <div class="sl-rival-dots" data-testid="battle-rival-dots"></div>
+                  </div>
                 </div>
               </div>
-              <div class="sl-ability-banner" data-testid="battle-enemy-ability-banner" hidden></div>
+              <div class="sl-ability-banner sl-ability-banner-enemy" data-testid="battle-enemy-ability-banner" hidden></div>
             </div>
 
             <button
@@ -537,30 +590,34 @@ export class CelestialUIController implements ICelestialUIController {
               title="Toggle Offline Pixel Rig"
             >
               ${createIconSvg('icon-sparkle', 'sl-icon-sm')}
+              <span class="sl-rig-label">Live</span>
             </button>
           </div>
 
           <!-- Center Unobstructed Arena + Player Crest Plate bottom-right opposite Player Sprite -->
           <div class="sl-battle-stage-gap">
             <div class="sl-combatant-stack sl-combatant-stack-right">
-              <div class="sl-ability-banner" data-testid="battle-player-ability-banner" hidden></div>
-              <div class="sl-combatant-card sl-combatant-player sl-hud-plate" data-testid="battle-player-card">
+              <div class="sl-ability-banner sl-ability-banner-player" data-testid="battle-player-ability-banner" hidden></div>
+              <div class="sl-combatant-card sl-combatant-player sl-hud-plate" data-testid="battle-player-card" data-type="normal">
                 <div class="sl-combatant-head">
                   <strong class="sl-combatant-name" data-testid="battle-player-name">Partner Lv.5</strong>
                   <div class="sl-combatant-badges" data-testid="battle-player-badges"></div>
                 </div>
                 <div class="sl-gauge-row">
                   <span class="sl-gauge-label">HP</span>
-                  <div class="sl-bar-track">
+                  <div class="sl-bar-track sl-bar-track-hp">
                     <div class="sl-bar-trail" data-testid="battle-player-hp-trail" style="--trail:1;"></div>
                     <div class="sl-bar-fill sl-bar-hp" data-testid="battle-player-hp-bar" style="--fill:1;"></div>
                   </div>
                   <span class="sl-gauge-val sl-num" data-testid="battle-player-hp-val">25/25</span>
                 </div>
-                <div class="sl-gauge-row">
+                <div class="sl-gauge-row sl-gauge-row-xp">
                   <span class="sl-gauge-label">XP</span>
                   <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-xp" data-testid="battle-player-xp-bar" style="--fill:0;"></div></div>
-                  <span class="sl-battle-buffs" data-testid="battle-player-buffs"></span>
+                  <div class="sl-battle-meta-right">
+                    <div class="sl-battle-buffs sl-battle-player-buffs" data-testid="battle-player-buffs"></div>
+                    <span data-testid="battle-player-composure"></span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -580,29 +637,34 @@ export class CelestialUIController implements ICelestialUIController {
                 </div>
 
                 <div class="sl-battle-actions">
-                  <button type="button" class="sl-btn sl-act-poke" data-testid="battle-ball-poke">
+                  <button type="button" class="sl-btn sl-act-poke" data-testid="battle-ball-poke" title="Throw Poké Ball [B]">
                     ${createIconSvg('icon-pokeball', 'sl-icon-sm')}
                     <span>Poké Ball</span>
+                    <kbd class="sl-kbd" aria-hidden="true">B</kbd>
                   </button>
-                  <button type="button" class="sl-btn sl-act-great" data-testid="battle-ball-great">
+                  <button type="button" class="sl-btn sl-act-great" data-testid="battle-ball-great" title="Throw Great Ball [G]">
                     ${createIconSvg('icon-greatball', 'sl-icon-sm')}
                     <span>Great (0)</span>
+                    <kbd class="sl-kbd" aria-hidden="true">G</kbd>
                   </button>
-                  <button type="button" class="sl-btn sl-act-star" data-testid="battle-ball-star">
+                  <button type="button" class="sl-btn sl-act-star" data-testid="battle-ball-star" title="Throw Star Ball [S]">
                     ${createIconSvg('icon-starball', 'sl-icon-sm')}
                     <span>Star (0)</span>
+                    <kbd class="sl-kbd" aria-hidden="true">S</kbd>
                   </button>
-                  <button type="button" class="sl-btn sl-act-potion" data-testid="battle-potion">
+                  <button type="button" class="sl-btn sl-act-potion" data-testid="battle-potion" title="Use Berry Potion [P]">
                     ${createIconSvg('icon-potion', 'sl-icon-sm')}
                     <span>Potion (0)</span>
+                    <kbd class="sl-kbd" aria-hidden="true">P</kbd>
                   </button>
-                  <button type="button" class="sl-btn sl-act-switch" data-testid="battle-switch-btn">
+                  <button type="button" class="sl-btn sl-act-switch" data-testid="battle-switch-btn" title="Switch Active Pokémon">
                     ${createIconSvg('icon-team', 'sl-icon-sm')}
                     <span>Switch</span>
                   </button>
-                  <button type="button" class="sl-btn sl-act-run" data-testid="battle-flee">
+                  <button type="button" class="sl-btn sl-act-run" data-testid="battle-flee" title="Run Away [R]">
                     ${createIconSvg('icon-waypoint', 'sl-icon-sm')}
                     <span>Run</span>
+                    <kbd class="sl-kbd" aria-hidden="true">R</kbd>
                   </button>
                 </div>
               </div>
@@ -614,12 +676,13 @@ export class CelestialUIController implements ICelestialUIController {
                   <button type="button" class="sl-move-card" data-testid="battle-move-${idx}" data-type="normal">
                     <div class="sl-move-top">
                       <span class="sl-move-name-group">
+                        <kbd class="sl-kbd sl-move-kbd" aria-hidden="true">${idx + 1}</kbd>
                         ${createIconSvg('icon-type-normal', 'sl-icon-sm')}
                         <span class="sl-move-name">Move</span>
                       </span>
                     </div>
                     <div class="sl-move-meta sl-num">
-                      <span><span class="sl-move-cat-tag">PHY</span>PWR 40</span>
+                      <span class="sl-move-specs"><span class="sl-move-cat-tag">PHY</span>PWR 40</span>
                       <span class="sl-move-pp-wrap">PP 20/20</span>
                     </div>
                   </button>
@@ -956,21 +1019,25 @@ export class CelestialUIController implements ICelestialUIController {
     this.audioToggleBtn = q('[data-testid="toggle-audio"]');
     this.skyhopDockBtn = q('[data-testid="nav-skyhop"]');
 
+    this.enemyCardEl = q('[data-testid="battle-enemy-card"]');
     this.enemyNameEl = q('[data-testid="battle-enemy-name"]');
     this.enemyBadgesEl = q('[data-testid="battle-enemy-badges"]');
     this.enemyHpBarEl = q('[data-testid="battle-enemy-hp-bar"]');
     this.enemyHpTrailEl = q('[data-testid="battle-enemy-hp-trail"]');
     this.enemyHpValEl = q('[data-testid="battle-enemy-hp-val"]');
+    this.enemyComposureEl = q('[data-testid="battle-enemy-composure"]');
     this.enemyBuffsEl = q('[data-testid="battle-enemy-buffs"]');
     this.enemyRivalDotsEl = q('[data-testid="battle-rival-dots"]');
     this.enemyAbilityBannerEl = q('[data-testid="battle-enemy-ability-banner"]');
 
+    this.playerCardEl = q('[data-testid="battle-player-card"]');
     this.playerNameEl = q('[data-testid="battle-player-name"]');
     this.playerBadgesEl = q('[data-testid="battle-player-badges"]');
     this.playerHpBarEl = q('[data-testid="battle-player-hp-bar"]');
     this.playerHpTrailEl = q('[data-testid="battle-player-hp-trail"]');
     this.playerHpValEl = q('[data-testid="battle-player-hp-val"]');
     this.playerXpBarEl = q('[data-testid="battle-player-xp-bar"]');
+    this.playerComposureEl = q('[data-testid="battle-player-composure"]');
     this.playerBuffsEl = q('[data-testid="battle-player-buffs"]');
     this.playerAbilityBannerEl = q('[data-testid="battle-player-ability-banner"]');
 
@@ -1107,9 +1174,16 @@ export class CelestialUIController implements ICelestialUIController {
       btn.addEventListener('pointerleave', stopRepeat);
     }
 
-    // Battle Deck
+    // Battle Deck (defense-in-depth turn-lock guards on every battle input)
+    const isCommandPhaseReady = (): boolean =>
+      Boolean(
+        this.lastSnapshot &&
+          !this.lastSnapshot.battle.inputLocked &&
+          this.lastSnapshot.battle.phase === 'command',
+      );
     this.moveButtons.forEach((btn, idx) => {
       btn.addEventListener('click', () => {
+        if (!isCommandPhaseReady()) return;
         const moves = this.lastSnapshot?.battle.player.mon.moves ?? [];
         const allOutOfPp = moves.length > 0 && moves.every((m) => m.currentPp <= 0);
         if (allOutOfPp && idx === 0) {
@@ -1118,25 +1192,56 @@ export class CelestialUIController implements ICelestialUIController {
           return;
         }
         const move = moves[idx];
-        if (move) {
+        if (move && move.currentPp > 0) {
           this.battleSwitchOpen = false;
           this.callbacks?.onBattleMove(move.id);
         }
       });
     });
-    this.ballPokeBtn?.addEventListener('click', () => this.callbacks?.onBattleThrowBall('poke'));
-    this.ballGreatBtn?.addEventListener('click', () => this.callbacks?.onBattleThrowBall('great'));
-    this.ballStarBtn?.addEventListener('click', () => this.callbacks?.onBattleThrowBall('star'));
-    this.potionBtn?.addEventListener('click', () => this.callbacks?.onBattleUsePotion());
+    this.ballPokeBtn?.addEventListener('click', () => {
+      if (!isCommandPhaseReady()) return;
+      this.battleSwitchOpen = false;
+      this.callbacks?.onBattleThrowBall('poke');
+    });
+    this.ballGreatBtn?.addEventListener('click', () => {
+      if (!isCommandPhaseReady()) return;
+      this.battleSwitchOpen = false;
+      this.callbacks?.onBattleThrowBall('great');
+    });
+    this.ballStarBtn?.addEventListener('click', () => {
+      if (!isCommandPhaseReady()) return;
+      this.battleSwitchOpen = false;
+      this.callbacks?.onBattleThrowBall('star');
+    });
+    this.potionBtn?.addEventListener('click', () => {
+      if (!isCommandPhaseReady()) return;
+      this.battleSwitchOpen = false;
+      this.callbacks?.onBattleUsePotion();
+    });
     this.switchToggleBtn?.addEventListener('click', () => {
-      if (this.lastSnapshot?.battle.phase === 'forced-switch') return;
+      const snap = this.lastSnapshot;
+      if (!snap || snap.battle.phase === 'forced-switch' || !isCommandPhaseReady()) return;
+      const activeUid = snap.battle.player.mon.uid;
+      const hasHealthyBench = Boolean(snap.profile?.team?.some((m) => m.uid !== activeUid && m.hp > 0));
+      if (!hasHealthyBench && !this.battleSwitchOpen) return;
       this.battleSwitchOpen = !this.battleSwitchOpen;
       this.memo.delete('b-switch');
-      if (this.lastSnapshot) this.syncBattle(this.lastSnapshot);
+      this.syncBattle(snap);
     });
     this.switchDrawerEl?.addEventListener('click', (evt) => {
-      const btn = (evt.target as HTMLElement | null)?.closest('[data-switch-idx]') as HTMLButtonElement | null;
-      if (!btn) return;
+      const target = evt.target as HTMLElement | null;
+      if (target?.closest('[data-switch-close]')) {
+        if (this.lastSnapshot?.battle.phase !== 'forced-switch') {
+          this.battleSwitchOpen = false;
+          this.memo.delete('b-switch');
+          if (this.lastSnapshot) this.syncBattle(this.lastSnapshot);
+        }
+        return;
+      }
+      const btn = target?.closest('[data-switch-idx]') as HTMLButtonElement | null;
+      if (!btn || btn.disabled) return;
+      const phase = this.lastSnapshot?.battle.phase;
+      if (phase !== 'forced-switch' && !isCommandPhaseReady()) return;
       const idx = Number(btn.getAttribute('data-switch-idx'));
       if (Number.isInteger(idx)) {
         this.battleSwitchOpen = false;
@@ -1144,13 +1249,19 @@ export class CelestialUIController implements ICelestialUIController {
       }
     });
     this.offlineRigBtn?.addEventListener('click', () => this.callbacks?.onBattleToggleOfflineRig());
-    this.fleeBtn?.addEventListener('click', () => this.callbacks?.onBattleFlee());
+    this.fleeBtn?.addEventListener('click', () => {
+      if (!isCommandPhaseReady()) return;
+      this.battleSwitchOpen = false;
+      this.callbacks?.onBattleFlee();
+    });
     this.resultBannerEl?.addEventListener('click', (evt) => {
       const target = (evt.target as HTMLElement | null)?.closest('button') as HTMLButtonElement | null;
       if (!target) return;
       if (target.getAttribute('data-testid') === 'battle-confirm-evolution') {
+        this.battleSwitchOpen = false;
         this.callbacks?.onBattleConfirmEvolution();
       } else if (target.getAttribute('data-testid') === 'battle-close-result') {
+        this.battleSwitchOpen = false;
         this.callbacks?.onBattleCloseResult();
       }
     });
@@ -1410,7 +1521,7 @@ export class CelestialUIController implements ICelestialUIController {
       } else {
         this.suppressedTransitionToast = null;
       }
-      if (screen === 'battle') {
+      if (screen === 'battle' || this.lastScreen === 'battle') {
         this.battleSwitchOpen = false;
       }
       this.lastScreen = screen;
@@ -1487,10 +1598,17 @@ export class CelestialUIController implements ICelestialUIController {
       if (screen === 'briefing') {
         const b = snapshot.briefing;
         const bFrames = b ? this.getCachedFrames?.(b.previewSpeciesId, false, false) ?? null : null;
+        const isRematch = Boolean(
+          b &&
+            b.kind === 'rival' &&
+            (snapshot.overworld.rivals.some((r) => r.id === b.targetId && r.defeated) ||
+              (Array.isArray(profile.rivalsDefeated) && profile.rivalsDefeated.includes(b.targetId))),
+        );
         this.briefingModal.sync(b, true, timeSec, {
           manifest: this.manifest,
           fallbacksSheet: fallbackSheet,
           frames: bFrames,
+          isRematch,
         });
       }
     } else if (screen === 'battle') {
@@ -1778,8 +1896,8 @@ export class CelestialUIController implements ICelestialUIController {
     );
     this.audioToggleBtn?.setAttribute('aria-pressed', String(muted));
 
-    // Contextual Interact Pill
-    if (ow.nearbyInteraction) {
+    // Contextual Interact Pill (strictly hidden while JRPG dialogue modal is open!)
+    if (ow.nearbyInteraction && !snapshot.dialogue) {
       const inter = ow.nearbyInteraction;
       setHidden(this.interactPillBtn, false);
       this.setMemoHtml(
@@ -1790,7 +1908,7 @@ export class CelestialUIController implements ICelestialUIController {
           <span>${safeText(inter.actionVerb)}: ${safeText(inter.label)}</span>
         `,
       );
-    } else if (this.memo.get('interact-pill') !== '') {
+    } else if (this.memo.get('interact-pill') !== '' || (this.interactPillBtn && !this.interactPillBtn.hidden)) {
       this.memo.set('interact-pill', '');
       setHidden(this.interactPillBtn, true);
     }
@@ -1809,6 +1927,15 @@ export class CelestialUIController implements ICelestialUIController {
 
   private syncBattle(snapshot: UIRenderSnapshot): void {
     const battle = snapshot.battle;
+    if (
+      !battle.active ||
+      battle.phase === 'shutter' ||
+      battle.phase === 'victory' ||
+      battle.phase === 'defeat' ||
+      battle.phase === 'evolving'
+    ) {
+      this.battleSwitchOpen = false;
+    }
     const p = battle.player.mon;
     const e = battle.enemy.mon;
     const commandReady = !battle.inputLocked && battle.phase === 'command';
@@ -1831,7 +1958,17 @@ export class CelestialUIController implements ICelestialUIController {
     setHidden(this.battleCaretEl, !commandReady);
 
     // Enemy Crest Plate (Top-Left)
-    this.setMemoText('b-e-name', this.enemyNameEl, `${sanitizeNoEmoji(e.displayName)} Lv.${e.level}`);
+    if (this.enemyCardEl) {
+      if (this.enemyCardEl.getAttribute('data-type') !== e.type) {
+        this.enemyCardEl.setAttribute('data-type', e.type);
+      }
+      this.enemyCardEl.setAttribute('data-braced', String(battle.enemy.bracedFlash > 0.05));
+    }
+    this.setMemoHtml(
+      'b-e-name',
+      this.enemyNameEl,
+      `<span class="sl-combatant-title">${safeText(sanitizeNoEmoji(e.displayName))}</span> <span class="sl-combatant-lv sl-num">Lv.${e.level}</span>`,
+    );
     const trait = getSanitizedTraitLabel(e.encounterTrait);
     const tierText =
       battle.tier === 'shrine-trial'
@@ -1848,7 +1985,7 @@ export class CelestialUIController implements ICelestialUIController {
         ${createIconSvg(typeToIconId(e.type), 'sl-icon-sm')}
         <span>${safeText(e.type.toUpperCase())}</span>
       </span>
-      <span class="sl-pill">${safeText(tierText)}</span>
+      <span class="sl-pill sl-tier-pill">${safeText(tierText)}</span>
       ${isEnemyCaught ? `<span class="sl-pill sl-pill-emerald" data-testid="battle-enemy-caught">${createIconSvg('icon-pokeball', 'sl-icon-sm')} IN DEX</span>` : ''}
       ${e.isShiny ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-sparkle', 'sl-icon-sm')} Shiny</span>` : ''}
       ${e.isElite ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-crown', 'sl-icon-sm')} Elite</span>` : ''}
@@ -1867,8 +2004,19 @@ export class CelestialUIController implements ICelestialUIController {
     this.enemyHpTrailEl?.style.setProperty('--trail', String(eTrailRatio));
     this.setMemoText('b-e-hp', this.enemyHpValEl, `${Math.max(0, Math.round(eDisplayedHp))}/${e.maxHp}`);
 
+    const eComposure = resolveComposureState(
+      'enemy',
+      e.hp,
+      eMaxHp,
+      e.level,
+      p.level,
+      Boolean(battle.isBoss || battle.shrineId),
+      battle.enemy.bracedFlash,
+    );
+    this.setMemoHtml('b-e-comp', this.enemyComposureEl, renderComposureGauge(eComposure));
+
     const eBuffHtml = `
-      ${e.abilityName ? `<span class="sl-pill">${safeText(e.abilityName)}</span>` : ''}
+      ${e.abilityName ? `<span class="sl-pill sl-ability-chip">${safeText(e.abilityName)}</span>` : ''}
       ${trait ? `<span class="sl-pill">${createIconSvg(trait.iconId, 'sl-icon-sm')} ${safeText(trait.label)}</span>` : ''}
       ${e.shieldTurns > 0 ? `<span class="sl-pill sl-pill-cyan">${createIconSvg('icon-shield', 'sl-icon-sm')} SHLD ${e.shieldTurns}T</span>` : ''}
       ${formatStages(e.battleStages)}
@@ -1914,14 +2062,24 @@ export class CelestialUIController implements ICelestialUIController {
     }
 
     // Player Crest Plate (Bottom-Right above console, clear of Player Sprite)
-    this.setMemoText('b-p-name', this.playerNameEl, `${sanitizeNoEmoji(p.displayName)} Lv.${p.level}`);
+    if (this.playerCardEl) {
+      if (this.playerCardEl.getAttribute('data-type') !== p.type) {
+        this.playerCardEl.setAttribute('data-type', p.type);
+      }
+      this.playerCardEl.setAttribute('data-braced', String(battle.player.bracedFlash > 0.05));
+    }
+    this.setMemoHtml(
+      'b-p-name',
+      this.playerNameEl,
+      `<span class="sl-combatant-title">${safeText(sanitizeNoEmoji(p.displayName))}</span> <span class="sl-combatant-lv sl-num">Lv.${p.level}</span>`,
+    );
     const pBadgesHtml = `
       <span class="sl-pill sl-type-pill" data-type="${p.type}">
         ${createIconSvg(typeToIconId(p.type), 'sl-icon-sm')}
         <span>${safeText(p.type.toUpperCase())}</span>
       </span>
-      <span class="sl-pill sl-num" title="Bond">${createIconSvg('icon-bond', 'sl-icon-sm')} ${p.bond}</span>
-      <span class="sl-pill sl-pill-gold sl-num" title="Star Rank">${createIconSvg('icon-star-rank', 'sl-icon-sm')} ${p.upgradeTier}</span>
+      <span class="sl-pill sl-num sl-player-bond-pill" title="Bond">${createIconSvg('icon-bond', 'sl-icon-sm')} ${p.bond}</span>
+      <span class="sl-pill sl-pill-gold sl-num sl-player-rank-pill" title="Star Rank">${createIconSvg('icon-star-rank', 'sl-icon-sm')} ${p.upgradeTier}</span>
     `;
     this.setMemoHtml('b-p-badges', this.playerBadgesEl, pBadgesHtml);
 
@@ -1942,7 +2100,19 @@ export class CelestialUIController implements ICelestialUIController {
       : Math.max(0, Math.min(1, p.xp / Math.max(1, p.xpToNext)));
     this.playerXpBarEl?.style.setProperty('--fill', String(pXpRatio));
 
+    const pComposure = resolveComposureState(
+      'player',
+      p.hp,
+      pMaxHp,
+      p.level,
+      e.level,
+      false,
+      battle.player.bracedFlash,
+    );
+    this.setMemoHtml('b-p-comp', this.playerComposureEl, renderComposureGauge(pComposure));
+
     const pBuffHtml = `
+      ${p.abilityName ? `<span class="sl-pill sl-ability-chip sl-player-ab-chip">${safeText(p.abilityName)}</span>` : ''}
       ${p.shieldTurns > 0 ? `<span class="sl-pill sl-pill-cyan">${createIconSvg('icon-shield', 'sl-icon-sm')} SHLD ${p.shieldTurns}T</span>` : ''}
       ${formatStages(p.battleStages)}
     `;
@@ -1968,7 +2138,7 @@ export class CelestialUIController implements ICelestialUIController {
       'Choose your next move!';
     this.setMemoText('b-msg', this.battleMsgEl, beatMsg);
 
-    // 2x2 Vibrant Jewel Elemental Move Tiles (with Effectiveness Callout, Category Tag, PP Pips & Struggle guard)
+    // 2x2 Vibrant Jewel Elemental Move Tiles (with Effectiveness Callout, STAB, Accuracy, Category Tag, Hotkey & PP Pips)
     const allOutOfPp = p.moves.length > 0 && p.moves.every((m) => m.currentPp <= 0);
     this.moveButtons.forEach((btn, idx) => {
       if (allOutOfPp && idx === 0) {
@@ -1981,13 +2151,14 @@ export class CelestialUIController implements ICelestialUIController {
           `
             <div class="sl-move-top">
               <span class="sl-move-name-group">
+                <kbd class="sl-kbd sl-move-kbd" aria-hidden="true">1</kbd>
                 ${createIconSvg('icon-type-normal', 'sl-icon-sm')}
                 <span class="sl-move-name">Struggle</span>
               </span>
-              <span class="sl-eff-tag sl-eff-resist">RECOIL</span>
+              <span class="sl-move-tags"><span class="sl-eff-tag sl-eff-resist">STRUGGLE</span></span>
             </div>
             <div class="sl-move-meta sl-num">
-              <span><span class="sl-move-cat-tag">PHY</span>PWR 35</span>
+              <span class="sl-move-specs"><span class="sl-move-cat-tag">PHY</span>PWR 35 <span class="sl-move-acc">100%</span></span>
               <span class="sl-move-pp-wrap">Last Resort</span>
             </div>
           `,
@@ -2009,14 +2180,19 @@ export class CelestialUIController implements ICelestialUIController {
 
       let catTag = 'PHY';
       let pwrText = `PWR ${m.power}`;
+      let accText = '';
       let effTagHtml = '';
+      let stabTagHtml = '';
 
       if (m.id === 'struggle') {
         catTag = 'PHY';
         pwrText = `PWR ${m.power || 35}`;
-        effTagHtml = `<span class="sl-eff-tag sl-eff-resist">RECOIL</span>`;
+        accText = `<span class="sl-move-acc">100%</span>`;
+        effTagHtml = `<span class="sl-eff-tag sl-eff-resist">STRUGGLE</span>`;
       } else if (m.category === 'attack') {
         catTag = m.damageClass === 'special' || (!m.damageClass && SPECIAL_TYPES.has(m.type)) ? 'SPC' : 'PHY';
+        const acc = Number.isFinite(Number(m.accuracy)) ? Math.round(Number(m.accuracy)) : 100;
+        accText = `<span class="sl-move-acc">ACC ${acc}%</span>`;
         const mult = getTypeEffectiveness(m.type, e.type);
         if (mult === 0) {
           effTagHtml = `<span class="sl-eff-tag sl-eff-immune">0x IMMUNE</span>`;
@@ -2024,6 +2200,9 @@ export class CelestialUIController implements ICelestialUIController {
           effTagHtml = `<span class="sl-eff-tag sl-eff-super">${mult}x SUPER</span>`;
         } else if (mult < 1) {
           effTagHtml = `<span class="sl-eff-tag sl-eff-resist">${mult}x RESIST</span>`;
+        }
+        if (m.type === p.type && mult > 0) {
+          stabTagHtml = `<span class="sl-eff-tag sl-eff-stab" title="Same-Type Attack Bonus (+20%)">STAB</span>`;
         }
       } else if (m.category === 'heal') {
         catTag = 'HEAL';
@@ -2039,19 +2218,21 @@ export class CelestialUIController implements ICelestialUIController {
         effTagHtml = `<span class="sl-eff-tag sl-eff-support">STAT UP</span>`;
       }
 
+      const tagsHtml = `${stabTagHtml}${effTagHtml}`;
       this.setMemoHtml(
         `b-move-${idx}`,
         btn,
         `
           <div class="sl-move-top">
             <span class="sl-move-name-group">
+              <kbd class="sl-kbd sl-move-kbd" aria-hidden="true">${idx + 1}</kbd>
               ${createIconSvg(typeToIconId(m.type), 'sl-icon-sm')}
               <span class="sl-move-name">${safeText(m.name)}</span>
             </span>
-            ${effTagHtml}
+            ${tagsHtml ? `<span class="sl-move-tags">${tagsHtml}</span>` : ''}
           </div>
           <div class="sl-move-meta sl-num">
-            <span><span class="sl-move-cat-tag">${catTag}</span>${pwrText}</span>
+            <span class="sl-move-specs"><span class="sl-move-cat-tag">${catTag}</span>${pwrText} ${accText}</span>
             <span class="sl-move-pp-wrap">
               <span>PP ${m.currentPp}/${m.maxPp}</span>
               ${renderPpPips(m.currentPp, m.maxPp)}
@@ -2068,7 +2249,7 @@ export class CelestialUIController implements ICelestialUIController {
       this.setMemoHtml(
         'b-great',
         this.ballGreatBtn,
-        `${createIconSvg('icon-greatball', 'sl-icon-sm')} <span>Great (${bag.greatBalls})</span>`,
+        `${createIconSvg('icon-greatball', 'sl-icon-sm')} <span>Great (${bag.greatBalls})</span> <kbd class="sl-kbd" aria-hidden="true">G</kbd>`,
       );
     }
     if (this.ballStarBtn) {
@@ -2076,7 +2257,7 @@ export class CelestialUIController implements ICelestialUIController {
       this.setMemoHtml(
         'b-star',
         this.ballStarBtn,
-        `${createIconSvg('icon-starball', 'sl-icon-sm')} <span>Star (${bag.starBalls})</span>`,
+        `${createIconSvg('icon-starball', 'sl-icon-sm')} <span>Star (${bag.starBalls})</span> <kbd class="sl-kbd" aria-hidden="true">S</kbd>`,
       );
     }
     if (this.potionBtn) {
@@ -2084,14 +2265,20 @@ export class CelestialUIController implements ICelestialUIController {
       this.setMemoHtml(
         'b-pot',
         this.potionBtn,
-        `${createIconSvg('icon-potion', 'sl-icon-sm')} <span>Potion (${bag.potions})</span>`,
+        `${createIconSvg('icon-potion', 'sl-icon-sm')} <span>Potion (${bag.potions})</span> <kbd class="sl-kbd" aria-hidden="true">P</kbd>`,
       );
     }
+    const isForcedSwitch = battle.phase === 'forced-switch';
+    const hasHealthyBench = Boolean(
+      snapshot.profile?.team?.some((m) => m.uid !== p.uid && m.hp > 0),
+    );
+    if (!hasHealthyBench && !isForcedSwitch) {
+      this.battleSwitchOpen = false;
+    }
     if (this.switchToggleBtn) {
-      const teamCount = snapshot.profile?.team?.length ?? 1;
-      const isForced = battle.phase === 'forced-switch';
-      this.switchToggleBtn.disabled = isForced || !commandReady || teamCount <= 1;
-      this.switchToggleBtn.setAttribute('aria-pressed', String(this.battleSwitchOpen || isForced));
+      this.switchToggleBtn.disabled = isForcedSwitch || !commandReady || !hasHealthyBench;
+      this.switchToggleBtn.setAttribute('aria-pressed', String(this.battleSwitchOpen || isForcedSwitch));
+      this.switchToggleBtn.classList.toggle('is-active', this.battleSwitchOpen || isForcedSwitch);
     }
     if (this.fleeBtn) {
       this.fleeBtn.disabled = !commandReady || !battle.canRun;
@@ -2099,37 +2286,77 @@ export class CelestialUIController implements ICelestialUIController {
     if (this.offlineRigBtn) {
       this.offlineRigBtn.setAttribute('aria-pressed', String(battle.forceOfflineRig));
       this.offlineRigBtn.classList.toggle('is-active', battle.forceOfflineRig);
+      this.offlineRigBtn.title = battle.forceOfflineRig
+        ? 'Offline Pixel Rig active (click for Live animated sprites)'
+        : 'Live animated sprites active (click to preview Offline Pixel Rig)';
+      this.setMemoHtml(
+        'b-rig',
+        this.offlineRigBtn,
+        `${createIconSvg('icon-sparkle', 'sl-icon-sm')} <span class="sl-rig-label">${battle.forceOfflineRig ? 'Rig' : 'Live'}</span>`,
+      );
     }
 
-    // Team Switch Drawer (supports voluntary switch + forced-switch phase from GAP-1)
-    const isForcedSwitch = battle.phase === 'forced-switch';
-    if ((isForcedSwitch || (this.battleSwitchOpen && commandReady)) && snapshot.profile) {
+    // Team Switch Drawer (Overlay inside console footprint — zero layout shift & zero sprite overlap!)
+    if ((isForcedSwitch || (this.battleSwitchOpen && commandReady && hasHealthyBench)) && snapshot.profile) {
       setHidden(this.switchDrawerEl, false);
-      const promptHtml = isForcedSwitch
-        ? `<div class="sl-pill sl-pill-gold" data-testid="battle-forced-switch-prompt" style="width:100%; justify-content:center;">Choose your next Pokémon to continue!</div>`
-        : '';
-      const swHtml =
-        promptHtml +
-        snapshot.profile.team
-          .map((m, idx) => {
-            const sp = getSpeciesEntry(m.speciesId);
-            const isCurrent = m.uid === p.uid;
-            const fainted = m.hp <= 0;
-            return `
-              <button
-                type="button"
-                class="sl-btn"
-                data-switch-idx="${idx}"
-                data-testid="battle-switch-slot-${idx}"
-                ${isCurrent || fainted ? 'disabled' : ''}
-              >
-                ${createIconSvg(typeToIconId(sp.type), 'sl-icon-sm')}
-                <span>${safeText(stripEmojis(m.nickname || sp.name))} Lv.${m.level} (${m.hp} HP)</span>
-              </button>
-            `;
-          })
-          .join('');
-      this.setMemoHtml('b-switch', this.switchDrawerEl, swHtml);
+      const headerHtml = isForcedSwitch
+        ? `
+          <div class="sl-switch-head">
+            <div class="sl-pill sl-pill-gold" data-testid="battle-forced-switch-prompt" style="width:100%; justify-content:center;">
+              ${createIconSvg('icon-team', 'sl-icon-sm')}
+              <span>Choose your next Pokémon to continue!</span>
+            </div>
+          </div>
+        `
+        : `
+          <div class="sl-switch-head">
+            <span class="sl-switch-title">${createIconSvg('icon-team', 'sl-icon-sm')} Switch Active Partner</span>
+            <button type="button" class="sl-btn sl-btn-ghost sl-switch-close-btn" data-switch-close aria-label="Close Switch Menu">
+              ${createIconSvg('icon-close', 'sl-icon-sm')}
+              <span>Cancel</span>
+            </button>
+          </div>
+        `;
+      const slotsHtml = snapshot.profile.team
+        .map((m, idx) => {
+          const sp = getSpeciesEntry(m.speciesId);
+          const maxHp = getLeadMaxHp(m);
+          const hpRatio = Math.max(0, Math.min(1, m.hp / Math.max(1, maxHp)));
+          const isCurrent = m.uid === p.uid;
+          const fainted = m.hp <= 0;
+          const statusChip = isCurrent
+            ? `<span class="sl-pill sl-pill-cyan">ACTIVE</span>`
+            : fainted
+              ? `<span class="sl-pill sl-pill-rose">FAINTED</span>`
+              : `<span class="sl-pill sl-pill-emerald">READY</span>`;
+          return `
+            <button
+              type="button"
+              class="sl-btn sl-switch-slot"
+              data-switch-idx="${idx}"
+              data-testid="battle-switch-slot-${idx}"
+              data-type="${sp.type}"
+              ${isCurrent || fainted ? 'disabled' : ''}
+            >
+              <div class="sl-switch-slot-top">
+                <span class="sl-switch-slot-name">
+                  ${createIconSvg(typeToIconId(sp.type), 'sl-icon-sm')}
+                  <span>${safeText(stripEmojis(m.nickname || sp.name))}</span>
+                  <span class="sl-num sl-switch-slot-lv">Lv.${m.level}</span>
+                </span>
+                ${statusChip}
+              </div>
+              <div class="sl-switch-slot-hp">
+                <div class="sl-bar-track sl-bar-track-sm">
+                  <div class="sl-bar-fill sl-bar-hp" data-low="${hpRatio <= 0.25}" data-mid="${hpRatio > 0.25 && hpRatio <= 0.52}" style="--fill:${hpRatio};"></div>
+                </div>
+                <span class="sl-num sl-switch-hp-val">${m.hp}/${maxHp}</span>
+              </div>
+            </button>
+          `;
+        })
+        .join('');
+      this.setMemoHtml('b-switch', this.switchDrawerEl, `${headerHtml}<div class="sl-switch-grid">${slotsHtml}</div>`);
     } else {
       setHidden(this.switchDrawerEl, true);
     }
@@ -2144,10 +2371,10 @@ export class CelestialUIController implements ICelestialUIController {
           'b-result',
           this.resultBannerEl,
           `
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; width:100%;">
-              <div>
-                <strong style="font-family:var(--sl-font-display); font-size:16px; color:var(--sl-gold-bright);">Evolution Ready!</strong>
-                <div style="font-size:12.5px; color:var(--sl-text-secondary);">
+            <div class="sl-result-inner">
+              <div class="sl-result-copy">
+                <strong class="sl-result-heading">${createIconSvg('icon-evolve', 'sl-icon-md')} Evolution Ready!</strong>
+                <div class="sl-result-sub">
                   ${safeText(p.displayName)} can evolve into ${safeText(battle.evolutionTarget.toName)}!
                 </div>
               </div>
@@ -2160,22 +2387,36 @@ export class CelestialUIController implements ICelestialUIController {
         );
       } else {
         const sum = battle.rewardSummary;
-        const cleanDrop = sum?.trailDrop ? sanitizeNoEmoji(sum.trailDrop) : '';
-        const summaryText = sum
-          ? `+${sum.xpGained} XP • +${sum.shardsGained} Star Shards${sum.caught ? ' • Caught!' : ''}${sum.leveledUp ? ' • Level Up!' : ''}`
-          : sanitizeNoEmoji(battle.statusMessage);
-        const dropChipHtml = cleanDrop
-          ? `<div style="margin-top:5px;"><span class="sl-pill sl-pill-gold" data-testid="battle-trail-drop">${createIconSvg('icon-gem', 'sl-icon-sm')} ${safeText(cleanDrop)}</span></div>`
+        const rawDrop = sum?.trailDrop ? sanitizeNoEmoji(sum.trailDrop).trim() : '';
+        const strippedDrop = rawDrop.replace(/^(?:a|an)\s+/i, '');
+        const cleanDrop = strippedDrop
+          ? strippedDrop.charAt(0).toUpperCase() + strippedDrop.slice(1)
           : '';
+        const shardWord = sum && sum.shardsGained === 1 ? 'Star Shard' : 'Star Shards';
+        const cleanMsg = sanitizeNoEmoji(battle.statusMessage).replace(/\b(\+?1)\s+Star Shards\b/g, '$1 Star Shard');
+        const chipsHtml = sum
+          ? `
+            ${cleanMsg ? `<div class="sl-result-sub">${safeText(cleanMsg)}</div>` : ''}
+            <div class="sl-result-chips sl-num">
+              <span class="sl-pill sl-pill-cyan">+${sum.xpGained} XP</span>
+              <span class="sl-pill sl-pill-gold">${createIconSvg('icon-star-shard', 'sl-icon-sm')} +${sum.shardsGained} ${shardWord}</span>
+              ${sum.caught ? `<span class="sl-pill sl-pill-emerald">${createIconSvg('icon-pokeball', 'sl-icon-sm')} Caught!</span>` : ''}
+              ${sum.leveledUp ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-star-rank', 'sl-icon-sm')} Level Up!</span>` : ''}
+              ${cleanDrop ? `<span class="sl-pill sl-pill-gold" data-testid="battle-trail-drop">${createIconSvg('icon-gem', 'sl-icon-sm')} ${safeText(cleanDrop)}</span>` : ''}
+            </div>
+          `
+          : `<div class="sl-result-sub">${safeText(cleanMsg)}</div>`;
         this.setMemoHtml(
           'b-result',
           this.resultBannerEl,
           `
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; width:100%;">
-              <div>
-                <strong style="font-family:var(--sl-font-display); font-size:16px; color:var(--sl-gold-bright);">${battle.phase === 'victory' ? 'Victory!' : 'Returned Safely'}</strong>
-                <div style="font-size:12.5px; color:var(--sl-text-secondary);">${safeText(summaryText)}</div>
-                ${dropChipHtml}
+            <div class="sl-result-inner">
+              <div class="sl-result-copy">
+                <strong class="sl-result-heading">
+                  ${createIconSvg(battle.phase === 'victory' ? 'icon-trophy' : 'icon-fountain', 'sl-icon-md')}
+                  <span>${battle.phase === 'victory' ? 'Victory!' : 'Returned Safely'}</span>
+                </strong>
+                ${chipsHtml}
               </div>
               <button type="button" class="sl-btn sl-btn-primary" data-testid="battle-close-result">
                 ${createIconSvg('icon-check', 'sl-icon-sm')}

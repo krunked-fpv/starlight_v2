@@ -258,12 +258,12 @@ export class TeamBoxView {
             const isRenaming = this.editingNicknameUid === mon.uid;
 
             return `
-              <article class="sl-team-card sl-glass-soft ${idx === 0 ? 'is-lead' : ''}" data-team-card="${idx}" data-testid="team-card-${idx}">
+              <article class="sl-team-card sl-glass-soft ${idx === 0 ? 'is-lead' : ''} ${isSwapSelected ? 'is-swap-selected' : ''}" data-team-card="${idx}" data-testid="team-card-${idx}" data-type="${sp.type}">
                 <div class="sl-team-card-top">
                   <canvas class="sl-team-sprite" width="68" height="68" data-team-canvas="${idx}" aria-hidden="true"></canvas>
                   <div class="sl-team-meta">
                     <div class="sl-team-name-row">
-                      <strong>${safeText(displayName)}</strong>
+                      <strong class="sl-team-name">${safeText(displayName)}</strong>
                       <span class="sl-pill sl-num">Lv.${mon.level}</span>
                       ${idx === 0 ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-crown', 'sl-icon-sm')} Lead</span>` : ''}
                       ${mon.isShiny ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-sparkle', 'sl-icon-sm')} Shiny</span>` : ''}
@@ -275,14 +275,14 @@ export class TeamBoxView {
                       ${ab ? `<span class="sl-pill sl-pill-cyan">${safeText(ab.name)}</span>` : ''}
                       ${lockedHintHtml}
                     </div>
-                    <div class="sl-num" style="display:flex; gap:10px; font-size:11px; color:var(--sl-text-muted); font-weight:700;">
-                      <span>ATK ${stats.atk}</span>
-                      <span>DEF ${stats.def}</span>
-                      <span>SPD ${stats.spd}</span>
+                    <div class="sl-team-stat-strip sl-num">
+                      <span class="sl-stat-chip"><em>ATK</em> ${stats.atk}</span>
+                      <span class="sl-stat-chip"><em>DEF</em> ${stats.def}</span>
+                      <span class="sl-stat-chip"><em>SPD</em> ${stats.spd}</span>
                     </div>
                     <div class="sl-gauge-row">
                       <span class="sl-gauge-label">HP</span>
-                      <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-hp" data-low="${hpPct <= 0.25}" data-mid="${hpPct > 0.25 && hpPct <= 0.52}" style="--fill:${hpPct};"></div></div>
+                      <div class="sl-bar-track sl-bar-track-hp"><div class="sl-bar-fill sl-bar-hp" data-low="${hpPct <= 0.25}" data-mid="${hpPct > 0.25 && hpPct <= 0.52}" style="--fill:${hpPct};"></div></div>
                       <span class="sl-gauge-val sl-num">${mon.hp}/${stats.maxHp}</span>
                     </div>
                     <div class="sl-gauge-row">

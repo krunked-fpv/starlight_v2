@@ -50,6 +50,7 @@ const NPC_NAME_BY_ID = (() => {
 export class IslandGuideView {
   private callbacks: UIBridgeCallbacks | null = null;
   private biomesGridEl: HTMLElement | null = null;
+  private exploreSummaryEl: HTMLElement | null = null;
   private questsListEl: HTMLElement | null = null;
   private questsCountEl: HTMLElement | null = null;
   private arcadeHintEl: HTMLElement | null = null;
@@ -64,13 +65,13 @@ export class IslandGuideView {
         <div class="sl-guide-col">
           <div class="sl-team-section-head">
             <h3 class="sl-style-group-title">${createIconSvg('icon-guide', 'sl-icon-sm')} 18 Connected Island Biomes</h3>
-            <span class="sl-pill">Tap Warp to fast-travel</span>
+            <span class="sl-pill sl-pill-gold sl-num" data-testid="guide-explore-summary">Tap Warp to fast-travel</span>
           </div>
           <div class="sl-guide-biome-grid" data-testid="guide-biomes-grid"></div>
         </div>
 
         <div class="sl-guide-side">
-          <div class="sl-guide-hint sl-glass-soft" data-testid="guide-controls-card">
+          <div class="sl-guide-card sl-glass-soft" data-testid="guide-controls-card">
             <h3 class="sl-style-group-title">${createIconSvg('icon-compass', 'sl-icon-sm')} Controls &amp; Secret Arcade</h3>
             <ul class="sl-guide-controls-list">
               <li><strong>Move:</strong> WASD / Arrow Keys, Tap-to-Walk on map, or Touch D-Pad</li>
@@ -95,6 +96,7 @@ export class IslandGuideView {
     `;
 
     this.biomesGridEl = container.querySelector('[data-testid="guide-biomes-grid"]');
+    this.exploreSummaryEl = container.querySelector('[data-testid="guide-explore-summary"]');
     this.questsListEl = container.querySelector('[data-testid="guide-quests-list"]');
     this.questsCountEl = container.querySelector('[data-testid="guide-quests-count"]');
     this.arcadeHintEl = container.querySelector('[data-testid="guide-secret-arcade-hint"]');
@@ -130,7 +132,12 @@ export class IslandGuideView {
     const clearedSet = new Set(profile.shrinesCleared);
     const openedSet = new Set(profile.chestsOpened);
     const visitedSet = new Set(profile.biomesVisited);
+    visitedSet.add(currentBiomeId);
     const questsDoneSet = new Set(profile.questsCompleted);
+
+    if (this.exploreSummaryEl) {
+      this.exploreSummaryEl.textContent = `${visitedSet.size}/${BIOME_IDS.length} Biomes • ${clearedSet.size}/20 Shrines • ${openedSet.size}/36 Chests`;
+    }
 
     if (this.biomesGridEl) {
       this.biomesGridEl.innerHTML = BIOME_IDS.map((bId) => {

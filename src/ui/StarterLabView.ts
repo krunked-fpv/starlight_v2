@@ -50,6 +50,17 @@ const ACCESSORY_ICON_MAP: Record<TrainerAccessoryId, IconId> = {
   antlers: 'icon-type-fairy',
 };
 
+const ACCESSORY_SHORT_LABEL: Record<TrainerAccessoryId, string> = {
+  cap: 'Cap',
+  crown: 'Crown',
+  wizard: 'Wizard',
+  headband: 'Band',
+  goggles: 'Goggles',
+  halo: 'Halo',
+  visor: 'Visor',
+  antlers: 'Antlers',
+};
+
 const AURA_COLOR_MAP: Record<TrainerAuraId, string> = {
   none: '#64748b',
   stars: '#fde047',
@@ -57,6 +68,15 @@ const AURA_COLOR_MAP: Record<TrainerAuraId, string> = {
   lightning: '#38bdf8',
   blossom: '#fb7185',
   cosmic: '#2dd4bf',
+};
+
+const AURA_SHORT_LABEL: Record<TrainerAuraId, string> = {
+  none: 'None',
+  stars: 'Sparks',
+  hearts: 'Hearts',
+  lightning: 'Bolts',
+  blossom: 'Petals',
+  cosmic: 'Cosmic',
 };
 
 export class StarterLabView {
@@ -122,6 +142,7 @@ export class StarterLabView {
             aria-pressed="false"
           >
             ${createIconSvg(ACCESSORY_ICON_MAP[a.id] ?? 'icon-hat', 'sl-icon-sm')}
+            <span class="sl-swatch-txt">${safeText(ACCESSORY_SHORT_LABEL[a.id] ?? a.name)}</span>
           </button>
         `,
       )
@@ -140,6 +161,7 @@ export class StarterLabView {
             aria-pressed="false"
           >
             <span class="sl-swatch-dot" style="background:${AURA_COLOR_MAP[a.id] ?? '#94a3b8'};"></span>
+            <span class="sl-swatch-txt">${safeText(AURA_SHORT_LABEL[a.id] ?? a.name)}</span>
           </button>
         `,
       )
@@ -226,18 +248,22 @@ export class StarterLabView {
                       <div class="sl-starter-stat-cell">
                         <span class="sl-starter-stat-k">HP</span>
                         <span class="sl-starter-stat-v">${sp.baseStats.hp}</span>
+                        <span class="sl-starter-mini-bar"><span class="sl-bar-stat-hp" style="width:${Math.min(100, Math.round((sp.baseStats.hp / 80) * 100))}%;"></span></span>
                       </div>
                       <div class="sl-starter-stat-cell">
                         <span class="sl-starter-stat-k">ATK</span>
                         <span class="sl-starter-stat-v">${sp.baseStats.atk}</span>
+                        <span class="sl-starter-mini-bar"><span class="sl-bar-stat-atk" style="width:${Math.min(100, Math.round((sp.baseStats.atk / 80) * 100))}%;"></span></span>
                       </div>
                       <div class="sl-starter-stat-cell">
                         <span class="sl-starter-stat-k">DEF</span>
                         <span class="sl-starter-stat-v">${sp.baseStats.def}</span>
+                        <span class="sl-starter-mini-bar"><span class="sl-bar-stat-def" style="width:${Math.min(100, Math.round((sp.baseStats.def / 80) * 100))}%;"></span></span>
                       </div>
                       <div class="sl-starter-stat-cell">
                         <span class="sl-starter-stat-k">SPD</span>
                         <span class="sl-starter-stat-v">${sp.baseStats.spd}</span>
+                        <span class="sl-starter-mini-bar"><span class="sl-bar-stat-spd" style="width:${Math.min(100, Math.round((sp.baseStats.spd / 80) * 100))}%;"></span></span>
                       </div>
                     </div>
                     <p class="sl-starter-desc">${safeText(desc)}</p>

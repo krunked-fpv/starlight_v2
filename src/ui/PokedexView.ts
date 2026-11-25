@@ -255,7 +255,7 @@ export class PokedexView {
       `<button type="button" class="sl-dex-filter-chip is-active" data-dex-type="all" aria-pressed="true">All Types</button>`,
       ...ELEMENTAL_TYPES.map(
         (t) => `
-          <button type="button" class="sl-dex-filter-chip" data-dex-type="${t}" aria-pressed="false">
+          <button type="button" class="sl-dex-filter-chip" data-dex-type="${t}" data-type="${t}" aria-pressed="false">
             ${createIconSvg(typeToIconId(t), 'sl-icon-sm')}
             <span>${capitalize(t)}</span>
           </button>
@@ -990,11 +990,23 @@ export class PokedexView {
       const pal = TYPE_PALETTES[sp.type] ?? TYPE_PALETTES.electric;
 
       ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = '#060a1e';
+      const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+      bgGrad.addColorStop(0, '#070c24');
+      bgGrad.addColorStop(0.5, '#0b1336');
+      bgGrad.addColorStop(1, '#060a1e');
+      ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, w, h);
 
-      ctx.strokeStyle = 'rgba(235, 183, 77, 0.22)';
+      // Subtle oscilloscope grid
+      ctx.strokeStyle = 'rgba(114, 232, 255, 0.09)';
       ctx.lineWidth = 1;
+      for (let gx = 24; gx < w; gx += 24) {
+        ctx.beginPath();
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, h);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(235, 183, 77, 0.28)';
       ctx.beginPath();
       ctx.moveTo(0, h / 2);
       ctx.lineTo(w, h / 2);
@@ -1002,8 +1014,27 @@ export class PokedexView {
 
       const samples = this.currentWaveform.samples;
       const activePlay = this.currentWaveform.playing && this.currentWaveform.speciesId === sp.id;
-      ctx.strokeStyle = activePlay ? '#ffeaad' : pal.primary;
-      ctx.lineWidth = 2;
+
+      // Subtle vertical spectrum bars behind waveform
+      const barCount = 24;
+      const barW = Math.max(2, Math.floor((w - 8) / barCount) - 2);
+      ctx.fillStyle = activePlay ? 'rgba(255, 234, 173, 0.24)' : `${pal.primary}2c`;
+      for (let b = 0; b < barCount; b++) {
+        const bx = 4 + b * ((w - 8) / barCount);
+        let amp = 0;
+        if (samples && samples.length > 1) {
+          const sIdx = Math.min(samples.length - 1, Math.floor((b / barCount) * samples.length));
+          amp = Math.abs(samples[sIdx]);
+        } else {
+          const env = Math.sin(((b + 0.5) / barCount) * Math.PI);
+          amp = Math.abs(Math.sin(b * (0.45 + (sp.id % 7) * 0.09) + (activePlay ? timeSec * 10 : 0))) * env * 0.55;
+        }
+        const bh = Math.max(2, Math.round(amp * h * 0.72));
+        ctx.fillRect(Math.round(bx), Math.round((h - bh) * 0.5), barW, bh);
+      }
+
+      ctx.strokeStyle = activePlay ? '#ffeaad' : pal.glow || pal.primary;
+      ctx.lineWidth = activePlay ? 2.4 : 2;
       ctx.beginPath();
 
       if (samples && samples.length > 1) {
@@ -1018,9 +1049,9 @@ export class PokedexView {
       } else {
         const freq = 0.05 + (sp.id % 11) * 0.008;
         const phase = activePlay ? timeSec * 12 : 0;
-        for (let x = 0; x <= w; x += 4) {
+        for (let x = 0; x <= w; x += 3) {
           const env = Math.sin((x / w) * Math.PI);
-          const y = h / 2 + Math.sin(x * freq + phase) * env * (h * 0.26);
+          const y = h / 2 + Math.sin(x * freq + phase) * env * (h * 0.28);
           if (x === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }

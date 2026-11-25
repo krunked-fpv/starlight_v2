@@ -226,19 +226,18 @@ export class LivingTitleRenderer {
       }
       ctx.restore();
 
-      // 5. Pixel Moon + Glow
-      const moonX = Math.round(cw * 0.8);
-      const moonY = Math.round(ch * 0.18);
-      const moonGlow = ctx.createRadialGradient(moonX, moonY, 8, moonX, moonY, 86);
-      moonGlow.addColorStop(0, 'rgba(255, 248, 214, 0.72)');
-      moonGlow.addColorStop(0.35, 'rgba(124, 232, 255, 0.22)');
-      moonGlow.addColorStop(1, 'rgba(124, 232, 255, 0)');
-      ctx.fillStyle = moonGlow;
-      ctx.fillRect(moonX - 86, moonY - 86, 172, 172);
-      ctx.fillStyle = '#fff9df';
-      ctx.fillRect(moonX - 18, moonY - 18, 36, 36);
-      ctx.fillRect(moonX - 12, moonY - 22, 24, 44);
-      ctx.fillRect(moonX - 22, moonY - 12, 44, 24);
+      // 5. Shimmering Celestial North-Star Beacon (perched high-right, clear of Title typography)
+      const starX = Math.round(cw * 0.89);
+      const starY = Math.round(ch * 0.11);
+      const starGlow = ctx.createRadialGradient(starX, starY, 3, starX, starY, 64);
+      starGlow.addColorStop(0, 'rgba(255, 248, 214, 0.56)');
+      starGlow.addColorStop(0.4, 'rgba(124, 232, 255, 0.2)');
+      starGlow.addColorStop(1, 'rgba(124, 232, 255, 0)');
+      ctx.fillStyle = starGlow;
+      ctx.fillRect(starX - 64, starY - 64, 128, 128);
+      drawPixelStar(ctx, starX - 2, starY - 2, 4, '#fff9df');
+      drawPixelStar(ctx, starX - 18, starY + 12, 2, 'rgba(124, 232, 255, 0.85)');
+      drawPixelStar(ctx, starX + 16, starY + 16, 2, 'rgba(255, 224, 130, 0.85)');
 
       // 6. Silhouetted Pixel Island Cliffs & Observatory Ridge
       const stepW = Math.max(8, Math.round(cw / 64));
@@ -285,20 +284,45 @@ export class LivingTitleRenderer {
       }
     }, 'world');
 
-    // 8. Shimmering Starlight Sea Water Quads (WebGL2 & Canvas2D Parity!)
-    const waterBands = 3;
+    // 8. Shimmering Starlight Sea Water Quads (Smooth 10-band depth gradient — zero flat horizontal stripe seams!)
+    const waterBands = 10;
     const waterTotalH = Math.max(36, h - horizonY);
-    const bandH = Math.max(12, waterTotalH / waterBands);
+    const bandH = Math.max(6, waterTotalH / waterBands);
     for (let i = 0; i < waterBands; i++) {
+      const ratio = i / (waterBands - 1);
       backend.drawWaterQuad(
         0,
         horizonY + i * bandH,
         w,
         bandH + 2,
-        0.24 + i * 0.32,
-        i === 0 ? 0.86 : 0.16,
+        0.16 + ratio * 0.78,
+        i === 0 ? 0.78 : i === 1 ? 0.24 : 0.04,
       );
     }
+
+    // Starlight moonlight shimmer sparkles dancing across the water surface
+    backend.drawCustom2D((ctx, cw, ch) => {
+      const hy = Math.round(ch * 0.72);
+      const seaH = Math.max(24, ch - hy);
+      const colX = Math.round(cw * 0.88);
+      for (let i = 0; i < 18; i++) {
+        const yFrac = (i + 0.5) / 18;
+        const py = Math.round(hy + 4 + yFrac * (seaH - 10));
+        const sway = Math.sin(t * 2.1 * motion + i * 1.4) * (10 + yFrac * 22);
+        const pw = Math.round(14 + yFrac * 40 + Math.sin(t * 3.2 * motion + i) * 6);
+        const alpha = (0.14 + 0.16 * Math.sin(t * 2.6 * motion + i * 0.9)) * (1 - yFrac * 0.38);
+        ctx.fillStyle = `rgba(182, 232, 255, ${alpha.toFixed(3)})`;
+        ctx.fillRect(Math.round(colX + sway - pw * 0.5), py, pw, 2);
+      }
+      // Distant wave glints across full harbor width
+      for (let i = 0; i < 24; i++) {
+        const wx = Math.round((i * 97.3 + t * 8 * motion) % cw);
+        const wy = Math.round(hy + 8 + ((i * 31.7) % Math.max(16, seaH - 14)));
+        const gl = 0.08 + 0.12 * Math.abs(Math.sin(t * 1.7 * motion + i * 1.1));
+        ctx.fillStyle = `rgba(255, 244, 198, ${gl.toFixed(3)})`;
+        ctx.fillRect(wx, wy, 10 + (i % 4) * 5, 2);
+      }
+    }, 'world');
 
     // 9. Warm Harbor Lantern, Moon, & Violet/Ozias Aura PointLights
     backend.addPointLight({
@@ -459,8 +483,15 @@ export class LivingTitleRenderer {
         ctx.restore();
       };
 
-      drawPedestal(violetProfile, cw * 0.14, save.activeTrainerId === 'violet', 'left');
-      drawPedestal(oziasProfile, cw * 0.86, save.activeTrainerId === 'ozias', 'right');
+      // Keep harbor trainer pedestals cleanly outside the 880px profile grid on desktop
+      // (and neatly framing the horizon on compact viewports)
+      if (cw >= 1040) {
+        drawPedestal(violetProfile, Math.max(58, cw * 0.085), save.activeTrainerId === 'violet', 'left');
+        drawPedestal(oziasProfile, Math.min(cw - 58, cw * 0.915), save.activeTrainerId === 'ozias', 'right');
+      } else if (cw >= 720) {
+        drawPedestal(violetProfile, cw * 0.09, save.activeTrainerId === 'violet', 'left');
+        drawPedestal(oziasProfile, cw * 0.91, save.activeTrainerId === 'ozias', 'right');
+      }
     }, 'post-light');
   }
 }
