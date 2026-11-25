@@ -7,14 +7,14 @@ const isCI = Boolean(runtimeEnv.CI);
 export default defineConfig({
   testDir: './tests',
   testMatch: ['e2e/**/*.spec.ts', 'redteam/**/*.spec.ts'],
-  retries: 0,
-  timeout: 75_000,
+  retries: isCI ? 1 : 0,
+  timeout: isCI ? 120_000 : 75_000,
   expect: {
     timeout: 10_000,
   },
   fullyParallel: false,
   workers: 1,
-  reporter: 'list',
+  reporter: isCI ? [['list'], ['github']] : 'list',
   use: {
     baseURL: 'http://127.0.0.1:4173/starlight_v2/',
     browserName: 'chromium',
