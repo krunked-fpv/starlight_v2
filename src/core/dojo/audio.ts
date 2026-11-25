@@ -71,19 +71,23 @@ export class StarlightAudioController {
   }
 
   playStep(onGrass = false): void {
-    this.engine.playStep(onGrass);
+    if (onGrass) {
+      this.engine.playNoise({ duration: 0.035, gain: 0.028, filterFreq: 1850 });
+    } else {
+      this.engine.playTone({ freq: 240, endFreq: 190, duration: 0.028, gain: 0.022, type: 'triangle' });
+    }
   }
 
-  playEncounterStinger(): void {
-    this.engine.playEncounterStinger();
+  playEncounterStinger(mode = 'wild'): void {
+    this.engine.playEncounterAlert(mode);
   }
 
   playHit(superEffective = false): void {
-    this.engine.playHit(superEffective);
+    this.engine.playPhysicalImpact(superEffective ? 92 : 48);
   }
 
   playMoveSfx(moveId: string, fx?: string): void {
-    this.engine.playMoveSfx(moveId, fx);
+    this.engine.playAttackSfx(fx || 'normal', moveId);
   }
 
   playHealChime(): void {
@@ -91,19 +95,19 @@ export class StarlightAudioController {
   }
 
   playCatchThrow(): void {
-    this.engine.playCatchThrow();
+    this.engine.playPokeballThrow();
   }
 
   playCatchShake(): void {
-    this.engine.playCatchShake();
+    this.engine.playPokeballWobble(1);
   }
 
   playCatchSuccess(): void {
-    this.engine.playCatchSuccess();
+    this.engine.playCaptureSuccess();
   }
 
   playVictoryFanfare(): void {
-    this.engine.playVictoryFanfare();
+    this.engine.playLevelUp();
   }
 
   playBadgeFanfare(): void {
@@ -111,11 +115,11 @@ export class StarlightAudioController {
   }
 
   playEvolveFanfare(): void {
-    this.engine.playEvolveFanfare();
+    this.engine.playEvolutionFanfare();
   }
 
   playChestOpen(): void {
-    this.engine.playChestOpen();
+    this.engine.playChestFanfare();
   }
 
   playArcadeStar(combo = 1): void {

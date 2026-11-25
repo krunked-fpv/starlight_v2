@@ -11,6 +11,10 @@ void app.boot().catch((err: unknown) => {
   }
 });
 
+window.addEventListener('pagehide', () => {
+  app.dispose();
+});
+
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     app.dispose();

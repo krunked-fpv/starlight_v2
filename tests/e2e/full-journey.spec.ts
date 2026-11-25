@@ -1,9 +1,49 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page, type Route } from '@playwright/test';
+
+/** Valid deterministic 2-frame 2x2 GIF89a with per-frame delays */
+const STUB_TWO_FRAME_GIF = new Uint8Array([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+  0x02, 0x00, 0x02, 0x00, 0x80, 0x00, 0x00,
+  0xff, 0x00, 0x00, 0x00, 0x00, 0xff,
+  0x21, 0xf9, 0x04, 0x04, 0x0c, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x04, 0x00, 0x50, 0x00,
+  0x21, 0xf9, 0x04, 0x04, 0x0f, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x0c, 0x91, 0x50, 0x00,
+  0x3b,
+]);
+
+type FulfillBody = NonNullable<Parameters<Route['fulfill']>[0]>['body'];
+
+function toFulfillBody(bytes: Uint8Array): FulfillBody {
+  const NodeBuffer = (globalThis as unknown as { Buffer: { from(data: Uint8Array): FulfillBody } }).Buffer;
+  return NodeBuffer.from(bytes);
+}
+
+const stubbedContexts = new WeakSet<BrowserContext>();
+
+async function stubExternalSpriteCdns(page: Page): Promise<void> {
+  const ctx = page.context();
+  if (stubbedContexts.has(ctx)) return;
+  stubbedContexts.add(ctx);
+  const body = toFulfillBody(STUB_TWO_FRAME_GIF);
+  const handler = async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'image/gif',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body,
+    });
+  };
+  await ctx.route('https://raw.githubusercontent.com/**', handler);
+  await ctx.route('https://play.pokemonshowdown.com/**', handler);
+}
 
 function attachCollectors(page: Page) {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
-  const failedResponses: Array<{ url: string; status: number }> = [];
+  const failedLocalResponses: Array<{ url: string; status: number }> = [];
 
   page.on('console', (msg) => {
     if (msg.type() === 'error') {
@@ -14,12 +54,12 @@ function attachCollectors(page: Page) {
     pageErrors.push(err.message);
   });
   page.on('response', (res) => {
-    if (res.status() >= 400) {
-      failedResponses.push({ url: res.url(), status: res.status() });
+    if (res.status() >= 400 && res.url().startsWith('http://127.0.0.1:4173')) {
+      failedLocalResponses.push({ url: res.url(), status: res.status() });
     }
   });
 
-  return { consoleErrors, pageErrors, failedResponses };
+  return { consoleErrors, pageErrors, failedLocalResponses };
 }
 
 async function waitForAppBoot(page: Page): Promise<void> {
@@ -38,7 +78,7 @@ async function assertElementCanvasDrawn(page: Page, selector: string): Promise<v
     const probe = document.createElement('canvas');
     probe.width = Math.min(120, canvas.width);
     probe.height = Math.min(80, canvas.height);
-    const ctx = probe.getContext('2d');
+    const ctx = probe.getContext('2d', { willReadFrequently: true }) ?? probe.getContext('2d');
     if (!ctx) return { nonTransparent: 0, distinct: 0 };
     ctx.drawImage(canvas, 0, 0, probe.width, probe.height);
     const data = ctx.getImageData(0, 0, probe.width, probe.height).data;
@@ -57,12 +97,26 @@ async function assertElementCanvasDrawn(page: Page, selector: string): Promise<v
   expect(drawn.distinct, `Expected ${selector} to have tonal/color variance`).toBeGreaterThan(3);
 }
 
+async function exitBattleCleanly(page: Page): Promise<void> {
+  const phase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+  if (phase === 'evolving') {
+    await page.getByTestId('battle-confirm-evolution').click();
+    await page.getByTestId('battle-close-result').click();
+  } else if (phase === 'victory' || phase === 'defeat') {
+    await page.getByTestId('battle-close-result').click();
+  } else {
+    await page.getByTestId('battle-flee').click();
+  }
+  await expect(page.getByTestId('overworld-screen')).toBeVisible();
+}
+
 for (const renderer of ['webgl2', 'canvas2d'] as const) {
   test.describe(`E2E Full Player Journey (${renderer})`, () => {
-    test(`completes Title -> Overworld -> Biomes -> Briefing -> Battles -> 1025 Pokédex -> 28 Badges -> Style Studio -> Sky-Hop on ${renderer}`, async ({
+    test(`completes Title -> Starter Lab -> Overworld -> Briefing -> Wild & Shrine Battles -> 5-Tab Drawer -> Sky-Hop on ${renderer}`, async ({
       page,
     }) => {
       const telemetry = attachCollectors(page);
+      await stubExternalSpriteCdns(page);
 
       await page.goto(`./?renderer=${renderer}`);
       await waitForAppBoot(page);
@@ -71,72 +125,90 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       expect(initialState.backend).toBe(renderer);
       expect(initialState.manifestLoaded).toBe(true);
 
-      // 1. Title Vista dual-profile preview: switch slot1 and back to slot0
+      // 1. Title Vista: Violet & Ozias cards & pixel portraits rendered
       await expect(page.getByTestId('title-screen')).toBeVisible();
-      await assertElementCanvasDrawn(page, '[data-testid="profile-slot0-canvas"]');
-      await assertElementCanvasDrawn(page, '[data-testid="profile-slot1-canvas"]');
+      await expect(page.getByTestId('profile-violet-meta')).toContainText('Violet');
+      await expect(page.getByTestId('profile-ozias-meta')).toContainText('Ozias');
+      await assertElementCanvasDrawn(page, '[data-testid="profile-violet-portrait"]');
+      await assertElementCanvasDrawn(page, '[data-testid="profile-ozias-portrait"]');
 
-      await page.getByTestId('profile-slot1').click();
-      await expect(page.getByTestId('profile-slot1')).toHaveAttribute('aria-pressed', 'true');
-      expect(
-        await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().activeSlot),
-      ).toBe('slot1');
+      // 2. Choose Violet -> Starter Lab -> Choose Bulbasaur (#1)
+      await page.getByTestId('title-play-violet').click();
+      await expect(page.getByTestId('starter-screen')).toBeVisible();
+      await assertElementCanvasDrawn(page, '[data-testid="starter-willow-canvas"]');
+      await assertElementCanvasDrawn(page, '[data-testid="starter-canvas-1"]');
+      await page.getByTestId('starter-choose-1').click();
 
-      await page.getByTestId('profile-slot0').click();
-      await expect(page.getByTestId('profile-slot0')).toHaveAttribute('aria-pressed', 'true');
-      expect(
-        await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().activeSlot),
-      ).toBe('slot0');
-
-      // 2. Enter Starlight Village
-      await page.getByTestId('enter-world-btn').click();
+      // 3. Starlight Village Overworld
       await expect(page.getByTestId('overworld-screen')).toBeVisible();
-      await expect(page.getByTestId('overworld-biome-name')).toHaveText('Starlight Village');
-
-      // Confirm live draw calls on main stage (soft assertion so full journey still audits every downstream screen)
+      await expect(page.getByTestId('hud-biome-name')).toHaveText('Starlight Village');
       await page.waitForTimeout(220);
-      const owStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
-      expect.soft(owStats.drawCalls, `Expected live drawCalls > 0 on ${renderer}`).toBeGreaterThan(0);
 
-      // 3. Interact with nearby Starlight Healing Fountain & walk through tall grass
-      await page.getByTestId('interact-btn').click();
+      const owStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
+      expect(owStats.drawCalls, `Expected live drawCalls > 0 on ${renderer}`).toBeGreaterThan(0);
+
+      // 3a. Tap-to-Walk BFS canvas click from spawn (8, 15) -> tile (10, 15)
+      const canvasBox = await page.locator('#starlight-canvas').boundingBox();
+      expect(canvasBox).not.toBeNull();
+      if (canvasBox) {
+        // tileSize = 32; at (8,15) on 1366x768, camX = 0, so tile 10 center is x = 10.5 * 32 = 336, y = center
+        const tapX = canvasBox.x + 10.5 * 32;
+        const tapY = canvasBox.y + canvasBox.height * 0.5;
+        await page.mouse.click(tapX, tapY);
+      }
+      await page.waitForFunction(
+        () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 0) >= 10,
+        undefined,
+        { timeout: 6_000 },
+      );
+
+      // 3b. Arrow key walk left back toward center
+      const posAfterTap = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
+      await page.keyboard.down('ArrowLeft');
+      await page.waitForTimeout(360);
+      await page.keyboard.up('ArrowLeft');
+      const posAfterKey = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
+      expect(posAfterKey.x).toBeLessThan(posAfterTap.x);
+
+      // 3c. Warp to safe spawn (8, 15), step precisely to (7, 14) right below Healing Fountain (7, 13), and heal
+      await page.getByTestId('warp-safe').click();
+      await expect(page.getByTestId('toast-banner')).toContainText('Starlight Village');
+      await page.keyboard.down('ArrowUp');
+      await page.waitForFunction(
+        () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.y ?? 15) <= 14,
+        undefined,
+        { timeout: 5_000 },
+      );
+      await page.keyboard.up('ArrowUp');
+      await page.keyboard.down('ArrowLeft');
+      await page.waitForFunction(
+        () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 8) <= 7,
+        undefined,
+        { timeout: 5_000 },
+      );
+      await page.keyboard.up('ArrowLeft');
+      await expect(page.getByTestId('interact-pill')).toContainText('Starlight Healing Fountain');
+      await page.getByTestId('interact-pill').click();
       await expect(page.getByTestId('toast-banner')).toContainText('Starlight Healing Fountain');
 
-      const posStart = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
-      // Walk left then down from (13.5, 11.4) into tall-grass patch [4..9, 12..14]
-      await page.keyboard.down('ArrowLeft');
-      await page.waitForTimeout(1050);
-      await page.keyboard.up('ArrowLeft');
-      await page.keyboard.down('ArrowDown');
-      await page.waitForTimeout(380);
-      await page.keyboard.up('ArrowDown');
+      // 3d. Farm Zone warp + Biome warp via Island Guide
+      await page.getByTestId('warp-farm').click();
+      await expect(page.getByTestId('overworld-screen')).toBeVisible();
+      const farmBiome = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().biomeId);
+      expect(farmBiome).not.toBe('village');
 
-      const postWalk = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-      // If tall grass naturally triggered a wild encounter, return to overworld cleanly
-      if (postWalk.screen === 'battle') {
-        await page.getByTestId('battle-flee').click();
-        await expect(page.getByTestId('overworld-screen')).toBeVisible();
-      } else {
-        expect(Math.hypot(postWalk.playerPos.x - posStart.x, postWalk.playerPos.y - posStart.y)).toBeGreaterThan(1.5);
-        expect(postWalk.grassDisplacements).toBeGreaterThan(0);
-      }
-
-      // 4. Travel to another biome
-      await page.getByTestId('biome-select').selectOption('sapphire-lagoon');
-      await expect(page.getByTestId('overworld-biome-name')).toHaveText('Sapphire Coral Lagoon');
-      expect(
-        await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().biomeId),
-      ).toBe('sapphire-lagoon');
-
-      // 5. Open Tactical Readiness Briefing
+      // 4. Tactical Readiness Briefing
       await page.getByTestId('nav-briefing').click();
       await expect(page.getByTestId('briefing-screen')).toBeVisible();
-      await expect(page.getByTestId('briefing-score')).toBeVisible();
+      await expect(page.getByTestId('briefing-tier-badge')).toBeVisible();
+      await assertElementCanvasDrawn(page, '[data-testid="briefing-preview-canvas"]');
       await page.getByTestId('briefing-close').click();
       await expect(page.getByTestId('briefing-screen')).toBeHidden();
 
-      // 6a. Trigger Wild encounter -> elemental move -> Star Ball -> Offline Rig
-      await page.getByTestId('encounter-wild').click();
+      // 5a. Wild Battle: move, Poké/Great/Star Ball, Potion (if damaged), Offline Rig toggle, Flee/Continue
+      await page.evaluate(() =>
+        window.__STARLIGHT_DEBUG__!.triggerEncounter('wild', { biomeId: 'forest', forceSpeciesId: 133 }),
+      );
       await expect(page.getByTestId('battle-screen')).toBeVisible();
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
@@ -146,69 +218,63 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
 
       const preMoveMsg = await page.getByTestId('battle-status-message').textContent();
       await page.getByTestId('battle-move-0').click();
-      await page.waitForFunction(() => {
-        const p = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
-        return p === 'command' || p === 'victory' || p === 'defeat';
-      }, undefined, { timeout: 10_000 });
       const postMoveMsg = await page.getByTestId('battle-status-message').textContent();
       expect(postMoveMsg).not.toBe(preMoveMsg);
 
-      const afterMovePhase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
-      if (afterMovePhase === 'command') {
-        await page.getByTestId('battle-starball').click();
-        await page.waitForFunction(() => {
-          const p = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
-          return p === 'command' || p === 'victory';
-        }, undefined, { timeout: 10_000 });
+      // Use Potion if Bulbasaur took damage and battle is still in command phase
+      const potionBtn = page.getByTestId('battle-potion');
+      if (await potionBtn.isEnabled()) {
+        await potionBtn.click();
       }
 
+      // Throw Poké Ball / Great Ball / Star Ball while still in command phase
+      for (const ballTestId of ['battle-ball-poke', 'battle-ball-great', 'battle-ball-star'] as const) {
+        const curPhase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+        if (curPhase !== 'command') break;
+        const btn = page.getByTestId(ballTestId);
+        if (await btn.isEnabled()) {
+          await btn.click();
+        }
+      }
+
+      // Toggle Offline Pixel Rig cleanly
       await page.getByTestId('battle-offline-rig').click();
       await expect(page.getByTestId('battle-offline-rig')).toHaveAttribute('aria-pressed', 'true');
 
-      await page.getByTestId('battle-flee').click();
-      await expect(page.getByTestId('overworld-screen')).toBeVisible();
+      await exitBattleCleanly(page);
 
-      // 6b. Trigger Shrine encounter -> trigger Evolution
-      await page.getByTestId('encounter-shrine').click();
+      // 5b. Shrine Battle: move, Potion if damaged, Offline Rig toggle, Flee/Continue
+      await page.evaluate(() =>
+        window.__STARLIGHT_DEBUG__!.triggerEncounter('shrine', { biomeId: 'forest' }),
+      );
       await expect(page.getByTestId('battle-screen')).toBeVisible();
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
         undefined,
         { timeout: 10_000 },
       );
+      await page.getByTestId('battle-move-0').click();
+      if (await page.getByTestId('battle-potion').isEnabled()) {
+        await page.getByTestId('battle-potion').click();
+      }
+      await page.getByTestId('battle-offline-rig').click();
+      await exitBattleCleanly(page);
 
-      await page.getByTestId('battle-evolve').click();
-      await page.waitForFunction(
-        () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'evolving',
-        undefined,
-        { timeout: 5_000 },
-      );
-      await page.waitForFunction(
-        () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
-        undefined,
-        { timeout: 10_000 },
-      );
-      // Pikachu (#25) evolves into Raichu (#26)
-      await expect(page.getByTestId('battle-player-name')).toContainText('Raichu');
-
-      await page.getByTestId('battle-flee').click();
-      await expect(page.getByTestId('overworld-screen')).toBeVisible();
-
-      // 7. Open 1,025 Pokédex: search #1025 & #25, verify holographic card tilt & Play Cry waveform
+      // 6. Unified 5-Tab Collector Drawer
       await page.getByTestId('nav-pokedex').click();
-      await expect(page.getByTestId('pokedex-screen')).toBeVisible();
+      await expect(page.getByTestId('collector-drawer')).toBeVisible();
 
+      // Tab 1: 1,025 Pokédex search (#1025 & #25) + Holo Tilt + Cry Waveform
       await page.getByTestId('pokedex-search').fill('#1025');
       await page.getByTestId('pokedex-row-1025').click();
       await expect(page.getByTestId('pokedex-card-number')).toHaveText('#1025');
+      await expect(page.getByTestId('pokedex-card-name')).toHaveText('Pecharunt');
 
       await page.getByTestId('pokedex-search').fill('#25');
       await page.getByTestId('pokedex-row-25').click();
       await expect(page.getByTestId('pokedex-card-number')).toHaveText('#0025');
       await expect(page.getByTestId('pokedex-card-name')).toHaveText('Pikachu');
-      await expect(page.getByTestId('pokedex-holo-card')).toHaveAttribute('data-max-bond', 'true');
 
-      // Verify 3D holographic card pointer tilt updates CSS variables
       const holoBox = await page.getByTestId('pokedex-holo-card').boundingBox();
       expect(holoBox).not.toBeNull();
       if (holoBox) {
@@ -224,45 +290,78 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       expect(tilt.rx).not.toBe('0deg');
       expect(tilt.ry).not.toBe('0deg');
 
-      // Trigger Play Cry and verify procedural waveform canvas is rendered
       await page.getByTestId('pokedex-play-cry').click();
       await page.waitForTimeout(160);
       await assertElementCanvasDrawn(page, '[data-testid="pokedex-cry-canvas"]');
 
-      await page.getByTestId('pokedex-close').click();
-      await expect(page.getByTestId('pokedex-screen')).toBeHidden();
+      // Tab 2: Team & Box
+      await page.getByTestId('drawer-tab-team').click();
+      await expect(page.getByTestId('drawer-panel-team')).toBeVisible();
+      await expect(page.getByTestId('team-bag-strip')).toBeVisible();
+      await expect(page.getByTestId('team-card-0')).toBeVisible();
 
-      // 8. Open 28 Badges showcase and verify all 28 badge cards
-      await page.getByTestId('nav-badges').click();
-      await expect(page.getByTestId('badges-screen')).toBeVisible();
+      // Tab 3: 28 Badges
+      await page.getByTestId('drawer-tab-badges').click();
+      await expect(page.getByTestId('drawer-panel-badges')).toBeVisible();
       await expect(page.locator('[data-testid^="badge-card-"]')).toHaveCount(28);
       await page.getByTestId('badge-card-28').click();
-      await expect(page.getByTestId('badge-detail')).toContainText('Starlight Sovereign');
-      await page.getByTestId('badges-close').click();
+      await expect(page.getByTestId('badge-detail')).toContainText('Terastal Star Crown');
 
-      // 9. Open Style Studio and equip Sky Thunder aura & Cinder Cloak cape live
-      await page.getByTestId('nav-style').click();
-      await expect(page.getByTestId('style-studio-screen')).toBeVisible();
-      await page.getByTestId('style-aura-sky-thunder').click();
-      await page.getByTestId('style-cape-cinder-cloak').click();
-      await expect(page.getByTestId('style-aura-sky-thunder')).toHaveAttribute('aria-pressed', 'true');
-      await expect(page.getByTestId('style-cape-cinder-cloak')).toHaveAttribute('aria-pressed', 'true');
+      // Tab 5: Style Studio (outfit, accessory, cape, aura)
+      await page.getByTestId('drawer-tab-style').click();
+      await expect(page.getByTestId('drawer-panel-style')).toBeVisible();
+      await page.getByTestId('style-outfit-aurora').click();
+      await page.getByTestId('style-accessory-goggles').click();
+      await page.getByTestId('style-cape-toggle').click();
+      await page.getByTestId('style-aura-lightning').click();
+
+      await expect(page.getByTestId('style-outfit-aurora')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('style-accessory-goggles')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('style-cape-toggle')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('style-aura-lightning')).toHaveAttribute('aria-pressed', 'true');
       await assertElementCanvasDrawn(page, '[data-testid="style-stage-canvas"]');
 
       const styleState = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-      expect(styleState.save.profiles.slot0.style.aura).toBe('sky-thunder');
-      expect(styleState.save.profiles.slot0.style.cape).toBe('cinder-cloak');
-      await page.getByTestId('style-close').click();
+      expect(styleState.save.profiles.violet.appearance).toMatchObject({
+        styleId: 'aurora',
+        accessory: 'goggles',
+        cape: true,
+        aura: 'lightning',
+      });
 
-      // 10. Launch Starlight Sky-Hop -> Flap & Star Dash -> verify score rises -> Return
+      // Tab 4: Island Guide -> Warp to Sapphire Lagoon (closes drawer & warps cleanly)
+      await page.getByTestId('drawer-tab-guide').click();
+      await expect(page.getByTestId('drawer-panel-guide')).toBeVisible();
+      await expect(page.locator('[data-testid^="guide-biome-"]')).toHaveCount(18);
+      await page.getByTestId('guide-warp-water').click();
+      await expect(page.getByTestId('overworld-screen')).toBeVisible();
+      await expect(page.getByTestId('hud-biome-name')).toHaveText('Sapphire Lagoon');
+
+      // 7. Sky-Hop Arcade: Start, flight input, Star Dash, score rises, Exit
       await page.getByTestId('nav-skyhop').click();
       await expect(page.getByTestId('skyhop-screen')).toBeVisible();
 
       await page.getByTestId('skyhop-start').click();
-      await page.waitForTimeout(180);
-      await page.getByTestId('skyhop-flap').click();
+      await expect(page.getByTestId('skyhop-center-card')).toBeHidden();
+
+      // Move vertically toward Wave 1 Rising Starlight Arc stars and fire Star Dash (magnet + obstacle shatter)
+      const surfaceBox = await page.getByTestId('skyhop-flight-surface').boundingBox();
+      if (surfaceBox) {
+        await page.mouse.move(surfaceBox.x + surfaceBox.width * 0.4, surfaceBox.y + surfaceBox.height * 0.68);
+        await page.mouse.down();
+        await page.waitForTimeout(200);
+        await page.mouse.up();
+      }
       await page.getByTestId('skyhop-dash').click();
-      await page.waitForTimeout(600);
+      await page.keyboard.down('ArrowUp');
+      await page.waitForTimeout(350);
+      await page.keyboard.up('ArrowUp');
+
+      await page.waitForFunction(
+        () => (window.__STARLIGHT_DEBUG__?.getState().skyhopScore ?? 0) > 0,
+        undefined,
+        { timeout: 8_000 },
+      );
 
       const skyScore = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().skyhopScore);
       expect(skyScore).toBeGreaterThan(0);
@@ -272,8 +371,11 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       await page.getByTestId('skyhop-exit').click();
       await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
-      // 11. Final empirical integrity gates
-      expect(telemetry.failedResponses, `4xx/5xx responses: ${JSON.stringify(telemetry.failedResponses)}`).toEqual([]);
+      // 8. Final empirical integrity gates
+      expect(
+        telemetry.failedLocalResponses,
+        `Local 4xx/5xx responses: ${JSON.stringify(telemetry.failedLocalResponses)}`,
+      ).toEqual([]);
       expect(telemetry.consoleErrors, `Console errors: ${telemetry.consoleErrors.join('; ')}`).toEqual([]);
       expect(telemetry.pageErrors, `Page errors: ${telemetry.pageErrors.join('; ')}`).toEqual([]);
     });

@@ -193,6 +193,7 @@ export function drawPixelTrainerStageCharacter(
 export class StyleStudioStage {
   private canvas: HTMLCanvasElement | null = null;
   private portraitCanvas: HTMLCanvasElement | null = null;
+  private partnerTempCanvas: HTMLCanvasElement | null = null;
   private rigSynthesizer: IOfflineSpriteRigSynthesizer | null = null;
   private callbacks: UIBridgeCallbacks | null = null;
 
@@ -456,7 +457,7 @@ export class StyleStudioStage {
     if (!this.canvas || !this.currentProfile) return;
     let ctx: CanvasRenderingContext2D | null = null;
     try {
-      ctx = this.canvas.getContext('2d');
+      ctx = this.canvas.getContext('2d', { willReadFrequently: true }) ?? this.canvas.getContext('2d');
     } catch {
       ctx = null;
     }
@@ -539,10 +540,13 @@ export class StyleStudioStage {
           },
         );
       } else {
-        const tempCanvas = this.canvas.ownerDocument?.createElement('canvas');
+        if (!this.partnerTempCanvas && this.canvas.ownerDocument) {
+          this.partnerTempCanvas = this.canvas.ownerDocument.createElement('canvas');
+          this.partnerTempCanvas.width = 84;
+          this.partnerTempCanvas.height = 84;
+        }
+        const tempCanvas = this.partnerTempCanvas;
         if (tempCanvas) {
-          tempCanvas.width = 84;
-          tempCanvas.height = 84;
           renderPokemonPreviewCanvas(
             tempCanvas,
             sp.id,
@@ -566,6 +570,7 @@ export class StyleStudioStage {
     this.auraButtons.clear();
     this.canvas = null;
     this.portraitCanvas = null;
+    this.partnerTempCanvas = null;
     this.nicknameInput = null;
     this.capeToggleBtn = null;
     this.summaryLabel = null;

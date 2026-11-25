@@ -366,7 +366,7 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
       this.flashCanvas = document.createElement('canvas');
       this.flashCtx =
         typeof this.flashCanvas.getContext === 'function'
-          ? this.flashCanvas.getContext('2d')
+          ? (this.flashCanvas.getContext('2d', { willReadFrequently: true }) ?? this.flashCanvas.getContext('2d'))
           : null;
     }
     if (!this.flashCanvas || !this.flashCtx) return null;
@@ -575,7 +575,9 @@ export class OfflineSpriteRigSynthesizer implements IOfflineSpriteRigSynthesizer
         const canvas = document.createElement('canvas');
         canvas.width = safeSize;
         canvas.height = safeSize;
-        const ctx = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+        const ctx = typeof canvas.getContext === 'function'
+          ? (canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d'))
+          : null;
         if (ctx && typeof canvas.toDataURL === 'function') {
           ctx.imageSmoothingEnabled = false;
           ctx.clearRect(0, 0, safeSize, safeSize);

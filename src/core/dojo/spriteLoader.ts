@@ -346,7 +346,7 @@ function rawFramesToCanvases(raw: { width: number; height: number; frames: RawGi
     const canvas = document.createElement('canvas');
     canvas.width = frame.width;
     canvas.height = frame.height;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
     if (ctx) {
       const imgData = ctx.createImageData(frame.width, frame.height);
       imgData.data.set(frame.rgba);
@@ -377,7 +377,7 @@ async function decodeWithImageDecoder(bytes: Uint8Array, mime: string): Promise<
       const canvas = document.createElement('canvas');
       canvas.width = img.displayWidth || img.codedWidth || 64;
       canvas.height = img.displayHeight || img.codedHeight || 64;
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
       if (ctx) {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img as unknown as CanvasImageSource, 0, 0);
@@ -407,7 +407,7 @@ async function decodeStaticImageBlob(blob: Blob): Promise<DecodedSpriteFrame[] |
     const canvas = document.createElement('canvas');
     canvas.width = img.naturalWidth || 64;
     canvas.height = img.naturalHeight || 64;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
     if (ctx) {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(img, 0, 0);

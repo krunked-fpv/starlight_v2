@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page, type Route } from '@playwright/test';
 
 const VIEWPORTS = [
   { name: 'mobile-360x640', width: 360, height: 640 },
@@ -6,6 +6,46 @@ const VIEWPORTS = [
   { name: 'chromebook-1366x768', width: 1366, height: 768 },
   { name: 'desktop-1920x1080', width: 1920, height: 1080 },
 ] as const;
+
+/** Valid deterministic 2-frame 2x2 GIF89a */
+const STUB_TWO_FRAME_GIF = new Uint8Array([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+  0x02, 0x00, 0x02, 0x00, 0x80, 0x00, 0x00,
+  0xff, 0x00, 0x00, 0x00, 0x00, 0xff,
+  0x21, 0xf9, 0x04, 0x04, 0x0c, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x04, 0x00, 0x50, 0x00,
+  0x21, 0xf9, 0x04, 0x04, 0x0f, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x0c, 0x91, 0x50, 0x00,
+  0x3b,
+]);
+
+type FulfillBody = NonNullable<Parameters<Route['fulfill']>[0]>['body'];
+
+function toFulfillBody(bytes: Uint8Array): FulfillBody {
+  const NodeBuffer = (globalThis as unknown as { Buffer: { from(data: Uint8Array): FulfillBody } }).Buffer;
+  return NodeBuffer.from(bytes);
+}
+
+const stubbedContexts = new WeakSet<BrowserContext>();
+
+async function stubExternalSpriteCdns(page: Page): Promise<void> {
+  const ctx = page.context();
+  if (stubbedContexts.has(ctx)) return;
+  stubbedContexts.add(ctx);
+  const body = toFulfillBody(STUB_TWO_FRAME_GIF);
+  const handler = async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'image/gif',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body,
+    });
+  };
+  await ctx.route('https://raw.githubusercontent.com/**', handler);
+  await ctx.route('https://play.pokemonshowdown.com/**', handler);
+}
 
 function attachErrorCollector(page: Page) {
   const consoleErrors: string[] = [];
@@ -91,7 +131,6 @@ async function auditViewportControlsAndOverflow(page: Page): Promise<TouchAndOve
     const controls = Array.from(document.querySelectorAll('button, select, input'));
     for (const el of controls) {
       const htmlEl = el as HTMLElement;
-      // Skip elements hidden via [hidden] ancestor or display:none
       if (htmlEl.closest('[hidden]')) continue;
       const style = window.getComputedStyle(htmlEl);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
@@ -114,34 +153,41 @@ async function auditViewportControlsAndOverflow(page: Page): Promise<TouchAndOve
   });
 }
 
-test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => {
-  test('enforces strict Zero-Emoji Ban across all 8 screens (visible & hidden text nodes)', async ({
+test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, Reduced Motion & CRT', () => {
+  test('enforces strict Zero-Emoji Ban across EVERY screen and all 5 Collector Drawer tabs', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
     const allViolations: string[] = [];
 
     await page.goto('./?renderer=canvas2d');
     await waitForAppBoot(page);
 
     // 1. Title
+    await expect(page.getByTestId('title-screen')).toBeVisible();
     allViolations.push(...(await scanScreenForRawEmojis(page, 'title')));
 
-    // 2. Overworld + Settings popover
-    await page.getByTestId('enter-world-btn').click();
-    await expect(page.getByTestId('overworld-screen')).toBeVisible();
-    await page.getByTestId('settings-toggle').click();
-    allViolations.push(...(await scanScreenForRawEmojis(page, 'overworld+settings')));
-    await page.getByTestId('settings-close').click();
+    // 2. Starter Lab
+    await page.getByTestId('title-play-violet').click();
+    await expect(page.getByTestId('starter-screen')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'starter-lab')));
+    await page.getByTestId('starter-choose-1').click();
 
-    // 3. Tactical Readiness Briefing
+    // 3. Overworld
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'overworld')));
+
+    // 4. Tactical Readiness Briefing
     await page.getByTestId('nav-briefing').click();
     await expect(page.getByTestId('briefing-screen')).toBeVisible();
     allViolations.push(...(await scanScreenForRawEmojis(page, 'briefing')));
     await page.getByTestId('briefing-close').click();
 
-    // 4. Battle Dock
-    await page.getByTestId('encounter-wild').click();
+    // 5. Battle Command Deck
+    await page.evaluate(() =>
+      window.__STARLIGHT_DEBUG__!.triggerEncounter('wild', { biomeId: 'forest', forceSpeciesId: 25 }),
+    );
     await expect(page.getByTestId('battle-screen')).toBeVisible();
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
@@ -150,26 +196,45 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     );
     allViolations.push(...(await scanScreenForRawEmojis(page, 'battle')));
     await page.getByTestId('battle-flee').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
-    // 5. 1,025 Pokédex
+    // 6. Unified 5-Tab Collector Drawer (all 5 tabs!)
     await page.getByTestId('nav-pokedex').click();
-    await expect(page.getByTestId('pokedex-screen')).toBeVisible();
-    allViolations.push(...(await scanScreenForRawEmojis(page, 'pokedex')));
-    await page.getByTestId('pokedex-close').click();
+    await expect(page.getByTestId('collector-drawer')).toBeVisible();
 
-    // 6. 28 Badges
-    await page.getByTestId('nav-badges').click();
-    await expect(page.getByTestId('badges-screen')).toBeVisible();
-    allViolations.push(...(await scanScreenForRawEmojis(page, 'badges')));
-    await page.getByTestId('badges-close').click();
+    // 6a. Pokédex
+    await expect(page.getByTestId('drawer-panel-pokedex')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'drawer-pokedex')));
 
-    // 7. Style Studio
-    await page.getByTestId('nav-style').click();
-    await expect(page.getByTestId('style-studio-screen')).toBeVisible();
-    allViolations.push(...(await scanScreenForRawEmojis(page, 'style-studio')));
-    await page.getByTestId('style-close').click();
+    // 6b. Team & Box
+    await page.getByTestId('drawer-tab-team').click();
+    await expect(page.getByTestId('drawer-panel-team')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'drawer-team')));
 
-    // 8. Sky-Hop
+    // 6c. Badges
+    await page.getByTestId('drawer-tab-badges').click();
+    await expect(page.getByTestId('drawer-panel-badges')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'drawer-badges')));
+
+    // 6d. Island Guide
+    await page.getByTestId('drawer-tab-guide').click();
+    await expect(page.getByTestId('drawer-panel-guide')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'drawer-guide')));
+
+    // 6e. Style Studio
+    await page.getByTestId('drawer-tab-style').click();
+    await expect(page.getByTestId('drawer-panel-style')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'drawer-style')));
+
+    await page.getByTestId('drawer-close').click();
+
+    // 7. Settings & Parent Zone
+    await page.getByTestId('nav-settings').click();
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
+    allViolations.push(...(await scanScreenForRawEmojis(page, 'settings')));
+    await page.getByTestId('settings-close').click();
+
+    // 8. Sky-Hop Arcade
     await page.getByTestId('nav-skyhop').click();
     await expect(page.getByTestId('skyhop-screen')).toBeVisible();
     allViolations.push(...(await scanScreenForRawEmojis(page, 'skyhop')));
@@ -188,6 +253,7 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
       });
       const page = await context.newPage();
       const errors = attachErrorCollector(page);
+      await stubExternalSpriteCdns(page);
 
       // Install buffered LayoutShift PerformanceObserver before first paint
       await page.addInitScript(() => {
@@ -223,71 +289,78 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
 
       await page.goto('./?renderer=canvas2d');
       await waitForAppBoot(page);
-      await page.waitForTimeout(250);
+      await page.waitForTimeout(220);
 
-      // Title screen audit
-      const titleAudit = await auditViewportControlsAndOverflow(page);
-      expect(titleAudit.overflowPx, `${vp.name} title horizontal overflow`).toBe(0);
-      expect(
-        titleAudit.undersizedControls,
-        `${vp.name} title undersized targets: ${JSON.stringify(titleAudit.undersizedControls)}`,
-      ).toEqual([]);
+      const assertScreenClean = async (screenName: string) => {
+        const audit = await auditViewportControlsAndOverflow(page);
+        expect(audit.overflowPx, `${vp.name} [${screenName}] horizontal overflow`).toBe(0);
+        expect(
+          audit.undersizedControls,
+          `${vp.name} [${screenName}] undersized targets: ${JSON.stringify(audit.undersizedControls)}`,
+        ).toEqual([]);
+      };
 
-      // Overworld audit
-      await page.getByTestId('enter-world-btn').click();
+      // 1. Title
+      await assertScreenClean('title');
+
+      // 2. Starter Lab
+      await page.getByTestId('title-play-violet').click();
+      await expect(page.getByTestId('starter-screen')).toBeVisible();
+      await assertScreenClean('starter-lab');
+
+      // 3. Overworld
+      await page.getByTestId('starter-choose-1').click();
       await expect(page.getByTestId('overworld-screen')).toBeVisible();
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(160);
+      await assertScreenClean('overworld');
 
-      const owAudit = await auditViewportControlsAndOverflow(page);
-      expect(owAudit.overflowPx, `${vp.name} overworld horizontal overflow`).toBe(0);
-      expect(
-        owAudit.undersizedControls,
-        `${vp.name} overworld undersized targets: ${JSON.stringify(owAudit.undersizedControls)}`,
-      ).toEqual([]);
-
-      // Battle screen audit
-      await page.getByTestId('encounter-wild').click();
+      // 4. Battle
+      await page.evaluate(() =>
+        window.__STARLIGHT_DEBUG__!.triggerEncounter('wild', { biomeId: 'forest', forceSpeciesId: 25 }),
+      );
       await expect(page.getByTestId('battle-screen')).toBeVisible();
       await page.waitForFunction(
         () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
         undefined,
         { timeout: 10_000 },
       );
-      const battleAudit = await auditViewportControlsAndOverflow(page);
-      expect(battleAudit.overflowPx, `${vp.name} battle horizontal overflow`).toBe(0);
-      expect(
-        battleAudit.undersizedControls,
-        `${vp.name} battle undersized targets: ${JSON.stringify(battleAudit.undersizedControls)}`,
-      ).toEqual([]);
+      await assertScreenClean('battle');
       await page.getByTestId('battle-flee').click();
+      await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
-      // Pokédex, Badges, Style Studio, Sky-Hop audit
+      // 5. Collector Drawer (all 5 tabs)
       await page.getByTestId('nav-pokedex').click();
-      await expect(page.getByTestId('pokedex-screen')).toBeVisible();
-      const dexAudit = await auditViewportControlsAndOverflow(page);
-      expect(dexAudit.overflowPx, `${vp.name} pokedex horizontal overflow`).toBe(0);
-      expect(dexAudit.undersizedControls).toEqual([]);
-      await page.getByTestId('pokedex-close').click();
+      await expect(page.getByTestId('collector-drawer')).toBeVisible();
+      await assertScreenClean('drawer-pokedex');
 
-      await page.getByTestId('nav-badges').click();
-      await expect(page.getByTestId('badges-screen')).toBeVisible();
-      const badgesAudit = await auditViewportControlsAndOverflow(page);
-      expect(badgesAudit.overflowPx, `${vp.name} badges horizontal overflow`).toBe(0);
-      expect(badgesAudit.undersizedControls).toEqual([]);
-      await page.getByTestId('badges-close').click();
+      await page.getByTestId('drawer-tab-team').click();
+      await expect(page.getByTestId('drawer-panel-team')).toBeVisible();
+      await assertScreenClean('drawer-team');
 
-      await page.getByTestId('nav-style').click();
-      await expect(page.getByTestId('style-studio-screen')).toBeVisible();
-      const styleAudit = await auditViewportControlsAndOverflow(page);
-      expect(styleAudit.overflowPx, `${vp.name} style studio horizontal overflow`).toBe(0);
-      expect(styleAudit.undersizedControls).toEqual([]);
-      await page.getByTestId('style-close').click();
+      await page.getByTestId('drawer-tab-badges').click();
+      await expect(page.getByTestId('drawer-panel-badges')).toBeVisible();
+      await assertScreenClean('drawer-badges');
 
+      await page.getByTestId('drawer-tab-guide').click();
+      await expect(page.getByTestId('drawer-panel-guide')).toBeVisible();
+      await assertScreenClean('drawer-guide');
+
+      await page.getByTestId('drawer-tab-style').click();
+      await expect(page.getByTestId('drawer-panel-style')).toBeVisible();
+      await assertScreenClean('drawer-style');
+
+      await page.getByTestId('drawer-close').click();
+
+      // 6. Settings
+      await page.getByTestId('nav-settings').click();
+      await expect(page.getByTestId('settings-screen')).toBeVisible();
+      await assertScreenClean('settings');
+      await page.getByTestId('settings-close').click();
+
+      // 7. Sky-Hop
       await page.getByTestId('nav-skyhop').click();
       await expect(page.getByTestId('skyhop-screen')).toBeVisible();
-      const skyAudit = await auditViewportControlsAndOverflow(page);
-      expect(skyAudit.overflowPx, `${vp.name} skyhop horizontal overflow`).toBe(0);
-      expect(skyAudit.undersizedControls).toEqual([]);
+      await assertScreenClean('skyhop');
 
       const cls = await page.evaluate(() => {
         const w = window as unknown as {
@@ -311,13 +384,14 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     });
   }
 
-  test('respects prefers-reduced-motion media query and ?reducedMotion=1 with attenuated shutter', async ({
+  test('respects prefers-reduced-motion: reduce and ?reducedMotion=1 with shutter <= 0.22s and zeroed Holo tilt', async ({
     browser,
   }) => {
-    // 1. Media query prefers-reduced-motion: reduce
+    // 1. OS media query prefers-reduced-motion: reduce
     const reducedCtx = await browser.newContext({ reducedMotion: 'reduce' });
     const page = await reducedCtx.newPage();
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
 
     await page.goto('./?renderer=canvas2d');
     await waitForAppBoot(page);
@@ -329,22 +403,29 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     expect(reducedState.capabilities.reducedMotion).toBe(true);
     expect(reducedState.save.settings.reducedMotion).toBe(true);
 
-    // Measure attenuated Shrine shutter duration (<= 0.35s vs 1.05s full motion)
-    await page.getByTestId('enter-world-btn').click();
+    // Choose Violet -> Bulbasaur -> Shrine encounter and verify attenuated shutter <= 0.22s
+    await page.getByTestId('title-play-violet').click();
+    await page.getByTestId('starter-choose-1').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
-    await page.getByTestId('encounter-shrine').click();
+
+    await page.evaluate(() =>
+      window.__STARLIGHT_DEBUG__!.triggerEncounter('shrine', { biomeId: 'forest' }),
+    );
     await expect(page.getByTestId('battle-screen')).toBeVisible();
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
       { timeout: 10_000 },
     );
-    const shutterState = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(shutterState.battleShutterDuration).toBeLessThanOrEqual(0.35);
 
-    // Confirm Pokédex holographic card tilt stays zeroed under reduced motion
+    const shutterState = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
+    expect(shutterState.battleShutterDuration).toBeLessThanOrEqual(0.22);
+
+    // Confirm Pokédex holographic card tilt stays strictly 0deg under reduced motion
     await page.getByTestId('battle-flee').click();
     await page.getByTestId('nav-pokedex').click();
+    await expect(page.getByTestId('pokedex-holo-card')).toBeVisible();
+
     const cardBox = await page.getByTestId('pokedex-holo-card').boundingBox();
     expect(cardBox).not.toBeNull();
     if (cardBox) {
@@ -368,20 +449,23 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     const queryCtx = await browser.newContext({ reducedMotion: 'no-preference' });
     const qPage = await queryCtx.newPage();
     const qErrors = attachErrorCollector(qPage);
+    await stubExternalSpriteCdns(qPage);
 
     await qPage.goto('./?renderer=canvas2d&reducedMotion=1');
     await waitForAppBoot(qPage);
     await expect(qPage.locator('html')).toHaveAttribute('data-reduced-motion', 'true');
     await expect(qPage.locator('#ui-layer')).toHaveAttribute('data-reduced-motion', 'true');
+
     expect(qErrors.consoleErrors).toEqual([]);
     expect(qErrors.pageErrors).toEqual([]);
     await queryCtx.close();
   });
 
-  test('activates CRT scanlines cleanly via ?crt=1 and Settings toggle with pointer-events: none', async ({
+  test('activates CRT scanlines via ?crt=1 and Settings toggle with pointer-events: none and 100% click-through', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
 
     await page.goto('./?renderer=canvas2d&crt=1');
     await waitForAppBoot(page);
@@ -395,16 +479,19 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     expect(crtStyle.pointerEvents).toBe('none');
     expect(crtStyle.opacity).toBeGreaterThan(0);
 
-    // Buttons must remain 100% clickable underneath active CRT scanlines
-    await page.getByTestId('enter-world-btn').click();
+    // Controls underneath active CRT overlay remain 100% clickable
+    await page.getByTestId('title-play-violet').click();
+    await expect(page.getByTestId('starter-screen')).toBeVisible();
+    await page.getByTestId('starter-choose-1').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
     await page.getByTestId('nav-pokedex').click();
-    await expect(page.getByTestId('pokedex-screen')).toBeVisible();
-    await page.getByTestId('pokedex-close').click();
+    await expect(page.getByTestId('collector-drawer')).toBeVisible();
+    await page.getByTestId('drawer-close').click();
 
-    // Toggle CRT off and back on via Settings popover
-    await page.getByTestId('settings-toggle').click();
+    // Toggle CRT off and back on via Settings modal
+    await page.getByTestId('nav-settings').click();
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
     await expect(page.getByTestId('setting-crt')).toHaveAttribute('aria-pressed', 'true');
 
     await page.getByTestId('setting-crt').click();
@@ -416,8 +503,7 @@ test.describe('Red-Team: Accessibility, CRT, Zero-Emoji Ban & CLS Audit', () => 
     await expect(crtOverlay).toHaveClass(/is-active/);
 
     await page.getByTestId('settings-close').click();
-    await page.getByTestId('encounter-wild').click();
-    await expect(page.getByTestId('battle-screen')).toBeVisible();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
     expect(errors.consoleErrors).toEqual([]);
     expect(errors.pageErrors).toEqual([]);

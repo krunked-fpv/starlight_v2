@@ -1,26 +1,91 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page, type Route } from '@playwright/test';
 
-const BIOME_VALID_SET = new Set([
-  'starlight-village',
-  'meadow',
-  'verdant-canopy',
-  'ember-caldera',
-  'sapphire-lagoon',
-  'volt-highlands',
-  'frost-glacier',
-  'valor-dojo',
-  'mire-bayou',
-  'ochre-canyon',
-  'zephyr-peaks',
-  'astral-ruins',
-  'amber-thicket',
-  'basalt-quarry',
-  'mist-hollow',
-  'drake-summit',
-  'eclipse-crag',
-  'aegis-foundry',
-  'starbloom-glade',
+const CANONICAL_BIOMES = new Set([
+  'village',
+  'forest',
+  'cave',
+  'water',
+  'volcano',
+  'peak',
+  'grove',
+  'desert',
+  'marsh',
+  'sanctum',
+  'canyon',
+  'reef',
+  'ruins',
+  'rift',
+  'faeveldt',
+  'atoll',
+  'highlands',
+  'crater',
 ]);
+
+const VALID_STYLES = new Set([
+  'default',
+  'royal',
+  'aurora',
+  'ember',
+  'ranger',
+  'nebula',
+  'solstice',
+  'twilight',
+  'celestial',
+  'sakura',
+]);
+
+const VALID_ACCESSORIES = new Set([
+  'cap',
+  'crown',
+  'wizard',
+  'headband',
+  'goggles',
+  'halo',
+  'visor',
+  'antlers',
+]);
+
+const VALID_AURAS = new Set(['none', 'stars', 'hearts', 'lightning', 'blossom', 'cosmic']);
+
+/** Valid deterministic 2-frame 2x2 GIF89a with per-frame delays */
+const STUB_TWO_FRAME_GIF = new Uint8Array([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+  0x02, 0x00, 0x02, 0x00, 0x80, 0x00, 0x00,
+  0xff, 0x00, 0x00, 0x00, 0x00, 0xff,
+  0x21, 0xf9, 0x04, 0x04, 0x0c, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x04, 0x00, 0x50, 0x00,
+  0x21, 0xf9, 0x04, 0x04, 0x0f, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x0c, 0x91, 0x50, 0x00,
+  0x3b,
+]);
+
+type FulfillBody = NonNullable<Parameters<Route['fulfill']>[0]>['body'];
+
+function toFulfillBody(bytes: Uint8Array): FulfillBody {
+  const NodeBuffer = (globalThis as unknown as { Buffer: { from(data: Uint8Array): FulfillBody } }).Buffer;
+  return NodeBuffer.from(bytes);
+}
+
+const stubbedContexts = new WeakSet<BrowserContext>();
+
+async function stubExternalSpriteCdns(page: Page): Promise<void> {
+  const ctx = page.context();
+  if (stubbedContexts.has(ctx)) return;
+  stubbedContexts.add(ctx);
+  const body = toFulfillBody(STUB_TWO_FRAME_GIF);
+  const handler = async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'image/gif',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body,
+    });
+  };
+  await ctx.route('https://raw.githubusercontent.com/**', handler);
+  await ctx.route('https://play.pokemonshowdown.com/**', handler);
+}
 
 function attachErrorCollector(page: Page) {
   const consoleErrors: string[] = [];
@@ -43,108 +108,222 @@ async function waitForAppBoot(page: Page): Promise<void> {
   await expect(page.getByTestId('celestial-ui-shell')).toBeVisible();
 }
 
-function buildRealisticLegacyV1Payload() {
+function buildAuthenticDojoV1Payload() {
+  return {
+    version: 2,
+    activeTrainerId: 'violet',
+    settings: {
+      muted: false,
+      crtEnabled: true,
+      showTouchPad: 'auto',
+      battlePace: 'cinema',
+    },
+    profiles: {
+      violet: {
+        trainerId: 'violet',
+        starterId: 7,
+        pos: { x: 39, y: 11, dir: 'up' },
+        appearance: {
+          styleId: 'celestial',
+          accessory: 'crown',
+          cape: true,
+          aura: 'cosmic',
+        },
+        team: [
+          {
+            uid: 'dojo-v-blastoise',
+            speciesId: 9,
+            level: 36,
+            xp: 120,
+            hp: 118,
+            caughtBiome: 'village',
+            isShiny: true,
+            nickname: 'Splashy',
+            bond: 100,
+            upgradeTier: 4,
+          },
+          {
+            uid: 'dojo-v-pikachu',
+            speciesId: 25,
+            level: 30,
+            xp: 45,
+            hp: 78,
+            caughtBiome: 'forest',
+            isShiny: false,
+            nickname: null,
+            bond: 85,
+            upgradeTier: 3,
+          },
+        ],
+        box: [
+          {
+            uid: 'dojo-v-pecharunt',
+            speciesId: 1025,
+            level: 42,
+            xp: 0,
+            hp: 130,
+            caughtBiome: 'crater',
+            isShiny: false,
+            nickname: null,
+            bond: 60,
+            upgradeTier: 2,
+          },
+        ],
+        pokedex: {
+          seen: [7, 8, 9, 25, 150, 1025],
+          caught: { 7: 1, 8: 1, 9: 1, 25: 2, 1025: 1 },
+        },
+        badges: ['forest', 'water', 'volcano', 'starlight'],
+        shrinesCleared: ['forest', 'water'],
+        chestsOpened: ['c_forest_1', 'c_water_1'],
+        bag: {
+          potions: 11,
+          greatBalls: 7,
+          starBalls: 4,
+          starShards: 18,
+          cheerCharges: 2,
+          gems: { water_gem: 2, fire_gem: 1 },
+        },
+        arcade: {
+          unlocked: true,
+          charges: 3,
+          highScore: 640,
+          plays: 4,
+          bestWave: 5,
+          secretKnocks: 3,
+        },
+      },
+      ozias: {
+        trainerId: 'ozias',
+        starterId: 4,
+        pos: { x: 47, y: 23, dir: 'down' },
+        appearance: {
+          styleId: 'ember',
+          accessory: 'goggles',
+          cape: false,
+          aura: 'lightning',
+        },
+        team: [
+          {
+            uid: 'dojo-o-charizard',
+            speciesId: 6,
+            level: 34,
+            xp: 80,
+            hp: 110,
+            caughtBiome: 'village',
+            isShiny: false,
+            nickname: 'Cinder',
+            bond: 92,
+            upgradeTier: 3,
+          },
+        ],
+        box: [],
+        pokedex: {
+          seen: [4, 5, 6, 471],
+          caught: { 4: 1, 5: 1, 6: 1, 471: 1 },
+        },
+        badges: ['volcano', 'peak'],
+        bag: {
+          potions: 6,
+          greatBalls: 5,
+          starBalls: 2,
+          starShards: 9,
+          cheerCharges: 1,
+        },
+      },
+    },
+  };
+}
+
+function buildPreOverhaulV2DemoPayload() {
+  return {
+    schemaVersion: 2,
+    activeSlot: 'slot0',
+    profiles: {
+      slot0: {
+        name: 'Lyra',
+        biomeId: 'meadow',
+        party: [{ speciesId: 25, level: 28, bond: 100, starRank: 5 }],
+        badges: ['badge-electric'],
+      },
+      slot1: {
+        name: 'Orion',
+        biomeId: 'frost-glacier',
+        party: [{ speciesId: 133, level: 26, bond: 80, starRank: 3 }],
+        badges: ['badge-ice'],
+      },
+    },
+  };
+}
+
+function buildLegacyIslandSavePayload() {
   return {
     version: 1,
     activeSlot: 'slot0',
     profiles: {
       slot0: {
         name: 'Aether',
-        title: 'Caldera Sky-Navigator',
-        biomeId: 'ember-caldera',
-        x: 14.2,
-        y: 10.8,
-        facing: 'right',
-        playtime: 9145,
+        pos: { x: 15, y: 31, dir: 'down' },
         party: [
           {
-            uid: 'v1-aether-pikachu',
+            uid: 'legacy-aether-pikachu',
             speciesId: 25,
             level: 36,
             hp: 92,
-            composure: 64,
             bond: 100,
             starRank: 5,
             shiny: false,
-            moves: ['thunderbolt', 'volt-tackle', 'starlight-pulse', 'quick-attack'],
           },
           {
-            uid: 'v1-aether-charizard',
+            uid: 'legacy-aether-charizard',
             speciesId: 6,
             level: 40,
             hp: 118,
-            composure: 82,
             bond: 91,
             starRank: 4,
             shiny: false,
           },
         ],
         pokedex: {
-          1: { seen: true, caught: true, starRank: 3, bond: 70, timesEncountered: 2 },
-          6: { seen: true, caught: true, starRank: 4, bond: 91, timesEncountered: 4 },
-          25: { seen: true, caught: true, starRank: 5, bond: 100, shiny: false, timesEncountered: 12 },
-          150: { seen: true, caught: true, starRank: 5, bond: 95, timesEncountered: 1 },
-          384: { seen: true, caught: false, starRank: 2, bond: 20, timesEncountered: 1 },
-          658: { seen: true, caught: true, starRank: 4, bond: 84, timesEncountered: 3 },
-          1024: { seen: true, caught: true, starRank: 5, bond: 100, shiny: true, timesEncountered: 1 },
-          1025: { seen: true, caught: true, starRank: 4, bond: 88, shiny: true, timesEncountered: 2 },
+          1: { seen: true, caught: true },
+          6: { seen: true, caught: true },
+          25: { seen: true, caught: true },
+          384: { seen: true, caught: false },
+          1025: { seen: true, caught: true },
         },
-        badges: [
-          'badge-fire',
-          'badge-water',
-          'badge-electric',
-          'badge-dragon',
-          'Clover Crest',
-          'Canopy Leaf',
-          'Borealis Prism',
-          'Astral Eye',
-          'Starbloom Crown',
-          'pioneer',
-          'skyhop',
-          21,
-        ],
+        badges: ['forest', 'water', 'volcano'],
         style: {
           outfit: 'astral-robe',
           cape: 'cinder-cloak',
           headgear: 'sky-goggles',
           aura: 'sky-thunder',
-          primaryAccent: '#ff7b47',
-          secondaryAccent: '#7ce8ff',
         },
         inventory: {
           pokeBalls: 19,
           starBalls: 11,
           potions: 7,
-          superPotions: 4,
-          starShards: 340,
+          starShards: 34,
         },
         skyHopHighScore: 1240,
-        skyHopBestCombo: 23,
-        rivalsDefeated: 4,
       },
       slot1: {
         name: 'Vesper',
-        title: 'Glacier Archivist',
-        biomeId: 'frost-glacier',
-        x: 12.5,
-        y: 11.2,
-        facing: 'left',
+        pos: { x: 47, y: 23, dir: 'left' },
         party: [
           {
-            uid: 'v1-vesper-glaceon',
+            uid: 'legacy-vesper-glaceon',
             speciesId: 471,
             level: 31,
             hp: 88,
-            composure: 77,
             bond: 86,
             starRank: 4,
           },
         ],
         pokedex: {
-          471: { seen: true, caught: true, stars: 4, friendship: 86, timesEncountered: 5 },
+          471: { seen: true, caught: true },
           1025: true,
         },
-        badges: ['badge-ice', 'badge-ghost', 'badge-fairy'],
+        badges: ['peak', 'sanctum'],
         style: {
           outfit: 'aegis-jacket',
           cape: 'prism-shawl',
@@ -157,21 +336,27 @@ function buildRealisticLegacyV1Payload() {
   };
 }
 
-test.describe('Red-Team: Legacy v1 Save Continuity & Fuzzing', () => {
-  test('hydrates realistic Starlight v1 dual-profile save non-destructively with 100% continuity', async ({
+test.describe('Red-Team: schemaVersion 3 Save Continuity, Precedence & Fuzzing', () => {
+  test('authentic starlight_pokemon_save_v1 (Violet & Ozias) beats pre-overhaul schemaVersion 2 (Lyra/Orion) and stays byte-identical', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
-    const v1Payload = buildRealisticLegacyV1Payload();
-    const rawV1Json = JSON.stringify(v1Payload);
+    await stubExternalSpriteCdns(page);
 
-    await page.addInitScript((payloadStr: string) => {
-      if (!sessionStorage.getItem('__seed_v1_done')) {
-        sessionStorage.setItem('__seed_v1_done', '1');
-        localStorage.clear();
-        localStorage.setItem('starlight_island_save', payloadStr);
-      }
-    }, rawV1Json);
+    const dojoJson = JSON.stringify(buildAuthenticDojoV1Payload());
+    const oldDemoV2Json = JSON.stringify(buildPreOverhaulV2DemoPayload());
+
+    await page.addInitScript(
+      ({ dojoRaw, oldV2Raw }: { dojoRaw: string; oldV2Raw: string }) => {
+        if (!sessionStorage.getItem('__seed_dojo_precedence')) {
+          sessionStorage.setItem('__seed_dojo_precedence', '1');
+          localStorage.clear();
+          localStorage.setItem('starlight_v2_save', oldV2Raw);
+          localStorage.setItem('starlight_pokemon_save_v1', dojoRaw);
+        }
+      },
+      { dojoRaw: dojoJson, oldV2Raw: oldDemoV2Json },
+    );
 
     await page.goto('./?renderer=canvas2d');
     await waitForAppBoot(page);
@@ -180,110 +365,87 @@ test.describe('Red-Team: Legacy v1 Save Continuity & Fuzzing', () => {
     expect(errors.pageErrors, `Unexpected page errors: ${errors.pageErrors.join('; ')}`).toEqual([]);
 
     const state = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(state.hydrationSource).toBe('v1-migrated');
-    expect(state.save.schemaVersion).toBe(2);
-    expect(state.save.migratedFromV1?.sourceKey).toBe('starlight_island_save');
+    expect(state.hydrationSource).toBe('dojo-v1-migrated');
+    expect(state.save.schemaVersion).toBe(3);
+    expect(state.save.activeTrainerId).toBe('violet');
+    expect(state.save.migratedFromV1?.sourceKey).toBe('starlight_pokemon_save_v1');
+    // v2 default CRT policy: crtMode defaults false unless explicitly toggled in v2/v3
+    expect(state.save.settings.crtMode).toBe(false);
 
-    // Non-destructive verification: original legacy key must remain byte-identical
+    // Non-destructive verification: starlight_pokemon_save_v1 MUST remain byte-identical!
     const storedKeys = await page.evaluate(() => ({
-      legacyRaw: localStorage.getItem('starlight_island_save'),
-      v2Raw: localStorage.getItem('starlight_v2_save'),
+      dojoRaw: localStorage.getItem('starlight_pokemon_save_v1'),
+      v3Raw: localStorage.getItem('starlight_v2_save'),
     }));
-    expect(storedKeys.legacyRaw).toBe(rawV1Json);
-    expect(storedKeys.v2Raw).toBeTruthy();
+    expect(storedKeys.dojoRaw).toBe(dojoJson);
+    expect(storedKeys.v3Raw).toBeTruthy();
+    expect(JSON.parse(storedKeys.v3Raw!).schemaVersion).toBe(3);
 
-    // Verify Slot 0 (Aether) hydration integrity
-    const slot0 = state.save.profiles.slot0;
-    expect(slot0.name).toBe('Aether');
-    expect(slot0.biomeId).toBe('ember-caldera');
-    expect(state.biomeId).toBe('ember-caldera');
-    expect(slot0.style.aura).toBe('sky-thunder');
-    expect(slot0.style.cape).toBe('cinder-cloak');
-    expect(slot0.style.outfit).toBe('astral-robe');
-    expect(slot0.style.headgear).toBe('sky-goggles');
-    expect(slot0.badges).toHaveLength(12);
-    expect(slot0.badges).toEqual(
-      expect.arrayContaining([
-        'badge-fire',
-        'badge-water',
-        'badge-electric',
-        'badge-dragon',
-        'badge-normal',
-        'badge-grass',
-        'badge-ice',
-        'badge-psychic',
-        'badge-fairy',
-        'badge-pioneer',
-        'badge-skyhop',
-        'badge-bond',
-      ]),
-    );
-
-    // Pokédex #25 (Star Rank 5, Bond 100) and #1025 (caught) preserved
-    expect(slot0.pokedex[25]).toMatchObject({
-      seen: true,
-      caught: true,
-      starRank: 5,
-      bond: 100,
+    // Verify Violet profile hydrated cleanly (NOT Lyra demo save!)
+    const violet = state.save.profiles.violet;
+    expect(violet.trainerId).toBe('violet');
+    expect(violet.starterId).toBe(7);
+    expect(violet.team[0].speciesId).toBe(9);
+    expect(violet.team[0].nickname).toBe('Splashy');
+    expect(violet.team[0].isShiny).toBe(true);
+    expect(violet.team[0].upgradeTier).toBe(4);
+    expect(violet.team[0].bond).toBe(100);
+    expect(violet.box[0]?.speciesId).toBe(1025);
+    expect(violet.pokedex.caught[1025]).toBeGreaterThanOrEqual(1);
+    expect(violet.badges).toEqual(expect.arrayContaining(['forest', 'water', 'volcano', 'starlight']));
+    expect(violet.appearance).toMatchObject({
+      styleId: 'celestial',
+      accessory: 'crown',
+      cape: true,
+      aura: 'cosmic',
     });
-    expect(slot0.pokedex[1025]).toMatchObject({
-      seen: true,
-      caught: true,
-      starRank: 4,
-      bond: 88,
-      shiny: true,
+    expect(violet.bag.starShards).toBe(18);
+    expect(violet.bag.greatBalls).toBe(7);
+    expect(violet.bag.starBalls).toBe(4);
+    expect(violet.bag.cheerCharges).toBe(2);
+
+    // Verify Ozias profile hydrated cleanly (NOT Orion demo save!)
+    const ozias = state.save.profiles.ozias;
+    expect(ozias.trainerId).toBe('ozias');
+    expect(ozias.starterId).toBe(4);
+    expect(ozias.team[0].speciesId).toBe(6);
+    expect(ozias.team[0].nickname).toBe('Cinder');
+    expect(ozias.appearance).toMatchObject({
+      styleId: 'ember',
+      accessory: 'goggles',
+      cape: false,
+      aura: 'lightning',
     });
 
-    // Party & Composure states preserved
-    expect(slot0.party[0].speciesId).toBe(25);
-    expect(slot0.party[0].composure).toBe(64);
-    expect(slot0.party[0].bond).toBe(100);
-    expect(slot0.party[0].starRank).toBe(5);
-    expect(slot0.party[1].speciesId).toBe(6);
-    expect(slot0.party[1].composure).toBe(82);
+    // Verify Title UI renders hydrated Violet & Ozias cards and enters Overworld at Ember Caldera
+    await expect(page.getByTestId('profile-violet-meta')).toContainText('Violet');
+    await expect(page.getByTestId('profile-violet-meta')).toContainText('Splashy Lv.36');
+    await expect(page.getByTestId('profile-violet-meta')).toContainText('4/28 Badges');
+    await expect(page.getByTestId('profile-ozias-meta')).toContainText('Ozias');
+    await expect(page.getByTestId('profile-ozias-meta')).toContainText('Cinder Lv.34');
 
-    // Dual-profile Slot 1 (Vesper) preserved intact
-    const slot1 = state.save.profiles.slot1;
-    expect(slot1.name).toBe('Vesper');
-    expect(slot1.biomeId).toBe('frost-glacier');
-    expect(slot1.style.aura).toBe('aurora');
-    expect(slot1.style.cape).toBe('prism-shawl');
-    expect(slot1.pokedex[471]).toMatchObject({ caught: true, starRank: 4, bond: 86 });
-    expect(slot1.pokedex[1025]).toMatchObject({ caught: true });
-
-    // Confirm hydrated data renders cleanly in Title & Overworld UI
-    await expect(page.getByTestId('profile-slot0-meta')).toContainText('Aether');
-    await expect(page.getByTestId('profile-slot0-meta')).toContainText('12 / 28 Badges');
-    await expect(page.getByTestId('profile-slot1-meta')).toContainText('Vesper');
-
-    await page.getByTestId('enter-world-btn').click();
+    await page.getByTestId('title-play-violet').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
-    await expect(page.getByTestId('overworld-biome-name')).toHaveText('Cindercrest Caldera');
+    await expect(page.getByTestId('hud-biome-name')).toHaveText('Ember Caldera');
 
     expect(errors.consoleErrors).toEqual([]);
     expect(errors.pageErrors).toEqual([]);
   });
 
-  test('recovers cleanly from corrupted v2 JSON by falling back to valid legacy v1 save', async ({
+  test('migrates legacy starlight_island_save (slot0/slot1) into Violet & Ozias schemaVersion 3 non-destructively', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
-    const legacyFallback = JSON.stringify({
-      trainerName: 'Solstice',
-      biome: 'volt-highlands',
-      badges: ['badge-electric', 'badge-steel', 'badge-pioneer'],
-      style: { aura: 'ember-crown', cape: 'zephyr-mantle' },
-      pokedex: [25, 1008, 1025],
-    });
+    await stubExternalSpriteCdns(page);
 
-    await page.addInitScript((legacyStr: string) => {
-      if (!sessionStorage.getItem('__seed_corrupt_v2')) {
-        sessionStorage.setItem('__seed_corrupt_v2', '1');
+    const legacyRaw = JSON.stringify(buildLegacyIslandSavePayload());
+    await page.addInitScript((payloadStr: string) => {
+      if (!sessionStorage.getItem('__seed_legacy_island')) {
+        sessionStorage.setItem('__seed_legacy_island', '1');
         localStorage.clear();
-        localStorage.setItem('starlight_v2_save', '{"schemaVersion":2, "profiles": { CORRUPTED');
-        localStorage.setItem('starlight_island_save', legacyStr);
+        localStorage.setItem('starlight_island_save', payloadStr);
       }
-    }, legacyFallback);
+    }, legacyRaw);
 
     await page.goto('./?renderer=canvas2d');
     await waitForAppBoot(page);
@@ -292,98 +454,221 @@ test.describe('Red-Team: Legacy v1 Save Continuity & Fuzzing', () => {
     expect(errors.pageErrors).toEqual([]);
 
     const state = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(state.hydrationSource).toBe('v1-migrated');
-    expect(state.save.profiles.slot0.name).toBe('Solstice');
-    expect(state.save.profiles.slot0.biomeId).toBe('volt-highlands');
-    expect(state.save.profiles.slot0.style.aura).toBe('ember-crown');
-    expect(state.save.profiles.slot0.style.cape).toBe('zephyr-mantle');
-    expect(state.save.profiles.slot0.pokedex[1025]?.caught).toBe(true);
+    expect(state.hydrationSource).toBe('legacy-v1-migrated');
+    expect(state.save.schemaVersion).toBe(3);
+    expect(state.save.activeTrainerId).toBe('violet');
+    expect(state.save.migratedFromV1?.sourceKey).toBe('starlight_island_save');
 
-    // Legacy key untouched, v2 key repaired to valid JSON
-    const storageCheck = await page.evaluate(() => {
-      const legacy = localStorage.getItem('starlight_island_save');
-      const v2 = localStorage.getItem('starlight_v2_save');
-      let v2Valid = false;
-      try {
-        v2Valid = Boolean(v2 && JSON.parse(v2).schemaVersion === 2);
-      } catch {
-        v2Valid = false;
-      }
-      return { legacy, v2Valid };
+    // Original legacy key must remain byte-identical
+    const storageCheck = await page.evaluate(() => ({
+      legacy: localStorage.getItem('starlight_island_save'),
+      v3: localStorage.getItem('starlight_v2_save'),
+    }));
+    expect(storageCheck.legacy).toBe(legacyRaw);
+    expect(JSON.parse(storageCheck.v3!).schemaVersion).toBe(3);
+
+    // slot0 -> Violet
+    const violet = state.save.profiles.violet;
+    expect(violet.appearance).toMatchObject({
+      styleId: 'twilight',
+      accessory: 'goggles',
+      cape: true,
+      aura: 'lightning',
+      nickname: 'Aether',
     });
-    expect(storageCheck.legacy).toBe(legacyFallback);
-    expect(storageCheck.v2Valid).toBe(true);
+    expect(violet.team.map((m) => m.speciesId)).toEqual([25, 6]);
+    expect(violet.pokedex.caught[1025]).toBeGreaterThanOrEqual(1);
+    expect(violet.pokedex.seen).toContain(384);
+    expect(violet.arcade.highScore).toBe(1240);
+
+    // slot1 -> Ozias
+    const ozias = state.save.profiles.ozias;
+    expect(ozias.appearance).toMatchObject({
+      styleId: 'royal',
+      accessory: 'crown',
+      cape: true,
+      aura: 'cosmic',
+      nickname: 'Vesper',
+    });
+    expect(ozias.team[0].speciesId).toBe(471);
+    expect(ozias.pokedex.caught[1025]).toBeGreaterThanOrEqual(1);
+
+    await expect(page.getByTestId('profile-violet-meta')).toContainText('Aether');
+    await expect(page.getByTestId('profile-ozias-meta')).toContainText('Vesper');
+
+    await page.getByTestId('title-play-violet').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await expect(page.getByTestId('hud-biome-name')).toHaveText('Sapphire Lagoon');
+
+    expect(errors.consoleErrors).toEqual([]);
+    expect(errors.pageErrors).toEqual([]);
   });
 
-  test('survives completely mangled, primitive, and adversarial out-of-bounds payloads without crashing', async ({
+  test('recovers cleanly from corrupted starlight_v2_save JSON by falling back to starlight_pokemon_save_v1 or starlight_island_save', async ({
+    browser,
+  }) => {
+    // Subcase A: corrupted starlight_v2_save falls back to authentic starlight_pokemon_save_v1
+    {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const errors = attachErrorCollector(page);
+      await stubExternalSpriteCdns(page);
+
+      const dojoRaw = JSON.stringify(buildAuthenticDojoV1Payload());
+      await page.addInitScript((raw: string) => {
+        localStorage.clear();
+        localStorage.setItem('starlight_v2_save', '{"schemaVersion":3, "profiles": { CORRUPTED');
+        localStorage.setItem('starlight_pokemon_save_v1', raw);
+      }, dojoRaw);
+
+      await page.goto('./?renderer=canvas2d');
+      await waitForAppBoot(page);
+
+      expect(errors.consoleErrors).toEqual([]);
+      expect(errors.pageErrors).toEqual([]);
+
+      const state = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
+      expect(state.hydrationSource).toBe('dojo-v1-migrated');
+      expect(state.save.schemaVersion).toBe(3);
+      expect(state.save.profiles.violet.team[0].nickname).toBe('Splashy');
+
+      const keys = await page.evaluate(() => ({
+        dojo: localStorage.getItem('starlight_pokemon_save_v1'),
+        v3: localStorage.getItem('starlight_v2_save'),
+      }));
+      expect(keys.dojo).toBe(dojoRaw);
+      expect(JSON.parse(keys.v3!).schemaVersion).toBe(3);
+
+      await context.close();
+    }
+
+    // Subcase B: corrupted starlight_v2_save falls back to legacy starlight_island_save
+    {
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      const errors = attachErrorCollector(page);
+      await stubExternalSpriteCdns(page);
+
+      const legacyFallback = JSON.stringify({
+        trainerName: 'Solstice',
+        pos: { x: 46, y: 53, dir: 'right' },
+        party: [{ speciesId: 25, level: 22, bond: 80 }],
+        badges: ['forest', 'sanctum'],
+        style: { outfit: 'solstice-tunic', cape: 'zephyr-mantle', aura: 'ember-crown' },
+        pokedex: [25, 1008, 1025],
+      });
+
+      await page.addInitScript((raw: string) => {
+        localStorage.clear();
+        localStorage.setItem('starlight_v2_save', '{{{BROKEN_V3_PAYLOAD');
+        localStorage.setItem('starlight_island_save', raw);
+      }, legacyFallback);
+
+      await page.goto('./?renderer=canvas2d');
+      await waitForAppBoot(page);
+
+      expect(errors.consoleErrors).toEqual([]);
+      expect(errors.pageErrors).toEqual([]);
+
+      const state = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
+      expect(state.hydrationSource).toBe('legacy-v1-migrated');
+      expect(state.save.schemaVersion).toBe(3);
+      expect(state.save.profiles.violet.appearance.nickname).toBe('Solstice');
+      expect(state.save.profiles.violet.appearance.styleId).toBe('solstice');
+      expect(state.save.profiles.violet.appearance.aura).toBe('blossom');
+      expect(state.save.profiles.violet.pokedex.caught[1025]).toBeGreaterThanOrEqual(1);
+
+      const keys = await page.evaluate(() => ({
+        legacy: localStorage.getItem('starlight_island_save'),
+        v3: localStorage.getItem('starlight_v2_save'),
+      }));
+      expect(keys.legacy).toBe(legacyFallback);
+      expect(JSON.parse(keys.v3!).schemaVersion).toBe(3);
+
+      await context.close();
+    }
+  });
+
+  test('survives mangled, primitive, and adversarial out-of-bounds payloads across fuzz cases with repaired valid profiles', async ({
     browser,
   }) => {
     const fuzzCases: Array<{
       label: string;
       v2Value: string | null;
-      v1Value: string | null;
+      dojoValue: string | null;
+      legacyValue: string | null;
     }> = [
       {
-        label: 'invalid JSON in both v2 and v1',
+        label: 'invalid JSON in all three storage keys',
         v2Value: '{{{broken-json!!!',
-        v1Value: '<<<not-json>>>',
+        dojoValue: '<<<corrupt-dojo>>>',
+        legacyValue: '][not-json',
       },
       {
-        label: 'JSON null and array primitives',
+        label: 'JSON null, number, and array primitives',
         v2Value: 'null',
-        v1Value: '[1, 2, 3]',
+        dojoValue: '42',
+        legacyValue: '[1, 2, 3]',
       },
       {
-        label: 'adversarial out-of-bounds and wrong-type fields',
+        label: 'adversarial out-of-bounds & wrong-type schemaVersion 3 fields',
         v2Value: JSON.stringify({
           schemaVersion: 999,
-          activeSlot: 'slot99',
+          activeTrainerId: 'invalid-trainer',
           profiles: {
-            slot0: {
-              name: '     ',
-              biomeId: 'nonexistent-crater',
-              x: -999,
-              y: 99999,
-              facing: 'diagonal',
-              party: [
+            violet: {
+              trainerId: 'violet',
+              starterId: 999999,
+              pos: { x: -999, y: 99999, dir: 'diagonal' },
+              appearance: {
+                styleId: 'nonexistent-style',
+                accessory: 'invalid-hat',
+                cape: 'yes',
+                aura: 'nuclear-glow',
+                nickname: '   ',
+              },
+              team: [
                 null,
-                'not-a-member',
+                'not-a-pokemon',
                 {
                   speciesId: 999999,
                   level: -50,
                   hp: -10,
-                  composure: 5000,
                   bond: 999,
-                  starRank: 99,
+                  upgradeTier: 99,
+                },
+                {
+                  speciesId: 25,
+                  level: 999,
+                  hp: -20,
+                  bond: 999,
+                  upgradeTier: 42,
                 },
               ],
               pokedex: {
-                0: true,
-                '-5': true,
-                1026: true,
-                25: { caught: true, bond: 999, starRank: 42 },
+                seen: [-5, 0, 1026, 25, 'NaN'],
+                caught: { '0': 1, '-5': 2, '1026': 1, '25': 3 },
               },
-              badges: ['not-a-real-badge', 999, -1, null],
-              style: {
-                outfit: 'invalid-outfit',
-                cape: 'invalid-cape',
-                headgear: 'invalid-hat',
-                aura: 'invalid-aura',
-              },
-              inventory: {
-                pokeBalls: -12,
-                starBalls: 999999,
-                potions: 'lots',
+              badges: [null, 999, '', 'forest'],
+              bag: {
+                potions: -12,
+                greatBalls: 'lots',
+                starBalls: null,
+                starShards: -999,
+                cheerCharges: 999,
               },
             },
-            slot1: 'completely-corrupted-slot',
+            ozias: 'completely-corrupted-profile',
           },
           settings: {
             rendererOverride: 'vulkan-raytrace',
             masterVolume: 99,
+            battlePace: 'hyperspeed',
+            showTouchPad: 'always-invalid',
           },
         }),
-        v1Value: null,
+        dojoValue: null,
+        legacyValue: null,
       },
     ];
 
@@ -391,14 +676,24 @@ test.describe('Red-Team: Legacy v1 Save Continuity & Fuzzing', () => {
       const context = await browser.newContext();
       const page = await context.newPage();
       const errors = attachErrorCollector(page);
+      await stubExternalSpriteCdns(page);
 
       await page.addInitScript(
-        ({ v2Val, v1Val }: { v2Val: string | null; v1Val: string | null }) => {
+        ({
+          v2Val,
+          dojoVal,
+          legacyVal,
+        }: {
+          v2Val: string | null;
+          dojoVal: string | null;
+          legacyVal: string | null;
+        }) => {
           localStorage.clear();
           if (v2Val !== null) localStorage.setItem('starlight_v2_save', v2Val);
-          if (v1Val !== null) localStorage.setItem('starlight_island_save', v1Val);
+          if (dojoVal !== null) localStorage.setItem('starlight_pokemon_save_v1', dojoVal);
+          if (legacyVal !== null) localStorage.setItem('starlight_island_save', legacyVal);
         },
-        { v2Val: fuzz.v2Value, v1Val: fuzz.v1Value },
+        { v2Val: fuzz.v2Value, dojoVal: fuzz.dojoValue, legacyVal: fuzz.legacyValue },
       );
 
       await page.goto('./?renderer=canvas2d');
@@ -408,91 +703,123 @@ test.describe('Red-Team: Legacy v1 Save Continuity & Fuzzing', () => {
       expect(errors.pageErrors, `Page errors for fuzz case "${fuzz.label}"`).toEqual([]);
 
       const state = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-      expect(state.save.schemaVersion).toBe(2);
-      expect(['slot0', 'slot1']).toContain(state.save.activeSlot);
+      expect(state.save.schemaVersion).toBe(3);
+      expect(CANONICAL_BIOMES.has(state.biomeId)).toBe(true);
+      expect([null, 'violet', 'ozias']).toContain(state.save.activeTrainerId);
+      expect(state.save.settings.masterVolume).toBeGreaterThanOrEqual(0);
+      expect(state.save.settings.masterVolume).toBeLessThanOrEqual(1);
+      expect(['auto', 'webgl2', 'canvas2d']).toContain(state.save.settings.rendererOverride);
+      expect(['cinema', 'classic', 'fast']).toContain(state.save.settings.battlePace);
 
-      for (const slotKey of ['slot0', 'slot1'] as const) {
-        const profile = state.save.profiles[slotKey];
-        expect(profile.name.trim().length).toBeGreaterThan(0);
-        expect(BIOME_VALID_SET.has(profile.biomeId)).toBe(true);
-        expect(Number.isFinite(profile.x) && profile.x >= 1 && profile.x <= 26).toBe(true);
-        expect(Number.isFinite(profile.y) && profile.y >= 2 && profile.y <= 16).toBe(true);
-        expect(profile.party.length).toBeGreaterThan(0);
-        for (const member of profile.party) {
+      for (const tid of ['violet', 'ozias'] as const) {
+        const profile = state.save.profiles[tid];
+        expect(profile.trainerId).toBe(tid);
+        expect(Number.isFinite(profile.pos.x) && profile.pos.x >= 0 && profile.pos.x < 100).toBe(true);
+        expect(Number.isFinite(profile.pos.y) && profile.pos.y >= 0 && profile.pos.y < 84).toBe(true);
+        expect(VALID_STYLES.has(profile.appearance.styleId)).toBe(true);
+        expect(VALID_ACCESSORIES.has(profile.appearance.accessory)).toBe(true);
+        expect(VALID_AURAS.has(profile.appearance.aura)).toBe(true);
+        expect(profile.team.length).toBeLessThanOrEqual(6);
+        for (const member of profile.team) {
           expect(member.speciesId).toBeGreaterThanOrEqual(1);
           expect(member.speciesId).toBeLessThanOrEqual(1025);
           expect(member.level).toBeGreaterThanOrEqual(1);
-          expect(member.level).toBeLessThanOrEqual(100);
-          expect(member.composure).toBeGreaterThanOrEqual(0);
-          expect(member.composure).toBeLessThanOrEqual(100);
+          expect(member.level).toBeLessThanOrEqual(50);
           expect(member.bond).toBeGreaterThanOrEqual(0);
           expect(member.bond).toBeLessThanOrEqual(100);
-          expect(member.starRank).toBeGreaterThanOrEqual(0);
-          expect(member.starRank).toBeLessThanOrEqual(5);
+          expect(member.upgradeTier).toBeGreaterThanOrEqual(0);
+          expect(member.upgradeTier).toBeLessThanOrEqual(5);
         }
-        expect(profile.inventory.pokeBalls).toBeGreaterThanOrEqual(0);
-        expect(profile.inventory.starBalls).toBeLessThanOrEqual(999);
+        expect(profile.bag.potions).toBeGreaterThanOrEqual(0);
+        expect(profile.bag.greatBalls).toBeGreaterThanOrEqual(0);
+        expect(profile.bag.starBalls).toBeGreaterThanOrEqual(0);
+        expect(profile.bag.starShards).toBeGreaterThanOrEqual(0);
+        expect(profile.bag.cheerCharges).toBeGreaterThanOrEqual(0);
+        expect(profile.bag.cheerCharges).toBeLessThanOrEqual(3);
       }
 
       if (fuzz.label.includes('out-of-bounds')) {
-        const s0 = state.save.profiles.slot0;
-        expect(s0.pokedex[0]).toBeUndefined();
-        expect(s0.pokedex[1026]).toBeUndefined();
-        expect(s0.pokedex[25].bond).toBeLessThanOrEqual(100);
-        expect(s0.pokedex[25].starRank).toBeLessThanOrEqual(5);
+        const v = state.save.profiles.violet;
+        expect(v.pokedex.caught[0]).toBeUndefined();
+        expect(v.pokedex.caught[1026]).toBeUndefined();
+        expect(v.pokedex.seen.every((id) => id >= 1 && id <= 1025)).toBe(true);
+        expect(v.team.length).toBe(1);
+        expect(v.team[0].speciesId).toBe(25);
+        expect(v.team[0].bond).toBeLessThanOrEqual(100);
+        expect(v.team[0].upgradeTier).toBeLessThanOrEqual(5);
       }
 
       await context.close();
     }
   });
 
-  test('persists Style Studio outfit/aura edits and biome travel across full page.reload()', async ({
+  test('persists starter choice, Style Studio loadout, and biome warp across full page.reload() as v3-local', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
 
     await page.goto('./?renderer=canvas2d');
     await waitForAppBoot(page);
 
-    // Enter overworld and travel to Frost Glacier
-    await page.getByTestId('enter-world-btn').click();
+    // 1. Choose Violet -> Starter Lab -> Choose Charmander (#4)
+    await page.getByTestId('title-play-violet').click();
+    await expect(page.getByTestId('starter-screen')).toBeVisible();
+    await page.getByTestId('starter-choose-4').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await expect(page.getByTestId('hud-biome-name')).toHaveText('Starlight Village');
 
-    await page.getByTestId('biome-select').selectOption('frost-glacier');
-    await expect(page.getByTestId('overworld-biome-name')).toHaveText('Crystalline Borealis Glacier');
+    // 2. Open Collector Drawer -> Island Guide -> Warp to Starfall Peak
+    await page.getByTestId('nav-pokedex').click();
+    await expect(page.getByTestId('collector-drawer')).toBeVisible();
+    await page.getByTestId('drawer-tab-guide').click();
+    await expect(page.getByTestId('drawer-panel-guide')).toBeVisible();
+    await page.getByTestId('guide-warp-peak').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await expect(page.getByTestId('hud-biome-name')).toHaveText('Starfall Peak');
 
-    // Open Style Studio and equip new outfit, cape, headgear, and aura
-    await page.getByTestId('nav-style').click();
-    await expect(page.getByTestId('style-studio-screen')).toBeVisible();
+    // 3. Open Collector Drawer -> Style Studio -> Equip styleId, accessory, cape, aura
+    await page.getByTestId('nav-pokedex').click();
+    await page.getByTestId('drawer-tab-style').click();
+    await expect(page.getByTestId('drawer-panel-style')).toBeVisible();
 
-    await page.getByTestId('style-outfit-astral-robe').click();
-    await page.getByTestId('style-cape-prism-shawl').click();
-    await page.getByTestId('style-headgear-lunar-circlet').click();
-    await page.getByTestId('style-aura-aurora').click();
+    await page.getByTestId('style-outfit-celestial').click();
+    await page.getByTestId('style-accessory-crown').click();
+    await page.getByTestId('style-cape-toggle').click();
+    await page.getByTestId('style-aura-cosmic').click();
 
-    await expect(page.getByTestId('style-outfit-astral-robe')).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.getByTestId('style-aura-aurora')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('style-outfit-celestial')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('style-accessory-crown')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('style-cape-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('style-aura-cosmic')).toHaveAttribute('aria-pressed', 'true');
 
-    await page.getByTestId('style-close').click();
-    await page.getByTestId('save-btn').click();
+    await page.getByTestId('drawer-close').click();
+    await page.getByTestId('nav-settings').click();
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
+    await page.getByTestId('setting-save-now').click();
     await page.evaluate(() => window.__STARLIGHT_DEBUG__!.forceSave());
 
-    // Full page reload and verify complete persistence
+    // 4. Full reload and confirm v3-local persistence
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitForAppBoot(page);
 
     const reloaded = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(reloaded.hydrationSource).toBe('v2-local');
-    expect(reloaded.biomeId).toBe('frost-glacier');
-    expect(reloaded.save.profiles.slot0.style).toMatchObject({
-      outfit: 'astral-robe',
-      cape: 'prism-shawl',
-      headgear: 'lunar-circlet',
-      aura: 'aurora',
+    expect(reloaded.hydrationSource).toBe('v3-local');
+    expect(reloaded.save.schemaVersion).toBe(3);
+    expect(reloaded.save.profiles.violet.starterId).toBe(4);
+    expect(reloaded.save.profiles.violet.team[0].speciesId).toBe(4);
+    expect(reloaded.save.profiles.violet.appearance).toMatchObject({
+      styleId: 'celestial',
+      accessory: 'crown',
+      cape: true,
+      aura: 'cosmic',
     });
 
-    await page.getByTestId('enter-world-btn').click();
-    await expect(page.getByTestId('overworld-biome-name')).toHaveText('Crystalline Borealis Glacier');
+    // Clicking Continue on Violet skips Starter Lab and lands right back at Starfall Peak
+    await page.getByTestId('title-play-violet').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await expect(page.getByTestId('hud-biome-name')).toHaveText('Starfall Peak');
+    expect(await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().biomeId)).toBe('peak');
 
     expect(errors.consoleErrors).toEqual([]);
     expect(errors.pageErrors).toEqual([]);

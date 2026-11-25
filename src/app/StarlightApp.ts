@@ -186,6 +186,11 @@ export class StarlightApp {
   private toastUntil = 0;
   private badgeToast: BadgeToastState | null = null;
   private autosaveAccum = 0;
+  private uiSyncAccum = 0;
+  private modalBgRenderAccum = 0;
+  private lastSyncedBattlePhase = '';
+  private lastSyncedSkyScore = -1;
+  private cachedTitleSave: StarlightSaveState | null = null;
   private audioUnlocked = false;
   private currentBgmTheme = '';
 
@@ -249,8 +254,10 @@ export class StarlightApp {
       reducedMotion: settings.reducedMotion,
       crtMode: settings.crtMode,
     });
+    this.syncRendererDocumentAttr();
 
     this.unsubContext = this.engine.onContextEvent((ev) => {
+      this.syncRendererDocumentAttr();
       this.contextEvents.push({
         type: ev.type,
         previousBackend: ev.previousBackend,
@@ -261,8 +268,10 @@ export class StarlightApp {
         this.contextEvents.shift();
       }
       if (ev.type === 'lost') {
+        this.modalBgRenderAccum = 0.25;
         this.showToast('Graphics recovered seamlessly on Canvas2D.');
       } else if (ev.type === 'restored') {
+        this.modalBgRenderAccum = 0.25;
         this.showToast('WebGL2 hardware graphics restored.');
       }
     });
@@ -279,7 +288,7 @@ export class StarlightApp {
     const getCachedSprite = (speciesId: number, back?: boolean, shiny?: boolean) =>
       this.sprites.getCached(speciesId, { back: Boolean(back), shiny: Boolean(shiny) });
 
-    this.overworldRenderer.attachAtlas(this.manifest);
+    this.overworldRenderer.attachAtlas(this.manifest, getSheetImg);
     this.battleRenderer.attachAssets(this.manifest, getArenaImg, getSheetImg);
 
     const rigSynth = this.battleRenderer.getOfflineRigSynthesizer();
@@ -341,6 +350,12 @@ export class StarlightApp {
     void navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {
       // Safe no-op in unsupported or blocked contexts
     });
+  }
+
+  private syncRendererDocumentAttr(): void {
+    const caps = this.engine.activeBackend.capabilities;
+    const isSoftware = Boolean(caps.isSoftwareRasterizer || caps.kind === 'canvas2d');
+    document.documentElement.setAttribute('data-software-renderer', String(isSoftware));
   }
 
   private applyDocumentPreferences(settings: GameSettings): void {
@@ -1323,7 +1338,9 @@ export class StarlightApp {
     this.engine.activeBackend.setCrtMode(next.crtMode);
 
     if (patch.rendererOverride !== undefined && patch.rendererOverride !== prev.rendererOverride) {
+      this.modalBgRenderAccum = 0.25;
       await this.engine.switchBackend(patch.rendererOverride, 'User preference updated');
+      this.syncRendererDocumentAttr();
     }
 
     this.overworldSim.refreshState();
@@ -1458,10 +1475,12 @@ export class StarlightApp {
 
   private tick(dtSeconds: number, elapsedSeconds: number, backend: RenderEngine['activeBackend']): void {
     const settings = this.storage.getSettings();
+    let needsImmediateUiSync = false;
 
     // Expire toasts cleanly
     if (this.toastMessage && Date.now() >= this.toastUntil) {
       this.toastMessage = null;
+      needsImmediateUiSync = true;
     }
     if (this.badgeToast) {
       this.badgeToast = {
@@ -1470,6 +1489,7 @@ export class StarlightApp {
       };
       if (this.badgeToast.remainingSec <= 0) {
         this.badgeToast = null;
+        needsImmediateUiSync = true;
       }
     }
 
@@ -1484,11 +1504,19 @@ export class StarlightApp {
     if (this.screen === 'title' || this.screen === 'starter') {
       this.titleRenderer.update(dtSeconds, settings.reducedMotion);
       backend.beginFrame(elapsedSeconds, dtSeconds);
-      this.titleRenderer.render(backend, this.storage.toV3SaveState(), settings.reducedMotion);
+      this.titleRenderer.render(
+        backend,
+        this.cachedTitleSave ?? this.storage.toV3SaveState(),
+        settings.reducedMotion,
+      );
       backend.endFrame();
     } else if (this.screen === 'battle') {
       this.battleController.update(dtSeconds);
       const bState = this.battleController.getState();
+      if (bState.phase !== this.lastSyncedBattlePhase) {
+        this.lastSyncedBattlePhase = bState.phase;
+        needsImmediateUiSync = true;
+      }
       this.battleRenderer.update(bState, dtSeconds);
       backend.beginFrame(elapsedSeconds, dtSeconds);
       this.battleRenderer.render(backend, bState);
@@ -1500,6 +1528,10 @@ export class StarlightApp {
       if (ev.healedHeart) this.audio.playHealChime();
       if (ev.hitHazard) this.audio.playArcadeBump();
       if (ev.runEnded) this.audio.playVictoryFanfare();
+      if (sState.score !== this.lastSyncedSkyScore || ev.hitHazard || ev.runEnded || ev.healedHeart) {
+        this.lastSyncedSkyScore = sState.score;
+        needsImmediateUiSync = true;
+      }
       this.skyHopRenderer.update(sState, dtSeconds);
       backend.beginFrame(elapsedSeconds, dtSeconds);
       this.skyHopRenderer.render(backend, sState);
@@ -1509,19 +1541,43 @@ export class StarlightApp {
         ? this.resolveHeldDirection()
         : { dx: 0, dy: 0 };
       const stepEv = this.overworldSim.update(dtSeconds, held);
-      if (stepEv) this.handleOverworldStepEvent(stepEv);
+      if (stepEv) {
+        this.handleOverworldStepEvent(stepEv);
+        if (stepEv.moved) needsImmediateUiSync = true;
+      }
       const owState = this.overworldSim.getState();
       this.overworldRenderer.update(owState, dtSeconds);
-      backend.beginFrame(elapsedSeconds, dtSeconds);
-      this.overworldRenderer.render(backend, owState);
-      backend.endFrame();
+
+      const occludedByModal = isDrawerScreen(this.screen) || this.screen === 'settings';
+      let shouldRenderOverworld = true;
+      if (occludedByModal && dtSeconds > 0.0001) {
+        this.modalBgRenderAccum += dtSeconds;
+        if (this.modalBgRenderAccum < 0.25) {
+          shouldRenderOverworld = false;
+        } else {
+          this.modalBgRenderAccum = 0;
+        }
+      } else {
+        this.modalBgRenderAccum = 0.25;
+      }
+
+      if (shouldRenderOverworld) {
+        backend.beginFrame(elapsedSeconds, dtSeconds);
+        this.overworldRenderer.render(backend, owState);
+        backend.endFrame();
+      }
     }
 
-    this.syncUI();
+    this.uiSyncAccum += dtSeconds;
+    if (needsImmediateUiSync || this.uiSyncAccum >= 0.09) {
+      this.uiSyncAccum = 0;
+      this.syncUI();
+    }
   }
 
   private buildSnapshot(): UIRenderSnapshot {
     const save = this.storage.toV3SaveState();
+    this.cachedTitleSave = save;
     const profile = this.storage.getActiveProfileJSON();
     return {
       screen: this.screen,

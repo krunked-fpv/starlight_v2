@@ -60,9 +60,12 @@ export class OverworldRenderer implements IOverworldRenderer {
   private spriteQueue: SpriteDrawCmd[] = [];
   private lightCandidates: LightCandidate[] = [];
 
-  attachAtlas(manifest: AtlasManifest | null): void {
+  attachAtlas(
+    manifest: AtlasManifest | null,
+    getSheetImage?: ((sheetId: string) => HTMLImageElement | null) | null,
+  ): void {
     this.manifest = manifest;
-    this.autotile.setManifest(manifest);
+    this.autotile.setManifest(manifest, getSheetImage);
   }
 
   getDisplacementCount(): number {

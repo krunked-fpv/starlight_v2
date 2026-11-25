@@ -513,7 +513,7 @@ export function drawPixelArchetypeSprite(
 
 function getSafe2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
   try {
-    return canvas.getContext('2d');
+    return canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
   } catch {
     return null;
   }

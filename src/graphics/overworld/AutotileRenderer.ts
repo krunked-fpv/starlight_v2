@@ -182,8 +182,16 @@ export function drawContactShadow(
   ry: number,
   alpha = 0.34,
 ): void {
-  fillEllipse(ctx, cx, cy + 1, rx * 1.08, ry * 1.12, `rgba(10, 14, 30, ${(alpha * 0.45).toFixed(3)})`);
-  fillEllipse(ctx, cx, cy, rx, ry, `rgba(10, 14, 30, ${alpha.toFixed(3)})`);
+  const ox = Math.round(cx);
+  const oy = Math.round(cy);
+  const wr = Math.max(2, Math.round(rx));
+  const hr = Math.max(1, Math.round(ry));
+  ctx.fillStyle = `rgba(10, 14, 30, ${(alpha * 0.5).toFixed(3)})`;
+  ctx.fillRect(ox - wr, oy - Math.floor(hr * 0.5), wr * 2, hr);
+  ctx.fillStyle = `rgba(10, 14, 30, ${alpha.toFixed(3)})`;
+  const innerW = Math.max(2, Math.round(wr * 0.72));
+  const innerH = Math.max(2, Math.round(hr * 1.45));
+  ctx.fillRect(ox - innerW, oy - Math.floor(innerH * 0.5), innerW * 2, innerH);
 }
 
 export function drawFourPointStar(
@@ -568,12 +576,26 @@ function getFallbackTileColor(tileId: number, biomeAccent: string): Rgb255 {
   }
 }
 
+const TERRAIN_CHUNK_TILES = 16;
+
 export class AutotileRenderer {
   private manifest: AtlasManifest | null = null;
+  private getSheetImage: ((sheetId: string) => HTMLImageElement | null) | null = null;
   private grassDisplacements = new Map<number, GrassDisplacement>();
+  private terrainChunks = new Map<string, HTMLCanvasElement>();
+  private chunkCacheSignature = '';
+  private usedStaticChunkCacheThisFrame = false;
 
-  setManifest(manifest: AtlasManifest | null): void {
+  setManifest(
+    manifest: AtlasManifest | null,
+    getSheetImage?: ((sheetId: string) => HTMLImageElement | null) | null,
+  ): void {
     this.manifest = manifest;
+    if (getSheetImage !== undefined) {
+      this.getSheetImage = getSheetImage;
+    }
+    this.terrainChunks.clear();
+    this.chunkCacheSignature = '';
   }
 
   getManifest(): AtlasManifest | null {
@@ -590,6 +612,105 @@ export class AutotileRenderer {
 
   resetEffects(): void {
     this.grassDisplacements.clear();
+    this.terrainChunks.clear();
+    this.chunkCacheSignature = '';
+  }
+
+  private getOrBakeTerrainChunk(
+    chunkX: number,
+    chunkY: number,
+    state: OverworldSceneState,
+    buildingCache: { clusters: BuildingCluster[]; tileKeys: Set<number> },
+    terrainAlbedo: HTMLImageElement,
+  ): HTMLCanvasElement | null {
+    const { cols, rows, tileSize, worldMap } = state;
+    const sheet = this.manifest?.sheets?.terrain;
+    if (!sheet || typeof document === 'undefined') return null;
+
+    const sig = `${cols}x${rows}x${tileSize}|${terrainAlbedo.src || terrainAlbedo.naturalWidth}`;
+    if (this.chunkCacheSignature !== sig) {
+      this.terrainChunks.clear();
+      this.chunkCacheSignature = sig;
+    }
+
+    const key = `${chunkX},${chunkY}`;
+    const existing = this.terrainChunks.get(key);
+    if (existing) return existing;
+
+    const startTx = chunkX * TERRAIN_CHUNK_TILES;
+    const startTy = chunkY * TERRAIN_CHUNK_TILES;
+    const endTx = Math.min(cols - 1, startTx + TERRAIN_CHUNK_TILES - 1);
+    const endTy = Math.min(rows - 1, startTy + TERRAIN_CHUNK_TILES - 1);
+    const spanCols = endTx - startTx + 1;
+    const spanRows = endTy - startTy + 1;
+    if (spanCols <= 0 || spanRows <= 0) return null;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = spanCols * tileSize;
+    canvas.height = spanRows * tileSize;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.imageSmoothingEnabled = false;
+
+    const regions = sheet.regions;
+    for (let ty = startTy; ty <= endTy; ty++) {
+      const row = worldMap[ty];
+      if (!row) continue;
+      const ly = (ty - startTy) * tileSize;
+      for (let tx = startTx; tx <= endTx; tx++) {
+        const rawTileId = row[tx] ?? TILE.GRASS;
+        const idx = ty * cols + tx;
+        const effectiveTileId = buildingCache.tileKeys.has(idx) ? TILE.GRASS : rawTileId;
+        const lx = (tx - startTx) * tileSize;
+        const region = regions[`tile_${effectiveTileId}`];
+        if (region) {
+          ctx.drawImage(
+            terrainAlbedo,
+            region.x,
+            region.y,
+            region.w,
+            region.h,
+            lx,
+            ly,
+            tileSize,
+            tileSize,
+          );
+        }
+      }
+    }
+
+    // Bake static 47-tile autotile seams (walls, path curbs, bridges, wet sand) once per chunk
+    for (let ty = startTy; ty <= endTy; ty++) {
+      const row = worldMap[ty];
+      if (!row) continue;
+      const ly = (ty - startTy) * tileSize;
+      for (let tx = startTx; tx <= endTx; tx++) {
+        const tileId = row[tx] ?? TILE.GRASS;
+        const lx = (tx - startTx) * tileSize;
+        const nTile = ty > 0 ? worldMap[ty - 1]?.[tx] : undefined;
+        const sTile = ty + 1 < rows ? worldMap[ty + 1]?.[tx] : undefined;
+        const wTile = tx > 0 ? row[tx - 1] : undefined;
+        const eTile = tx + 1 < cols ? row[tx + 1] : undefined;
+
+        if (WALL_TILES.has(tileId)) {
+          const mask = computeTile47Mask(worldMap, cols, rows, tx, ty, (id) => WALL_TILES.has(id));
+          this.drawWallAutotileOverlay(ctx, lx, ly, tileSize, mask, sTile);
+        } else if (PATH_TILES.has(tileId)) {
+          const mask = computeTile47Mask(worldMap, cols, rows, tx, ty, (id) => PATH_TILES.has(id));
+          this.drawPathBorderOverlay(ctx, lx, ly, tileSize, tx, ty, tileId, mask, 0, false);
+        } else if (tileId === TILE.BRIDGE) {
+          this.drawBridgePixelOverlay(ctx, lx, ly, tileSize, ty, nTile, sTile, wTile, eTile);
+        } else if (SAND_TILES.has(tileId)) {
+          if (sTile !== undefined && WATER_TILES.has(sTile)) {
+            ctx.fillStyle = 'rgba(20, 48, 86, 0.24)';
+            ctx.fillRect(lx, ly + tileSize - 3, tileSize, 3);
+          }
+        }
+      }
+    }
+
+    this.terrainChunks.set(key, canvas);
+    return canvas;
   }
 
   /**
@@ -688,6 +809,7 @@ export class AutotileRenderer {
   ): void {
     const { cols, rows, tileSize, worldMap } = state;
     const buildingCache = detectBuildingClusters(worldMap, cols, rows);
+    this.usedStaticChunkCacheThisFrame = false;
 
     // Procedural fallback base when 'terrain' sheet is not yet attached
     if (!this.hasSheet('terrain')) {
@@ -696,37 +818,79 @@ export class AutotileRenderer {
       }, 'world');
     }
 
-    // Draw every visible tile (0..60) crisply from baked 'terrain' atlas
-    for (let ty = bounds.minTy; ty <= bounds.maxTy; ty++) {
-      const row = worldMap[ty];
-      if (!row) continue;
-      for (let tx = bounds.minTx; tx <= bounds.maxTx; tx++) {
-        const rawTileId = row[tx] ?? TILE.GRASS;
-        const idx = ty * cols + tx;
-        const effectiveTileId = buildingCache.tileKeys.has(idx) ? TILE.GRASS : rawTileId;
+    const terrainAlbedo =
+      backend.kind === 'canvas2d' && this.hasSheet('terrain') && this.getSheetImage
+        ? this.getSheetImage('terrain')
+        : null;
 
-        backend.drawSprite(
-          buildSpriteCmd(
-            this.manifest,
-            'terrain',
-            `tile_${effectiveTileId}`,
-            tx * tileSize,
-            ty * tileSize,
-            tileSize,
-            tileSize,
-            { depth: 0 },
-          ),
-        );
+    if (
+      terrainAlbedo &&
+      terrainAlbedo.naturalWidth > 0 &&
+      typeof document !== 'undefined'
+    ) {
+      // Canvas2D fast path: blit pre-baked 16x16 static terrain chunks (6–9 blits vs 1,300+ tiles!)
+      this.usedStaticChunkCacheThisFrame = true;
+      const minCx = Math.floor(bounds.minTx / TERRAIN_CHUNK_TILES);
+      const maxCx = Math.floor(bounds.maxTx / TERRAIN_CHUNK_TILES);
+      const minCy = Math.floor(bounds.minTy / TERRAIN_CHUNK_TILES);
+      const maxCy = Math.floor(bounds.maxTy / TERRAIN_CHUNK_TILES);
+
+      for (let cy = minCy; cy <= maxCy; cy++) {
+        for (let cx = minCx; cx <= maxCx; cx++) {
+          const chunk = this.getOrBakeTerrainChunk(cx, cy, state, buildingCache, terrainAlbedo);
+          if (!chunk) continue;
+          backend.drawSprite({
+            source: chunk,
+            sx: 0,
+            sy: 0,
+            sw: chunk.width,
+            sh: chunk.height,
+            dx: cx * TERRAIN_CHUNK_TILES * tileSize,
+            dy: cy * TERRAIN_CHUNK_TILES * tileSize,
+            dw: chunk.width,
+            dh: chunk.height,
+            pixelCrisp: true,
+            depth: 0,
+          });
+        }
+      }
+    } else {
+      // WebGL2 instanced / fallback path: emit every visible tile (0..60) crisply from baked 'terrain' atlas
+      for (let ty = bounds.minTy; ty <= bounds.maxTy; ty++) {
+        const row = worldMap[ty];
+        if (!row) continue;
+        for (let tx = bounds.minTx; tx <= bounds.maxTx; tx++) {
+          const rawTileId = row[tx] ?? TILE.GRASS;
+          const idx = ty * cols + tx;
+          const effectiveTileId = buildingCache.tileKeys.has(idx) ? TILE.GRASS : rawTileId;
+
+          backend.drawSprite(
+            buildSpriteCmd(
+              this.manifest,
+              'terrain',
+              `tile_${effectiveTileId}`,
+              tx * tileSize,
+              ty * tileSize,
+              tileSize,
+              tileSize,
+              { depth: 0 },
+            ),
+          );
+        }
       }
     }
 
-    // Water & Lava shimmering quads with 4-neighbor shoreline foam mask
+    // Water & Lava shimmering quads with 4-neighbor shoreline foam mask (run-length merged per row)
     for (let ty = bounds.minTy; ty <= bounds.maxTy; ty++) {
       const row = worldMap[ty];
       if (!row) continue;
-      for (let tx = bounds.minTx; tx <= bounds.maxTx; tx++) {
+      let tx = bounds.minTx;
+      while (tx <= bounds.maxTx) {
         const tileId = row[tx] ?? TILE.GRASS;
-        if (!LIQUID_TILES.has(tileId)) continue;
+        if (!LIQUID_TILES.has(tileId)) {
+          tx += 1;
+          continue;
+        }
 
         const depthFactor =
           tileId === TILE.WATER
@@ -738,14 +902,26 @@ export class AutotileRenderer {
                 : 0.24;
 
         const foamMask = computeLiquidFoamMask(worldMap, cols, rows, tx, ty, tileId);
+        let runEnd = tx;
+        if (this.usedStaticChunkCacheThisFrame && foamMask === 0) {
+          while (
+            runEnd + 1 <= bounds.maxTx &&
+            row[runEnd + 1] === tileId &&
+            computeLiquidFoamMask(worldMap, cols, rows, runEnd + 1, ty, tileId) === 0
+          ) {
+            runEnd += 1;
+          }
+        }
+        const runCols = runEnd - tx + 1;
         backend.drawWaterQuad(
           tx * tileSize,
           ty * tileSize,
-          tileSize,
+          runCols * tileSize,
           tileSize,
           depthFactor,
           foamMask,
         );
+        tx = runEnd + 1;
       }
     }
   }
@@ -827,6 +1003,25 @@ export class AutotileRenderer {
         const sTile = ty + 1 < rows ? worldMap[ty + 1]?.[tx] : undefined;
         const wTile = tx > 0 ? row[tx - 1] : undefined;
         const eTile = tx + 1 < cols ? row[tx + 1] : undefined;
+
+        if (this.usedStaticChunkCacheThisFrame) {
+          // Static wall/path/bridge/sand seams are already baked into 16x16 terrain chunks;
+          // render only dynamic/animated tile details here.
+          if (tileId === TILE.RUNE_TRAIL) {
+            const shimmer = 0.45 + 0.35 * Math.sin(t * 2.6 + tx * 0.7 + ty * 0.5);
+            ctx.fillStyle = `rgba(124, 232, 255, ${shimmer.toFixed(3)})`;
+            ctx.fillRect(px + 13, py + 13, 6, 6);
+            ctx.fillStyle = `rgba(255, 244, 178, ${(shimmer * 0.9).toFixed(3)})`;
+            ctx.fillRect(px + 15, py + 15, 2, 2);
+          } else if (tileId === TILE.FLOWER) {
+            this.drawFlowerPixelDetail(ctx, px, py, tileSize, tx, ty, t);
+          } else if (WATER_TILES.has(tileId)) {
+            this.drawWaterShorePixelEdge(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile, t);
+          } else if (tileId === TILE.LAVA) {
+            this.drawLavaEdgeDetail(ctx, px, py, tileSize, tx, ty, nTile, sTile, wTile, eTile, t);
+          }
+          continue;
+        }
 
         if (WALL_TILES.has(tileId)) {
           const mask = computeTile47Mask(worldMap, cols, rows, tx, ty, (id) => WALL_TILES.has(id));
@@ -913,6 +1108,7 @@ export class AutotileRenderer {
     tileId: number,
     mask: number,
     t: number,
+    includeAnimatedRune = true,
   ): void {
     const hasN = (mask & 2) !== 0;
     const hasW = (mask & 8) !== 0;
@@ -928,7 +1124,7 @@ export class AutotileRenderer {
     ctx.fillStyle = 'rgba(255, 248, 224, 0.14)';
     if (!hasN) ctx.fillRect(px + 2, py + 2, tileSize - 4, 2);
 
-    if (tileId === TILE.RUNE_TRAIL) {
+    if (includeAnimatedRune && tileId === TILE.RUNE_TRAIL) {
       const shimmer = 0.45 + 0.35 * Math.sin(t * 2.6 + tx * 0.7 + ty * 0.5);
       ctx.fillStyle = `rgba(124, 232, 255, ${shimmer.toFixed(3)})`;
       ctx.fillRect(px + 13, py + 13, 6, 6);
@@ -1109,7 +1305,6 @@ export class AutotileRenderer {
           const tileBiome = getBiomeAt(tx, ty)?.id || state.currentBiomeId;
           const regionId = resolveTreePropRegion(tileBiome);
           const swayPhase = hash2D(tx, ty, 13) * Math.PI * 2;
-          const swayRot = reducedMotion ? 0 : Math.sin(t * 1.9 + swayPhase) * 0.025;
           const swayDx = reducedMotion ? 0 : Math.round(Math.sin(t * 1.9 + swayPhase) * 1.1);
           const dw = Math.round(tileSize * 1.625); // 52x52 preserves 64x64 prop aspect ratio cleanly
           const dh = dw;
@@ -1118,7 +1313,6 @@ export class AutotileRenderer {
 
           outSprites.push(
             buildSpriteCmd(this.manifest, 'props', regionId, dx, dy, dw, dh, {
-              rotation: swayRot,
               emissive: regionId === 'prop_crystal' || regionId === 'prop_mushroom' ? 0.25 : 0,
               depth: (ty + 0.92) * tileSize,
             }),
@@ -1282,9 +1476,24 @@ export class AutotileRenderer {
 
         const idx = ty * cols + tx;
         const disp = this.grassDisplacements.get(idx);
+        const nearPlayer = Math.abs(tx - player.x) <= 2.2 && Math.abs(ty - player.y) <= 2.2;
+        const nearFollower =
+          follower !== null &&
+          Math.abs(tx - follower.x) <= 2.0 &&
+          Math.abs(ty - follower.y) <= 2.0;
+
         const pal = getGrassBladePalette(tileId);
         const px = tx * tileSize;
         const py = ty * tileSize;
+
+        if (!disp && !nearPlayer && !nearFollower) {
+          if (reducedMotion) continue;
+          const wind = Math.round(Math.sin(t * 2.4 + tx * 0.8 + ty * 0.5) * 1.4);
+          ctx.fillStyle = pal.tip;
+          ctx.fillRect(px + 9 + wind, py + 11, 2, 3);
+          ctx.fillRect(px + 21 - wind, py + 19, 2, 3);
+          continue;
+        }
 
         const bendX = disp ? disp.bendX * disp.intensity * 10 : 0;
         const bendY = disp ? disp.bendY * disp.intensity * 3 : 0;

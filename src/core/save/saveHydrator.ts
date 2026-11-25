@@ -521,6 +521,7 @@ export class StarlightStorageBridge {
   readonly manager: StorageManager;
   private settings: GameSettings;
   private migratedFromV1?: StarlightSaveState['migratedFromV1'];
+  private idbDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(initialState: StarlightSaveState) {
     this.settings = { ...initialState.settings };
@@ -529,8 +530,7 @@ export class StarlightStorageBridge {
     this.loadFromV3State(initialState);
     // Override manager.save so every internal dojo mutation writes schemaVersion: 3 cleanly!
     this.manager.save = () => {
-      const snapshot = this.toV3SaveState();
-      void persistSaveState(snapshot);
+      this.saveSync();
       return true;
     };
   }
@@ -596,6 +596,19 @@ export class StarlightStorageBridge {
 
   saveSync(): void {
     const snapshot = this.toV3SaveState();
-    void persistSaveState(snapshot);
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(V2_STORAGE_KEY, JSON.stringify(snapshot));
+      } catch {
+        // Private browsing / quota fallback
+      }
+    }
+    if (this.idbDebounceTimer !== null) {
+      clearTimeout(this.idbDebounceTimer);
+    }
+    this.idbDebounceTimer = setTimeout(() => {
+      this.idbDebounceTimer = null;
+      void writeToIndexedDb(IDB_V2_NAME, V2_STORAGE_KEY, snapshot);
+    }, 250);
   }
 }

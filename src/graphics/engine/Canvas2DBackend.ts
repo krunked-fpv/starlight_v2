@@ -54,6 +54,10 @@ interface RegisteredAtlas2D {
   height: number;
   pixelCrisp: boolean;
   regions: Record<string, AtlasRegion>;
+  emissiveAlphaData?: Uint8ClampedArray | null;
+  emissiveW?: number;
+  emissiveH?: number;
+  emissiveRegionCache?: Map<string, boolean>;
 }
 
 const MAX_LIGHTS = 24;
@@ -172,6 +176,11 @@ export class Canvas2DBackend implements IRenderBackend {
 
   private atlases = new Map<string, RegisteredAtlas2D>();
   private crtPattern: CanvasPattern | null = null;
+  private lightSpriteCache = new Map<string, HTMLCanvasElement>();
+  private cloudSpriteCache = new Map<string, HTMLCanvasElement>();
+  private vignetteSpriteCache = new Map<string, HTMLCanvasElement>();
+  private vignetteCacheKey = '';
+  private vignetteCacheGrad: CanvasGradient | null = null;
 
   // Per-frame queues
   private frameTimeSeconds = 0;
@@ -361,6 +370,35 @@ export class Canvas2DBackend implements IRenderBackend {
   ): void {
     const dims = getImageSourceDimensions(albedo);
     const existingRegions = this.atlases.get(sheetId)?.regions ?? {};
+    let emissiveAlphaData: Uint8ClampedArray | null = null;
+    let emissiveW = 0;
+    let emissiveH = 0;
+
+    if (emissive && typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      const eDims = getImageSourceDimensions(emissive);
+      if (eDims.width > 0 && eDims.height > 0 && eDims.width <= 2048 && eDims.height <= 2048) {
+        try {
+          const probe = document.createElement('canvas');
+          probe.width = eDims.width;
+          probe.height = eDims.height;
+          const pctx = probe.getContext('2d', { willReadFrequently: true });
+          if (pctx) {
+            pctx.drawImage(emissive, 0, 0);
+            const imgData = pctx.getImageData(0, 0, eDims.width, eDims.height).data;
+            const alpha = new Uint8ClampedArray(eDims.width * eDims.height);
+            for (let i = 0, p = 3; i < alpha.length; i++, p += 4) {
+              alpha[i] = imgData[p];
+            }
+            emissiveAlphaData = alpha;
+            emissiveW = eDims.width;
+            emissiveH = eDims.height;
+          }
+        } catch {
+          emissiveAlphaData = null;
+        }
+      }
+    }
+
     this.atlases.set(sheetId, {
       albedo,
       normal,
@@ -369,7 +407,146 @@ export class Canvas2DBackend implements IRenderBackend {
       height: dims.height,
       pixelCrisp: pixelCrisp !== false,
       regions: existingRegions,
+      emissiveAlphaData,
+      emissiveW,
+      emissiveH,
+      emissiveRegionCache: emissiveAlphaData ? new Map<string, boolean>() : undefined,
     });
+  }
+
+  private hasEmissivePixels(
+    atlas: RegisteredAtlas2D | undefined,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+  ): boolean {
+    if (!atlas?.emissiveAlphaData || !atlas.emissiveW || !atlas.emissiveH || !atlas.emissiveRegionCache) {
+      return true;
+    }
+    const x0 = Math.max(0, Math.floor(sx));
+    const y0 = Math.max(0, Math.floor(sy));
+    const x1 = Math.min(atlas.emissiveW, Math.ceil(sx + sw));
+    const y1 = Math.min(atlas.emissiveH, Math.ceil(sy + sh));
+    const key = `${x0},${y0},${x1},${y1}`;
+    const cached = atlas.emissiveRegionCache.get(key);
+    if (cached !== undefined) return cached;
+
+    const alpha = atlas.emissiveAlphaData;
+    const stride = atlas.emissiveW;
+    let found = false;
+    for (let y = y0; y < y1 && !found; y++) {
+      const row = y * stride;
+      for (let x = x0; x < x1; x++) {
+        if (alpha[row + x] > 4) {
+          found = true;
+          break;
+        }
+      }
+    }
+    atlas.emissiveRegionCache.set(key, found);
+    return found;
+  }
+
+  private hasRealDomCanvas(): boolean {
+    return (
+      typeof document !== 'undefined' &&
+      typeof document.createElement === 'function' &&
+      typeof HTMLCanvasElement !== 'undefined' &&
+      this.canvas instanceof HTMLCanvasElement
+    );
+  }
+
+  private getPointLightSprite(r: number, g: number, b: number): HTMLCanvasElement | null {
+    if (!this.hasRealDomCanvas()) {
+      return null;
+    }
+    const qr = Math.round(clamp(r, 0, 1) * 15);
+    const qg = Math.round(clamp(g, 0, 1) * 15);
+    const qb = Math.round(clamp(b, 0, 1) * 15);
+    const key = `${qr}_${qg}_${qb}`;
+    const cached = this.lightSpriteCache.get(key);
+    if (cached) return cached;
+
+    try {
+      const size = 64;
+      const half = size * 0.5;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const lctx = c.getContext('2d', { willReadFrequently: true });
+      if (!lctx) return null;
+      const grad = lctx.createRadialGradient(half, half, 0, half, half, half);
+      grad.addColorStop(0, rgbaStr(r, g, b, 0.22));
+      grad.addColorStop(0.45, rgbaStr(r, g, b, 0.10));
+      grad.addColorStop(1, rgbaStr(r, g, b, 0));
+      lctx.fillStyle = grad;
+      lctx.fillRect(0, 0, size, size);
+      if (this.lightSpriteCache.size > 48) {
+        this.lightSpriteCache.clear();
+      }
+      this.lightSpriteCache.set(key, c);
+      return c;
+    } catch {
+      return null;
+    }
+  }
+
+  private getCloudShadowSprite(opacity: number): HTMLCanvasElement | null {
+    if (!this.hasRealDomCanvas()) {
+      return null;
+    }
+    const key = opacity.toFixed(2);
+    const cached = this.cloudSpriteCache.get(key);
+    if (cached) return cached;
+    try {
+      const size = 64;
+      const half = size * 0.5;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const cctx = c.getContext('2d', { willReadFrequently: true });
+      if (!cctx) return null;
+      const grad = cctx.createRadialGradient(half, half, half * 0.15, half, half, half);
+      grad.addColorStop(0, `rgba(10, 16, 36, ${clamp(opacity * 0.22, 0, 0.32).toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(10, 16, 36, 0)');
+      cctx.fillStyle = grad;
+      cctx.fillRect(0, 0, size, size);
+      if (this.cloudSpriteCache.size > 16) this.cloudSpriteCache.clear();
+      this.cloudSpriteCache.set(key, c);
+      return c;
+    } catch {
+      return null;
+    }
+  }
+
+  private getVignetteSprite(vig: number): HTMLCanvasElement | null {
+    if (!this.hasRealDomCanvas()) {
+      return null;
+    }
+    const key = vig.toFixed(2);
+    const cached = this.vignetteSpriteCache.get(key);
+    if (cached) return cached;
+    try {
+      const size = 128;
+      const half = size * 0.5;
+      const outerR = Math.hypot(half, half) * 1.05;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const vctx = c.getContext('2d', { willReadFrequently: true });
+      if (!vctx) return null;
+      const grad = vctx.createRadialGradient(half, half, outerR * 0.42, half, half, outerR);
+      grad.addColorStop(0, 'rgba(6, 10, 24, 0)');
+      grad.addColorStop(1, `rgba(6, 10, 24, ${(vig * 0.72).toFixed(3)})`);
+      vctx.fillStyle = grad;
+      vctx.fillRect(0, 0, size, size);
+      if (this.vignetteSpriteCache.size > 16) this.vignetteSpriteCache.clear();
+      this.vignetteSpriteCache.set(key, c);
+      return c;
+    } catch {
+      return null;
+    }
   }
 
   setAtlasRegions(sheetId: string, regions: Record<string, AtlasRegion>): void {
@@ -609,6 +786,11 @@ export class Canvas2DBackend implements IRenderBackend {
     this.postLightDraws.length = 0;
     this.screenDraws.length = 0;
     this.atlases.clear();
+    this.lightSpriteCache.clear();
+    this.cloudSpriteCache.clear();
+    this.vignetteSpriteCache.clear();
+    this.vignetteCacheKey = '';
+    this.vignetteCacheGrad = null;
     this.crtPattern = null;
     this.ctx = null;
     this.canvas = null;
@@ -663,7 +845,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const depth = clamp(q.depthFactor, 0, 1);
       const alpha = 0.84 + depth * 0.12;
 
-      // Multi-depth water + twilight sky reflection gradient
+      // Multi-depth pixel-crisp 2-band water + twilight sky reflection (avoids per-tile CanvasGradient allocs)
       const topR = cfg.skyTopColor[0] * 0.5 + (0.14 * (1 - depth) + 0.04 * depth);
       const topG = cfg.skyTopColor[1] * 0.5 + (0.54 * (1 - depth) + 0.14 * depth);
       const topB = cfg.skyTopColor[2] * 0.5 + (0.72 * (1 - depth) + 0.34 * depth);
@@ -672,11 +854,11 @@ export class Canvas2DBackend implements IRenderBackend {
       const botG = cfg.skyBottomColor[1] * 0.45 + (0.62 * (1 - depth) + 0.2 * depth);
       const botB = cfg.skyBottomColor[2] * 0.45 + (0.78 * (1 - depth) + 0.42 * depth);
 
-      const grad = ctx.createLinearGradient(q.x, q.y, q.x, q.y + q.h);
-      grad.addColorStop(0, rgbaStr(topR, topG, topB, alpha));
-      grad.addColorStop(1, rgbaStr(botR, botG, botB, alpha));
-      ctx.fillStyle = grad;
-      ctx.fillRect(q.x, q.y, q.w, q.h);
+      const halfH = Math.ceil(q.h * 0.5);
+      ctx.fillStyle = rgbaStr(topR, topG, topB, alpha);
+      ctx.fillRect(q.x, q.y, q.w, halfH);
+      ctx.fillStyle = rgbaStr(botR, botG, botB, alpha);
+      ctx.fillRect(q.x, q.y + halfH, q.w, q.h - halfH);
       calls += 1;
 
       // Pixel-snapped horizontal ripple shimmer bars
@@ -770,9 +952,47 @@ export class Canvas2DBackend implements IRenderBackend {
     let calls = 0;
     ctx.save();
     this.applyCameraToContext(ctx);
+    let lastSmoothing: boolean | null = null;
+    const emissiveBatch: Array<{
+      img: CanvasImageSource;
+      sx: number;
+      sy: number;
+      sw: number;
+      sh: number;
+      dx: number;
+      dy: number;
+      dw: number;
+      dh: number;
+      alpha: number;
+      crisp: boolean;
+    }> = [];
+
+    const flushEmissiveBatch = () => {
+      if (emissiveBatch.length === 0) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      let lastEmSmooth: boolean | null = null;
+      let lastEmAlpha = -1;
+      for (const em of emissiveBatch) {
+        const wantSmooth = !em.crisp;
+        if (lastEmSmooth !== wantSmooth) {
+          ctx.imageSmoothingEnabled = wantSmooth;
+          lastEmSmooth = wantSmooth;
+        }
+        if (lastEmAlpha !== em.alpha) {
+          ctx.globalAlpha = em.alpha;
+          lastEmAlpha = em.alpha;
+        }
+        ctx.drawImage(em.img, em.sx, em.sy, em.sw, em.sh, em.dx, em.dy, em.dw, em.dh);
+      }
+      ctx.restore();
+      emissiveBatch.length = 0;
+      lastSmoothing = null;
+    };
 
     for (const cmd of ordered) {
       let source: CanvasImageSource | undefined = cmd.source;
+      let atlasRecord: RegisteredAtlas2D | undefined;
       let atlasEmissive: CanvasImageSource | undefined;
       let defaultCrisp = true;
       let sx = cmd.sx;
@@ -783,6 +1003,7 @@ export class Canvas2DBackend implements IRenderBackend {
       if (!source && cmd.sheetId) {
         const atlas = this.atlases.get(cmd.sheetId);
         if (atlas) {
+          atlasRecord = atlas;
           source = atlas.albedo;
           atlasEmissive = atlas.emissive;
           defaultCrisp = atlas.pixelCrisp;
@@ -812,21 +1033,64 @@ export class Canvas2DBackend implements IRenderBackend {
       }
 
       const crisp = cmd.pixelCrisp !== undefined ? cmd.pixelCrisp !== false : defaultCrisp;
+      const hasRim = Boolean(cmd.rimColor && cmd.rimColor[3] > 0.01);
+      const isSimple = !cmd.rotation && !cmd.flipX && !hasRim && !cmd.additive && alpha >= 0.999;
+
+      if (isSimple) {
+        if (!crisp && emissiveBatch.length > 0) {
+          flushEmissiveBatch();
+        }
+        const wantSmooth = !crisp;
+        if (lastSmoothing !== wantSmooth) {
+          ctx.imageSmoothingEnabled = wantSmooth;
+          lastSmoothing = wantSmooth;
+        }
+        ctx.drawImage(source, srcX, srcY, srcW, srcH, cmd.dx, cmd.dy, cmd.dw, cmd.dh);
+        calls += 1;
+
+        if (
+          atlasEmissive &&
+          (cmd.emissive === undefined || cmd.emissive > 0.01) &&
+          this.hasEmissivePixels(atlasRecord, srcX, srcY, srcW, srcH)
+        ) {
+          emissiveBatch.push({
+            img: atlasEmissive,
+            sx: srcX,
+            sy: srcY,
+            sw: srcW,
+            sh: srcH,
+            dx: cmd.dx,
+            dy: cmd.dy,
+            dw: cmd.dw,
+            dh: cmd.dh,
+            alpha: 0.9,
+            crisp,
+          });
+        }
+        if (cmd.emissive && cmd.emissive > 0.05) {
+          emissiveBatch.push({
+            img: source,
+            sx: srcX,
+            sy: srcY,
+            sw: srcW,
+            sh: srcH,
+            dx: cmd.dx,
+            dy: cmd.dy,
+            dw: cmd.dw,
+            dh: cmd.dh,
+            alpha: clamp(cmd.emissive * 0.45, 0, 0.85),
+            crisp,
+          });
+        }
+        continue;
+      }
+
+      flushEmissiveBatch();
 
       ctx.save();
       ctx.imageSmoothingEnabled = !crisp;
       ctx.globalAlpha = alpha;
       ctx.globalCompositeOperation = cmd.additive ? 'lighter' : 'source-over';
-
-      if (cmd.rimColor && cmd.rimColor[3] > 0.01) {
-        ctx.shadowColor = rgbaStr(
-          cmd.rimColor[0],
-          cmd.rimColor[1],
-          cmd.rimColor[2],
-          cmd.rimColor[3],
-        );
-        ctx.shadowBlur = 8;
-      }
 
       const cx = cmd.dx + cmd.dw * 0.5;
       const cy = cmd.dy + cmd.dh * 0.5;
@@ -838,10 +1102,34 @@ export class Canvas2DBackend implements IRenderBackend {
         ctx.scale(-1, 1);
       }
 
+      // Crisp HD-2D pixel rim halo (avoids Skia shadowBlur full-layer Gaussian stalls on Canvas2D)
+      if (hasRim && cmd.rimColor && !cmd.additive) {
+        ctx.save();
+        ctx.imageSmoothingEnabled = !crisp;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = clamp(alpha * cmd.rimColor[3] * 0.34, 0, 0.45);
+        ctx.drawImage(
+          source,
+          srcX,
+          srcY,
+          srcW,
+          srcH,
+          -cmd.dw * 0.5 - 2,
+          -cmd.dh * 0.5 - 2,
+          cmd.dw + 4,
+          cmd.dh + 4,
+        );
+        ctx.restore();
+      }
+
       ctx.drawImage(source, srcX, srcY, srcW, srcH, -cmd.dw * 0.5, -cmd.dh * 0.5, cmd.dw, cmd.dh);
       calls += 1;
 
-      if (atlasEmissive) {
+      if (
+        atlasEmissive &&
+        (cmd.emissive === undefined || cmd.emissive > 0.01) &&
+        this.hasEmissivePixels(atlasRecord, srcX, srcY, srcW, srcH)
+      ) {
         ctx.imageSmoothingEnabled = !crisp;
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = clamp(alpha * 0.9, 0, 1);
@@ -866,7 +1154,10 @@ export class Canvas2DBackend implements IRenderBackend {
       }
 
       ctx.restore();
+      lastSmoothing = null;
     }
+
+    flushEmissiveBatch();
 
     ctx.restore();
     return calls;
@@ -923,17 +1214,25 @@ export class Canvas2DBackend implements IRenderBackend {
       const strength = clamp(light.intensity * flicker, 0, 2);
       const [r, g, b] = light.color;
 
-      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius);
-      grad.addColorStop(0, rgbaStr(r, g, b, clamp(0.2 * strength, 0, 0.34)));
-      grad.addColorStop(0.45, rgbaStr(r, g, b, clamp(0.09 * strength, 0, 0.16)));
-      grad.addColorStop(1, rgbaStr(r, g, b, 0));
+      const lightSprite = this.getPointLightSprite(r, g, b);
+      if (lightSprite) {
+        ctx.globalAlpha = clamp(strength, 0, 1.45);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(lightSprite, sx - radius, sy - radius, radius * 2, radius * 2);
+      } else {
+        const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, radius);
+        grad.addColorStop(0, rgbaStr(r, g, b, clamp(0.2 * strength, 0, 0.34)));
+        grad.addColorStop(0.45, rgbaStr(r, g, b, clamp(0.09 * strength, 0, 0.16)));
+        grad.addColorStop(1, rgbaStr(r, g, b, 0));
 
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(sx, sy, radius, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
       drawCalls += 1;
     }
+    ctx.globalAlpha = 1;
 
     // Diagonal canopy sunbeam shafts & drifting cloud shadow bands
     if (this.canopyConfig.enabled) {
@@ -948,16 +1247,16 @@ export class Canvas2DBackend implements IRenderBackend {
         const span = Math.hypot(w, h);
         const [sr, sg, sb] = cfg.sunbeamColor;
         const beamCount = 5;
+        const outerFill = rgbaStr(sr, sg, sb, clamp(cfg.sunbeamIntensity * 0.11, 0, 0.16));
+        const innerFill = rgbaStr(sr, sg, sb, clamp(cfg.sunbeamIntensity * 0.14, 0, 0.2));
 
         for (let i = 0; i < beamCount; i++) {
           const offset = ((i / beamCount) - 0.5) * span + Math.sin(t * 0.45 + i * 1.9) * 28;
           const beamW = span * (0.065 + 0.025 * Math.sin(i * 2.3 + 0.7));
-          const grad = ctx.createLinearGradient(offset - beamW * 0.5, -span * 0.5, offset + beamW * 0.5, span * 0.5);
-          grad.addColorStop(0, rgbaStr(sr, sg, sb, clamp(cfg.sunbeamIntensity * 0.24, 0, 0.35)));
-          grad.addColorStop(0.55, rgbaStr(sr, sg, sb, clamp(cfg.sunbeamIntensity * 0.12, 0, 0.2)));
-          grad.addColorStop(1, rgbaStr(sr, sg, sb, 0));
-          ctx.fillStyle = grad;
-          ctx.fillRect(offset - beamW * 0.5, -span * 0.5, beamW, span);
+          ctx.fillStyle = outerFill;
+          ctx.fillRect(offset - beamW * 0.5, -span * 0.5, beamW, span * 0.72);
+          ctx.fillStyle = innerFill;
+          ctx.fillRect(offset - beamW * 0.24, -span * 0.5, beamW * 0.48, span * 0.56);
         }
         ctx.restore();
         drawCalls += 1;
@@ -968,17 +1267,25 @@ export class Canvas2DBackend implements IRenderBackend {
         ctx.globalCompositeOperation = 'source-over';
         const driftX = (t * cfg.cloudSpeedX * 36) % (w + 260);
         const driftY = (t * cfg.cloudSpeedY * 22) % (h + 180);
+        const cloudSprite = this.getCloudShadowSprite(cfg.cloudOpacity);
+        if (cloudSprite) {
+          ctx.imageSmoothingEnabled = true;
+        }
         for (let i = 0; i < 4; i++) {
           const cx = ((driftX + i * (w * 0.34)) % (w + 260)) - 130;
           const cy = ((driftY + i * (h * 0.29)) % (h + 180)) - 90;
           const rx = 140 + (i % 2) * 55;
-          const grad = ctx.createRadialGradient(cx, cy, rx * 0.15, cx, cy, rx);
-          grad.addColorStop(0, `rgba(10, 16, 36, ${clamp(cfg.cloudOpacity * 0.22, 0, 0.32).toFixed(3)})`);
-          grad.addColorStop(1, 'rgba(10, 16, 36, 0)');
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(cx, cy, rx, 0, Math.PI * 2);
-          ctx.fill();
+          if (cloudSprite) {
+            ctx.drawImage(cloudSprite, cx - rx, cy - rx, rx * 2, rx * 2);
+          } else {
+            const grad = ctx.createRadialGradient(cx, cy, rx * 0.15, cx, cy, rx);
+            grad.addColorStop(0, `rgba(10, 16, 36, ${clamp(cfg.cloudOpacity * 0.22, 0, 0.32).toFixed(3)})`);
+            grad.addColorStop(1, 'rgba(10, 16, 36, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(cx, cy, rx, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
         ctx.restore();
         drawCalls += 1;
@@ -1015,18 +1322,26 @@ export class Canvas2DBackend implements IRenderBackend {
       }
 
       const [cr, cg, cb] = p.color;
-      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
-      const innerStop = clamp(1 - softness, 0, 0.85);
-      grad.addColorStop(0, rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha));
-      if (innerStop > 0.05) {
-        grad.addColorStop(innerStop, rgbaStr(cr, cg, cb, alpha * 0.8));
-      }
-      grad.addColorStop(1, rgbaStr(cr, cg, cb, 0));
+      if (r <= 8 && typeof document !== 'undefined') {
+        ctx.fillStyle = rgbaStr(cr, cg, cb, alpha * 0.42);
+        ctx.fillRect(-r, -r, r * 2, r * 2);
+        const core = Math.max(1, r * 0.55);
+        ctx.fillStyle = rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha);
+        ctx.fillRect(-core, -core, core * 2, core * 2);
+      } else {
+        const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+        const innerStop = clamp(1 - softness, 0, 0.85);
+        grad.addColorStop(0, rgbaStr(Math.min(1, cr * 1.2), Math.min(1, cg * 1.2), Math.min(1, cb * 1.2), alpha));
+        if (innerStop > 0.05) {
+          grad.addColorStop(innerStop, rgbaStr(cr, cg, cb, alpha * 0.8));
+        }
+        grad.addColorStop(1, rgbaStr(cr, cg, cb, 0));
 
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.fill();
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.restore();
       calls += 1;
     }
@@ -1055,17 +1370,28 @@ export class Canvas2DBackend implements IRenderBackend {
       calls += 1;
     }
 
-    // Radial vignette
+    // Radial vignette (pre-baked 128x128 sprite in browser; cached radial gradient in headless mocks)
     const vig = clamp(this.colorGrade.vignetteStrength, 0, 0.85);
     if (vig > 0.01) {
-      const cx = w * 0.5;
-      const cy = h * 0.5;
-      const outerR = Math.hypot(cx, cy) * 1.05;
-      const grad = ctx.createRadialGradient(cx, cy, outerR * 0.42, cx, cy, outerR);
-      grad.addColorStop(0, 'rgba(6, 10, 24, 0)');
-      grad.addColorStop(1, `rgba(6, 10, 24, ${(vig * 0.72).toFixed(3)})`);
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h);
+      const vigSprite = this.getVignetteSprite(vig);
+      if (vigSprite) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(vigSprite, 0, 0, w, h);
+      } else {
+        const vKey = `${w}x${h}x${vig.toFixed(2)}`;
+        if (this.vignetteCacheKey !== vKey || !this.vignetteCacheGrad) {
+          const cx = w * 0.5;
+          const cy = h * 0.5;
+          const outerR = Math.hypot(cx, cy) * 1.05;
+          const grad = ctx.createRadialGradient(cx, cy, outerR * 0.42, cx, cy, outerR);
+          grad.addColorStop(0, 'rgba(6, 10, 24, 0)');
+          grad.addColorStop(1, `rgba(6, 10, 24, ${(vig * 0.72).toFixed(3)})`);
+          this.vignetteCacheKey = vKey;
+          this.vignetteCacheGrad = grad;
+        }
+        ctx.fillStyle = this.vignetteCacheGrad;
+        ctx.fillRect(0, 0, w, h);
+      }
       calls += 1;
     }
 
@@ -1096,7 +1422,7 @@ export class Canvas2DBackend implements IRenderBackend {
       const tile = document.createElement('canvas');
       tile.width = 3;
       tile.height = 3;
-      const tctx = tile.getContext('2d');
+      const tctx = tile.getContext('2d', { willReadFrequently: true }) ?? tile.getContext('2d');
       if (!tctx) return;
       // Row 0: crisp dark scanline
       tctx.fillStyle = 'rgba(4, 8, 18, 0.18)';

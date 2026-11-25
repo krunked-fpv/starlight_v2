@@ -748,7 +748,7 @@ export class PokedexView {
     if (this.cryCanvas && this.currentWaveform) {
       let ctx: CanvasRenderingContext2D | null = null;
       try {
-        ctx = this.cryCanvas.getContext('2d');
+        ctx = this.cryCanvas.getContext('2d', { willReadFrequently: true }) ?? this.cryCanvas.getContext('2d');
       } catch {
         ctx = null;
       }
@@ -760,8 +760,22 @@ export class PokedexView {
         const samples = this.currentWaveform.samples;
 
         ctx.clearRect(0, 0, w, h);
-        ctx.strokeStyle = 'rgba(124, 232, 255, 0.22)';
+        const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
+        bgGrad.addColorStop(0, '#070c24');
+        bgGrad.addColorStop(0.5, '#0e1942');
+        bgGrad.addColorStop(1, '#060a1e');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.strokeStyle = 'rgba(124, 232, 255, 0.14)';
         ctx.lineWidth = 1;
+        for (let gx = 24; gx < w; gx += 24) {
+          ctx.beginPath();
+          ctx.moveTo(gx, 0);
+          ctx.lineTo(gx, h);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = 'rgba(124, 232, 255, 0.28)';
         ctx.beginPath();
         ctx.moveTo(0, midY);
         ctx.lineTo(w, midY);
@@ -769,8 +783,23 @@ export class PokedexView {
 
         if (samples && samples.length > 1) {
           ctx.save();
-          ctx.strokeStyle = this.currentWaveform.playing ? pal.glow : pal.primary;
-          ctx.lineWidth = this.currentWaveform.playing ? 2.4 : 1.8;
+          // Soft translucent glow ribbon under waveform
+          ctx.fillStyle = `${pal.primary}33`;
+          ctx.beginPath();
+          ctx.moveTo(0, midY);
+          for (let i = 0; i < samples.length; i++) {
+            const x = (i / (samples.length - 1)) * w;
+            const y = midY - samples[i] * (h * 0.42);
+            ctx.lineTo(x, y);
+          }
+          ctx.lineTo(w, midY);
+          ctx.closePath();
+          ctx.fill();
+
+          // Outer glow pass
+          ctx.strokeStyle = pal.primary;
+          ctx.lineWidth = this.currentWaveform.playing ? 4 : 3;
+          ctx.globalAlpha = 0.45;
           ctx.beginPath();
           for (let i = 0; i < samples.length; i++) {
             const x = (i / (samples.length - 1)) * w;
@@ -778,6 +807,12 @@ export class PokedexView {
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
           }
+          ctx.stroke();
+
+          // Crisp glowing core waveform stroke
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = this.currentWaveform.playing ? pal.glow : pal.secondary;
+          ctx.lineWidth = this.currentWaveform.playing ? 2.2 : 1.6;
           ctx.stroke();
           ctx.restore();
         }

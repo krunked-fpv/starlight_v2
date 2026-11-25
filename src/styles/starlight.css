@@ -21,6 +21,7 @@
 
   --sl-text: #f3f6ff;
   --sl-text-muted: #b7c3ea;
+  --sl-text-secondary: #b7c3ea;
   --sl-text-dim: #8a97c4;
 
   --sl-border-gold: rgba(246, 208, 107, 0.78);
@@ -95,8 +96,14 @@ body {
 }
 
 #app,
+#starlight-root,
+#stage-shell,
+.stage-shell,
 #game-canvas,
-#ui-root {
+#starlight-canvas,
+#ui-root,
+#ui-layer,
+.ui-layer {
   position: fixed;
   inset: 0;
   width: 100%;
@@ -105,14 +112,17 @@ body {
   overflow: hidden;
 }
 
-#game-canvas {
+#game-canvas,
+#starlight-canvas {
   z-index: 1;
   display: block;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
 
-#ui-root {
+#ui-root,
+#ui-layer,
+.ui-layer {
   z-index: 10;
   pointer-events: none;
 }
@@ -186,6 +196,11 @@ body {
   border-radius: var(--sl-radius-px);
   box-shadow: var(--sl-bevel-glass);
   backdrop-filter: blur(8px);
+}
+
+html[data-software-renderer="true"] .sl-glass {
+  backdrop-filter: none;
+  background: linear-gradient(180deg, rgba(16, 23, 56, 0.95) 0%, rgba(10, 14, 34, 0.94) 100%);
 }
 
 .sl-glass-soft {
@@ -1804,7 +1819,8 @@ button:focus-visible {
   cursor: pointer;
 }
 
-.sl-style-option.is-active {
+.sl-style-option.is-active,
+.sl-style-option.is-equipped {
   border-color: var(--sl-gold);
   background: rgba(62, 50, 20, 0.85);
 }
@@ -1879,7 +1895,7 @@ button:focus-visible {
   inset: 0;
   background: rgba(251, 113, 133, 0.45);
   transform-origin: left center;
-  transform: scaleX(0);
+  transform: scaleX(var(--hold-progress, 0));
   pointer-events: none;
 }
 
@@ -1890,11 +1906,16 @@ button:focus-visible {
 
 /* ---------------- Sky-Hop Arcade HUD ---------------- */
 .sl-skyhop-screen {
+  position: absolute;
+  inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 14px;
-  pointer-events: none;
+  overflow: hidden;
+  pointer-events: auto;
 }
 
 .sl-skyhop-screen button {
@@ -1902,13 +1923,22 @@ button:focus-visible {
 }
 
 .sl-skyhop-surface {
-  width: min(880px, 100%);
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 10px;
-  pointer-events: none;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.sl-skyhop-topbar,
+.sl-skyhop-wave-banner,
+.sl-skyhop-banner,
+.sl-skyhop-controls {
+  position: relative;
+  z-index: 2;
+  width: min(880px, 100%);
 }
 
 .sl-skyhop-topbar {

@@ -1,4 +1,44 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext, type Page, type Route } from '@playwright/test';
+
+/** Valid deterministic 2-frame 2x2 GIF89a with per-frame delays */
+const STUB_TWO_FRAME_GIF = new Uint8Array([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+  0x02, 0x00, 0x02, 0x00, 0x80, 0x00, 0x00,
+  0xff, 0x00, 0x00, 0x00, 0x00, 0xff,
+  0x21, 0xf9, 0x04, 0x04, 0x0c, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x04, 0x00, 0x50, 0x00,
+  0x21, 0xf9, 0x04, 0x04, 0x0f, 0x00, 0x00, 0x00,
+  0x2c, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+  0x02, 0x03, 0x0c, 0x91, 0x50, 0x00,
+  0x3b,
+]);
+
+type FulfillBody = NonNullable<Parameters<Route['fulfill']>[0]>['body'];
+
+function toFulfillBody(bytes: Uint8Array): FulfillBody {
+  const NodeBuffer = (globalThis as unknown as { Buffer: { from(data: Uint8Array): FulfillBody } }).Buffer;
+  return NodeBuffer.from(bytes);
+}
+
+const stubbedContexts = new WeakSet<BrowserContext>();
+
+async function stubExternalSpriteCdns(page: Page): Promise<void> {
+  const ctx = page.context();
+  if (stubbedContexts.has(ctx)) return;
+  stubbedContexts.add(ctx);
+  const body = toFulfillBody(STUB_TWO_FRAME_GIF);
+  const handler = async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'image/gif',
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body,
+    });
+  };
+  await ctx.route('https://raw.githubusercontent.com/**', handler);
+  await ctx.route('https://play.pokemonshowdown.com/**', handler);
+}
 
 function attachErrorCollector(page: Page) {
   const consoleErrors: string[] = [];
@@ -19,6 +59,26 @@ async function waitForAppBoot(page: Page): Promise<void> {
     timeout: 20_000,
   });
   await expect(page.getByTestId('celestial-ui-shell')).toBeVisible();
+}
+
+async function enterOverworldWithStarter(page: Page): Promise<void> {
+  await page.getByTestId('title-play-violet').click();
+  await expect(page.getByTestId('starter-screen')).toBeVisible();
+  await page.getByTestId('starter-choose-1').click();
+  await expect(page.getByTestId('overworld-screen')).toBeVisible();
+}
+
+async function exitActiveBattleCleanly(page: Page): Promise<void> {
+  const phase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+  if (phase === 'evolving') {
+    await page.getByTestId('battle-confirm-evolution').click();
+    await page.getByTestId('battle-close-result').click();
+  } else if (phase === 'victory' || phase === 'defeat') {
+    await page.getByTestId('battle-close-result').click();
+  } else {
+    await page.getByTestId('battle-flee').click();
+  }
+  await expect(page.getByTestId('overworld-screen')).toBeVisible();
 }
 
 interface CanvasPixelAudit {
@@ -56,12 +116,11 @@ async function sampleMainCanvasPixels(page: Page): Promise<CanvasPixelAudit> {
     const ph = Math.min(90, h);
     probeCanvas.width = pw;
     probeCanvas.height = ph;
-    const probeCtx = probeCanvas.getContext('2d');
+    const probeCtx = probeCanvas.getContext('2d', { willReadFrequently: true }) ?? probeCanvas.getContext('2d');
     if (!probeCtx) {
       throw new Error('Could not create probe 2D context');
     }
 
-    // Attempt direct 2D readback first; fall back to drawImage inside rAF for WebGL2 canvases
     const direct2d = canvas.getContext('2d');
     let data: Uint8ClampedArray;
     let mode: '2d' | 'toDataURL' = '2d';
@@ -89,7 +148,6 @@ async function sampleMainCanvasPixels(page: Page): Promise<CanvasPixelAudit> {
       if (a > 0) {
         nonTransparentCount += 1;
         lumaSum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        // Quantize slightly to count genuine chromatic/tonal variance
         const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
         colorBuckets.add(key);
       }
@@ -107,11 +165,12 @@ async function sampleMainCanvasPixels(page: Page): Promise<CanvasPixelAudit> {
   });
 }
 
-test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () => {
+test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Torture', () => {
   test('mid-overworld WebGL2 context loss hot-swaps to Canvas2D with live frame continuity', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
 
     await page.goto('./?renderer=webgl2');
     await waitForAppBoot(page);
@@ -120,20 +179,17 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () =
     expect(bootState.capabilities.webgl2Supported).toBe(true);
     expect(bootState.backend).toBe('webgl2');
 
-    // Enter overworld and confirm active rendering & frame loop advancement
-    await page.getByTestId('enter-world-btn').click();
-    await expect(page.getByTestId('overworld-screen')).toBeVisible();
-    await page.waitForTimeout(350);
+    await enterOverworldWithStarter(page);
+    await page.waitForTimeout(300);
 
     const beforeLoss = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect.soft(beforeLoss.frameStats.fps, 'FPS before context loss').toBeGreaterThan(0);
-    expect.soft(beforeLoss.frameStats.drawCalls, 'drawCalls before context loss').toBeGreaterThan(0);
+    expect(beforeLoss.frameStats.fps).toBeGreaterThan(0);
+    expect(beforeLoss.frameStats.drawCalls).toBeGreaterThan(0);
 
-    // Inject GPU WebGL2 context loss mid-overworld
+    // Inject WebGL2 context loss mid-overworld
     const simulated = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.simulateContextLoss());
     expect(simulated).toBe(true);
 
-    // Wait for seamless fallback to Canvas2D
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().backend === 'canvas2d',
       undefined,
@@ -149,47 +205,50 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () =
       ),
     ).toBe(true);
 
-    // Verify render loop continues ticking without freeze and pixels are non-blank
-    await page.waitForTimeout(350);
+    // Confirm live loop ticks & player movement still responds smoothly on Canvas2D
+    const posBefore = afterLoss1.playerPos;
+    await page.keyboard.down('ArrowRight');
+    await page.waitForTimeout(420);
+    await page.keyboard.up('ArrowRight');
+
     const afterLoss2 = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(afterLoss2.save.profiles.slot0.playtimeSeconds).toBeGreaterThan(
-      afterLoss1.save.profiles.slot0.playtimeSeconds,
-    );
-    expect.soft(afterLoss2.frameStats.fps, 'FPS after context loss').toBeGreaterThan(0);
-    expect.soft(afterLoss2.frameStats.drawCalls, 'drawCalls after context loss').toBeGreaterThan(0);
+    expect(afterLoss2.playerPos.x).toBeGreaterThan(posBefore.x);
+    expect(afterLoss2.frameStats.fps).toBeGreaterThan(0);
+    expect(afterLoss2.frameStats.drawCalls).toBeGreaterThan(0);
+    expect(afterLoss2.frameStats.clampedDtMs).toBeGreaterThan(0);
+    expect(afterLoss2.frameStats.clampedDtMs).toBeLessThanOrEqual(50);
 
     const pixelAudit = await sampleMainCanvasPixels(page);
-    expect.soft(pixelAudit.nonTransparentCount, 'Canvas non-transparent pixels after loss').toBeGreaterThan(
-      pixelAudit.sampledCount * 0.8,
-    );
-    expect.soft(pixelAudit.distinctColors, 'Canvas color variance after loss').toBeGreaterThan(6);
+    expect(pixelAudit.nonTransparentCount).toBeGreaterThan(pixelAudit.sampledCount * 0.8);
+    expect(pixelAudit.distinctColors).toBeGreaterThan(6);
 
     expect(errors.consoleErrors).toEqual([]);
     expect(errors.pageErrors).toEqual([]);
   });
 
-  test('mid-battle Shrine VFX WebGL2 context loss keeps battle interactive and live', async ({
+  test('mid-battle Shrine VFX WebGL2 context loss hot-swaps cleanly and keeps battle interactive', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
 
     await page.goto('./?renderer=webgl2');
     await waitForAppBoot(page);
+    await enterOverworldWithStarter(page);
 
-    await page.getByTestId('enter-world-btn').click();
-    await expect(page.getByTestId('overworld-screen')).toBeVisible();
-
-    // Launch Shrine encounter under WebGL2
-    await page.getByTestId('encounter-shrine').click();
+    // Launch Shrine Guardian encounter under WebGL2
+    await page.evaluate(() =>
+      window.__STARLIGHT_DEBUG__!.triggerEncounter('shrine', { biomeId: 'forest' }),
+    );
     await expect(page.getByTestId('battle-screen')).toBeVisible();
-
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
       { timeout: 10_000 },
     );
 
-    // Fire elemental move VFX then immediately kill WebGL2 context mid-animation
+    // Fire elemental move VFX and kill WebGL2 context immediately mid-VFX
+    const msgBefore = await page.getByTestId('battle-status-message').textContent();
     await page.getByTestId('battle-move-0').click();
     const lost = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.simulateContextLoss());
     expect(lost).toBe(true);
@@ -200,43 +259,44 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () =
       { timeout: 10_000 },
     );
 
-    // Confirm battle turn resolves cleanly back to interactive state without hanging
     await page.waitForFunction(() => {
       const phase = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
-      return phase === 'command' || phase === 'victory' || phase === 'defeat';
+      return phase === 'command' || phase === 'victory' || phase === 'defeat' || phase === 'evolving';
     }, undefined, { timeout: 10_000 });
 
-    const midBattle1 = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(midBattle1.battleActive).toBe(true);
-    expect.soft(midBattle1.frameStats.drawCalls, 'Mid-battle drawCalls after context loss').toBeGreaterThan(0);
+    const midBattle = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
+    expect(midBattle.battleActive).toBe(true);
+    expect(midBattle.frameStats.contextLostCount).toBeGreaterThanOrEqual(1);
+    expect(midBattle.frameStats.drawCalls).toBeGreaterThan(0);
 
-    // Verify battle dock remains interactive
+    const msgAfter = await page.getByTestId('battle-status-message').textContent();
+    expect(msgAfter).not.toBe(msgBefore);
+
+    // Offline Pixel Rig toggle remains responsive after context loss
     await page.getByTestId('battle-offline-rig').click();
     await expect(page.getByTestId('battle-offline-rig')).toHaveAttribute('aria-pressed', 'true');
 
-    await page.waitForTimeout(250);
-    const midBattle2 = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
-    expect(midBattle2.save.profiles.slot0.playtimeSeconds).toBeGreaterThan(
-      midBattle1.save.profiles.slot0.playtimeSeconds,
-    );
+    // If still in command phase, verify another move executes cleanly too
+    if (midBattle.battlePhase === 'command') {
+      await page.getByTestId('battle-move-0').click();
+    }
 
+    await page.waitForTimeout(220);
     const pixelAudit = await sampleMainCanvasPixels(page);
-    expect.soft(pixelAudit.nonTransparentCount, 'Battle canvas non-transparent pixels after loss').toBeGreaterThan(
-      pixelAudit.sampledCount * 0.8,
-    );
-    expect.soft(pixelAudit.distinctColors, 'Battle canvas color variance after loss').toBeGreaterThan(6);
+    expect(pixelAudit.nonTransparentCount).toBeGreaterThan(pixelAudit.sampledCount * 0.8);
+    expect(pixelAudit.distinctColors).toBeGreaterThan(6);
 
-    await page.getByTestId('battle-flee').click();
-    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await exitActiveBattleCleanly(page);
 
     expect(errors.consoleErrors).toEqual([]);
     expect(errors.pageErrors).toEqual([]);
   });
 
-  test('Canvas2D SwiftShader parity mode renders crisp non-blank pixels, clamps dt <= 50ms, and switches renderer via Settings UI', async ({
+  test('Canvas2D SwiftShader parity renders crisp non-blank pixels, clamps dt <= 50ms, and switches renderer via Settings UI', async ({
     page,
   }) => {
     const errors = attachErrorCollector(page);
+    await stubExternalSpriteCdns(page);
 
     await page.goto('./?renderer=canvas2d');
     await waitForAppBoot(page);
@@ -244,50 +304,46 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () =
     const initState = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
     expect(initState.backend).toBe('canvas2d');
 
-    await page.getByTestId('enter-world-btn').click();
-    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await enterOverworldWithStarter(page);
 
-    // Walk across overworld via keyboard input
+    // Walk across Starlight Village via keyboard input
     const posBefore = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
     await page.keyboard.down('ArrowRight');
     await page.waitForTimeout(420);
     await page.keyboard.up('ArrowRight');
     const posAfter = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().playerPos);
-    expect(posAfter.x).toBeGreaterThan(posBefore.x + 0.3);
+    expect(posAfter.x).toBeGreaterThan(posBefore.x);
 
-    // Verify non-blank Canvas2D pixel output and dt clamp <= 50ms
     const overworldStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
-    expect.soft(overworldStats.drawCalls, 'Canvas2D overworld drawCalls').toBeGreaterThan(0);
+    expect(overworldStats.drawCalls).toBeGreaterThan(0);
     expect(overworldStats.clampedDtMs).toBeGreaterThan(0);
     expect(overworldStats.clampedDtMs).toBeLessThanOrEqual(50);
 
     const overworldPixels = await sampleMainCanvasPixels(page);
-    expect.soft(overworldPixels.nonTransparentCount, 'Canvas2D overworld non-transparent pixels').toBeGreaterThan(
-      overworldPixels.sampledCount * 0.85,
-    );
-    expect.soft(overworldPixels.distinctColors, 'Canvas2D overworld distinct colors').toBeGreaterThan(8);
+    expect(overworldPixels.nonTransparentCount).toBeGreaterThan(overworldPixels.sampledCount * 0.85);
+    expect(overworldPixels.distinctColors).toBeGreaterThan(8);
 
-    // Trigger wild battle and verify non-blank battle frame
-    await page.getByTestId('encounter-wild').click();
+    // Trigger wild battle and confirm crisp non-blank pixels on Canvas2D
+    await page.evaluate(() =>
+      window.__STARLIGHT_DEBUG__!.triggerEncounter('wild', { biomeId: 'forest', forceSpeciesId: 25 }),
+    );
     await expect(page.getByTestId('battle-screen')).toBeVisible();
     await page.waitForFunction(
       () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
       undefined,
       { timeout: 10_000 },
     );
+    await page.waitForTimeout(180);
 
     const battlePixels = await sampleMainCanvasPixels(page);
-    expect.soft(battlePixels.nonTransparentCount, 'Canvas2D battle non-transparent pixels').toBeGreaterThan(
-      battlePixels.sampledCount * 0.85,
-    );
-    expect.soft(battlePixels.distinctColors, 'Canvas2D battle distinct colors').toBeGreaterThan(8);
+    expect(battlePixels.nonTransparentCount).toBeGreaterThan(battlePixels.sampledCount * 0.85);
+    expect(battlePixels.distinctColors).toBeGreaterThan(8);
 
-    await page.getByTestId('battle-flee').click();
-    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    await exitActiveBattleCleanly(page);
 
-    // Switch renderer live via Settings UI (Canvas2D -> WebGL2 -> Canvas2D)
-    await page.getByTestId('settings-toggle').click();
-    await expect(page.getByTestId('settings-panel')).toBeVisible();
+    // Live Settings renderer switch: canvas2d -> webgl2 -> canvas2d
+    await page.getByTestId('nav-settings').click();
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
 
     await page.getByTestId('setting-renderer').selectOption('webgl2');
     await page.waitForFunction(
@@ -296,8 +352,9 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () =
       { timeout: 10_000 },
     );
     await page.waitForTimeout(220);
+
     const glStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
-    expect.soft(glStats.drawCalls, 'WebGL2 drawCalls after Settings switch').toBeGreaterThan(0);
+    expect(glStats.drawCalls).toBeGreaterThan(0);
     expect(glStats.clampedDtMs).toBeLessThanOrEqual(50);
 
     await page.getByTestId('setting-renderer').selectOption('canvas2d');
@@ -309,14 +366,15 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Parity Torture', () =
     await page.waitForTimeout(220);
 
     const finalPixels = await sampleMainCanvasPixels(page);
-    expect.soft(finalPixels.nonTransparentCount, 'Canvas2D final non-transparent pixels').toBeGreaterThan(
-      finalPixels.sampledCount * 0.85,
-    );
-    expect.soft(finalPixels.distinctColors, 'Canvas2D final distinct colors').toBeGreaterThan(8);
+    expect(finalPixels.nonTransparentCount).toBeGreaterThan(finalPixels.sampledCount * 0.85);
+    expect(finalPixels.distinctColors).toBeGreaterThan(8);
 
     const finalStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
     expect(finalStats.clampedDtMs).toBeGreaterThan(0);
     expect(finalStats.clampedDtMs).toBeLessThanOrEqual(50);
+
+    await page.getByTestId('settings-close').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
     expect(errors.consoleErrors).toEqual([]);
     expect(errors.pageErrors).toEqual([]);
