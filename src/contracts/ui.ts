@@ -105,6 +105,12 @@ export interface TacticalBriefingData {
   canChallenge: boolean;
   farmZoneBiomeId: BiomeId;
   farmZoneBiomeName: string;
+  upgradeTier?: number;
+  badgeName?: string;
+  partyPreview?: Array<{ speciesId: number; name: string; level: number; type: ElementalType; upgradeTier?: number }>;
+  rematchNumber?: number;
+  minLv?: number;
+  maxLv?: number;
 }
 
 export interface DialogueModalState {
@@ -219,6 +225,14 @@ export interface BadgeToastState {
   remainingSec: number;
 }
 
+export interface CelebrationBannerState {
+  seq: number;
+  iconId: IconId;
+  title: string;
+  subtitle?: string;
+  tone?: 'gold' | 'quest' | 'heal' | 'starlight' | 'arcade' | 'badge' | 'shrine';
+}
+
 export interface UIRenderSnapshot {
   screen: ActiveScreen;
   activeDrawerTab: DrawerTab;
@@ -235,6 +249,7 @@ export interface UIRenderSnapshot {
   frameStats: FrameStats;
   toastMessage: string | null;
   badgeToast: BadgeToastState | null;
+  celebration?: CelebrationBannerState | null;
   selectedPokedexId: number;
   cryWaveform: CryWaveformSnapshot;
   spriteCacheVersion: number;
@@ -283,6 +298,7 @@ export interface UIBridgeCallbacks {
   onUpdateSettings(patch: Partial<GameSettings>): void;
   onResetTrainerProgress(trainerId: TrainerId): void;
   onResetAllProgress(): void;
+  onParentHoldTick?: (progress: number) => void;
   onOpenSkyHop(): void;
   onStartSkyHop(): void;
   onBuySkyHopCharge(): void;

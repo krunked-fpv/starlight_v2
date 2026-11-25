@@ -16,15 +16,26 @@ import {
   type UIRenderSnapshot,
 } from '../contracts';
 import {
+  assessEncounterReadiness,
   BALANCE,
   getAllEvolutionItems,
+  getBiomeDiscoveryStats,
+  getBiomeScaledRange,
   getBiomeVisualProfile,
   getCleanTrainerName,
+  getEvolutionRules,
   getPlayerLevel,
+  getPlayerProgression,
+  getResolvedTrainerLook,
   getSanitizedTraitLabel,
+  getScaledRivalParty,
+  getScaledShrineGuard,
   getSpeciesEntry,
   getTypeEffectiveness,
   Pokemon,
+  resolveRecommendedFarmingZone,
+  RIVAL_TRAINERS,
+  SHRINES,
   stripEmojis,
   TOTAL_SPECIES_COUNT,
   typeToIconId,
@@ -98,29 +109,34 @@ function selectChevronSvg(): string {
 
 function titleCrestSvg(): string {
   return `
-    <svg class="sl-title-crest-svg" viewBox="0 0 64 64" aria-hidden="true">
+    <svg class="sl-title-crest-svg" viewBox="0 0 88 88" aria-hidden="true">
       <defs>
         <linearGradient id="sl-crest-ring" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#fff8d6"/>
-          <stop offset="50%" stop-color="#f5cd6d"/>
-          <stop offset="100%" stop-color="#6ce5ff"/>
+          <stop offset="0%" stop-color="#fff9db"/>
+          <stop offset="48%" stop-color="#e5b858"/>
+          <stop offset="100%" stop-color="#9e6d22"/>
         </linearGradient>
-        <linearGradient id="sl-crest-star" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id="sl-crest-star" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#ffffff"/>
-          <stop offset="50%" stop-color="#ffe699"/>
-          <stop offset="100%" stop-color="#e89eff"/>
+          <stop offset="42%" stop-color="#ffe9a3"/>
+          <stop offset="100%" stop-color="#d49635"/>
         </linearGradient>
       </defs>
-      <circle cx="32" cy="32" r="27" fill="rgba(10,16,38,0.82)" stroke="url(#sl-crest-ring)" stroke-width="2.6"/>
-      <circle cx="32" cy="32" r="20" fill="none" stroke="rgba(108,229,255,0.45)" stroke-width="1.2" stroke-dasharray="3 3"/>
-      <polygon points="32,8 37.5,24.5 54,32 37.5,39.5 32,56 26.5,39.5 10,32 26.5,24.5" fill="url(#sl-crest-star)"/>
-      <circle cx="32" cy="32" r="5" fill="#0d1534" stroke="#fff5cc" stroke-width="1.8"/>
+      <polygon points="44,4 54,14 74,14 74,34 84,44 74,54 74,74 54,74 44,84 34,74 14,74 14,54 4,44 14,34 14,14 34,14" fill="#0d1122" stroke="url(#sl-crest-ring)" stroke-width="2.4"/>
+      <circle cx="44" cy="44" r="30" fill="#131932" stroke="url(#sl-crest-ring)" stroke-width="2.2"/>
+      <circle cx="44" cy="44" r="23" fill="none" stroke="rgba(138,224,255,0.48)" stroke-width="1.2" stroke-dasharray="3 3"/>
+      <polygon points="44,11 50,33 77,44 50,55 44,77 38,55 11,44 38,33" fill="url(#sl-crest-star)" stroke="#231608" stroke-width="1.2"/>
+      <polygon points="44,23 48,38 65,44 48,50 44,65 40,50 23,44 40,38" fill="#fffdf2"/>
+      <circle cx="44" cy="44" r="6" fill="#0f152c" stroke="#ffe9a3" stroke-width="2"/>
+      <circle cx="44" cy="44" r="2.2" fill="#7ee8ff"/>
     </svg>
   `;
 }
 
 function setHidden(el: HTMLElement | null, hidden: boolean): void {
   if (!el) return;
+  const currentlyHidden = el.hasAttribute('hidden');
+  if (currentlyHidden === hidden) return;
   if (hidden) {
     el.setAttribute('hidden', '');
     el.setAttribute('aria-hidden', 'true');
@@ -158,12 +174,21 @@ function renderPpPips(current: number, max: number): string {
   return html;
 }
 
+const LEAD_MAX_HP_CACHE = new Map<string, number>();
+
 function getLeadMaxHp(lead: DojoProfileState['team'][number]): number {
+  const key = `${lead.uid}|${lead.speciesId}|${lead.level}|${lead.upgradeTier ?? 0}|${lead.bond ?? 0}|${lead.maxHp ?? 0}`;
+  const cached = LEAD_MAX_HP_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  let result: number;
   try {
-    return Pokemon.fromJSON(lead).maxHp;
+    result = Pokemon.fromJSON(lead).maxHp;
   } catch {
-    return Math.max(20, lead.maxHp ?? lead.hp ?? 20);
+    result = Math.max(20, lead.maxHp ?? lead.hp ?? 20);
   }
+  if (LEAD_MAX_HP_CACHE.size > 64) LEAD_MAX_HP_CACHE.clear();
+  LEAD_MAX_HP_CACHE.set(key, result);
+  return result;
 }
 
 type ComposureState = 'braced' | 'ready' | 'spent';
@@ -246,11 +271,23 @@ export class CelestialUIController implements ICelestialUIController {
   private holdTimerId: ReturnType<typeof setTimeout> | null = null;
 
   private readonly memo = new Map<string, string>();
+  private cachedCoarsePointer: boolean | null = null;
+  private titlePlayVioletSpan: HTMLElement | null = null;
+  private titlePlayOziasSpan: HTMLElement | null = null;
 
   // Screen containers
   private crtOverlayEl: HTMLElement | null = null;
   private toastEl: HTMLElement | null = null;
   private badgeToastEl: HTMLElement | null = null;
+  private celebrationEl: HTMLElement | null = null;
+  private celebrationTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastCelebrationSeq = 0;
+  private lastBadgeCelebratedId = '';
+  private deferredInstallPrompt: { prompt: () => Promise<void>; userChoice?: Promise<{ outcome: string }> } | null = null;
+  private beforeInstallHandler: ((evt: Event) => void) | null = null;
+  private appInstalledHandler: (() => void) | null = null;
+  private pwaTitleInstallBtn: HTMLButtonElement | null = null;
+  private pwaSettingInstallRow: HTMLElement | null = null;
 
   private titleScreen: HTMLElement | null = null;
   private starterScreen: HTMLElement | null = null;
@@ -289,6 +326,9 @@ export class CelestialUIController implements ICelestialUIController {
   private dpadContainer: HTMLElement | null = null;
   private audioToggleBtn: HTMLButtonElement | null = null;
   private skyhopDockBtn: HTMLButtonElement | null = null;
+  private navMenuBtn: HTMLButtonElement | null = null;
+  private navBadgesBtn: HTMLButtonElement | null = null;
+  private warpFarmBtn: HTMLButtonElement | null = null;
 
   // Battle refs
   private enemyCardEl: HTMLElement | null = null;
@@ -344,9 +384,12 @@ export class CelestialUIController implements ICelestialUIController {
   private setTelemetryEl: HTMLElement | null = null;
   private parentTrainerProgressEl: HTMLElement | null = null;
   private parentAllProgressEl: HTMLElement | null = null;
+  private parentResetStatusEl: HTMLElement | null = null;
 
   // Sky-Hop refs
+  private skyPartnerEl: HTMLElement | null = null;
   private skyScoreEl: HTMLElement | null = null;
+  private skyStarsEl: HTMLElement | null = null;
   private skyWaveEl: HTMLElement | null = null;
   private skyComboEl: HTMLElement | null = null;
   private skyHighEl: HTMLElement | null = null;
@@ -401,10 +444,15 @@ export class CelestialUIController implements ICelestialUIController {
         <!-- Fixed zero-CLS Notifications -->
         <div class="sl-toast" data-testid="toast-banner" role="status" aria-live="polite" hidden></div>
         <div class="sl-badge-toast" data-testid="badge-toast" role="status" aria-live="polite" hidden></div>
+        <div class="sl-celebration-layer" data-testid="celebration-layer" aria-hidden="true" hidden></div>
 
         <!-- 1. Living Pixel-Art Title Vista -->
         <section class="sl-screen sl-title-screen" data-screen="title" data-testid="title-screen" hidden>
           <div class="sl-title-topbar">
+            <button type="button" class="sl-btn sl-btn-cyan sl-title-settings-btn" data-testid="title-install-btn" hidden>
+              ${createIconSvg('icon-sparkle', 'sl-icon-sm')}
+              <span>Install App</span>
+            </button>
             <button type="button" class="sl-btn sl-title-settings-btn" data-testid="title-settings-btn" aria-label="Settings">
               ${createIconSvg('icon-settings', 'sl-icon-sm')}
               <span>Settings</span>
@@ -412,13 +460,17 @@ export class CelestialUIController implements ICelestialUIController {
           </div>
 
           <header class="sl-title-header">
+            <div class="sl-title-crest-stage">
+              <span class="sl-title-rule" aria-hidden="true"></span>
+              ${titleCrestSvg()}
+              <span class="sl-title-rule sl-title-rule-r" aria-hidden="true"></span>
+            </div>
             <div class="sl-title-kicker">
               ${createIconSvg('icon-star-rank', 'sl-icon-sm')}
-              <span>Starlight Island • HD-2D Edition</span>
+              <span>Starlight Island • HD-2D Chronicle</span>
               ${createIconSvg('icon-star-rank', 'sl-icon-sm')}
             </div>
             <div class="sl-title-emblem-wrap">
-              ${titleCrestSvg()}
               <h1 class="sl-title-heading">Pokémon: Starlight Island</h1>
             </div>
             <p class="sl-title-sub">1,025 Species • 18 Connected Biomes • Choose Violet or Ozias to begin</p>
@@ -470,7 +522,7 @@ export class CelestialUIController implements ICelestialUIController {
             <!-- Top-left Adventurer Crest + Waypoint Stack (zero duplicate zone banners) -->
             <div class="sl-hud-left-col">
               <div class="sl-trainer-pill sl-hud-plate" data-testid="hud-trainer-pill">
-                <canvas class="sl-hud-portrait" width="46" height="46" data-testid="hud-trainer-portrait" title="Open Style Studio" aria-hidden="true"></canvas>
+                <canvas class="sl-hud-portrait" width="46" height="46" data-testid="hud-trainer-portrait" role="button" tabindex="0" title="Customize Trainer Style" aria-label="Customize Trainer Style"></canvas>
                 <div class="sl-hud-trainer-copy">
                   <div class="sl-hud-trainer-line">
                     <strong class="sl-hud-trainer-name" data-testid="hud-trainer-name">Violet</strong>
@@ -499,19 +551,23 @@ export class CelestialUIController implements ICelestialUIController {
 
             <!-- Top-right Iconic RPG Command Crest Bar -->
             <nav class="sl-action-dock sl-hud-plate" aria-label="Adventure Dock">
-              <button type="button" class="sl-btn" data-testid="nav-pokedex" aria-label="Open Pokédex and Menu Drawer">
+              <button type="button" class="sl-btn" data-testid="nav-pokedex" aria-label="Open Pokédex and Menu Drawer" title="Open Pokédex & Team [P]">
                 ${createIconSvg('icon-pokedex', 'sl-icon-sm')}
                 <span class="sl-dock-label">Menu</span>
+              </button>
+              <button type="button" class="sl-btn" data-testid="nav-badges" aria-label="View Elemental Badges" title="View 28 Island Badges">
+                ${createIconSvg('icon-badges', 'sl-icon-sm')}
+                <span class="sl-dock-label sl-dock-label-wide sl-num">0/28</span>
               </button>
               <button type="button" class="sl-btn" data-testid="nav-briefing" aria-label="Tactical Readiness Briefing" title="Tactical Readiness Briefing">
                 ${createIconSvg('icon-briefing', 'sl-icon-sm')}
                 <span class="sl-dock-label sl-dock-label-wide">Briefing</span>
               </button>
-              <button type="button" class="sl-btn" data-testid="warp-safe" aria-label="Safe Zone Warp to Starlight Village" title="Return to Starlight Village">
+              <button type="button" class="sl-btn" data-testid="warp-safe" aria-label="Safe Zone Warp to Starlight Village" title="Return to Starlight Village [H]">
                 ${createIconSvg('icon-warp-safe', 'sl-icon-sm')}
                 <span class="sl-dock-label">Safe</span>
               </button>
-              <button type="button" class="sl-btn sl-btn-cyan" data-testid="warp-farm" aria-label="Farm Zone Warp" title="Warp to Recommended Farm Zone">
+              <button type="button" class="sl-btn sl-btn-cyan" data-testid="warp-farm" aria-label="Farm Zone Warp" title="Warp to Recommended Farm Zone [T]">
                 ${createIconSvg('icon-warp-farm', 'sl-icon-sm')}
                 <span class="sl-dock-label">Farm</span>
               </button>
@@ -852,6 +908,16 @@ export class CelestialUIController implements ICelestialUIController {
                     <span class="sl-select-caret" aria-hidden="true">${selectChevronSvg()}</span>
                   </div>
                 </div>
+                <div class="sl-setting-card sl-setting-card-wide" data-testid="setting-install-row" hidden>
+                  <div class="sl-setting-copy">
+                    <strong>Install Starlight Island App</strong>
+                    <small>Play full-screen offline on tablet, Chromebook, or mobile</small>
+                  </div>
+                  <button type="button" class="sl-btn sl-btn-primary" data-testid="setting-install-btn">
+                    ${createIconSvg('icon-sparkle', 'sl-icon-sm')}
+                    <span>Install</span>
+                  </button>
+                </div>
               </div>
 
               <div class="sl-parent-zone" data-testid="parent-zone">
@@ -871,6 +937,7 @@ export class CelestialUIController implements ICelestialUIController {
                     <span class="sl-hold-label">Hold 3s: Reset All Saves</span>
                   </button>
                 </div>
+                <p class="sl-reset-status" data-testid="parent-reset-status" aria-live="polite"></p>
               </div>
 
               <div class="sl-settings-footer-meta sl-num">
@@ -887,9 +954,17 @@ export class CelestialUIController implements ICelestialUIController {
           <div class="sl-skyhop-hud-layer">
             <header class="sl-skyhop-topbar sl-hud-plate">
               <div class="sl-skyhop-stats">
+              <span class="sl-pill sl-pill-cyan" data-testid="skyhop-partner-pill">
+                ${createIconSvg('icon-skyhop', 'sl-icon-sm')}
+                <span>Partner Flight</span>
+              </span>
               <div class="sl-skyhop-stat">
                 <span class="sl-skyhop-stat-label">Score</span>
                 <span class="sl-skyhop-stat-val sl-num" data-testid="skyhop-score">0</span>
+              </div>
+              <div class="sl-skyhop-stat">
+                <span class="sl-skyhop-stat-label">Stars</span>
+                <span class="sl-skyhop-stat-val sl-num" data-testid="skyhop-stars">0</span>
               </div>
               <div class="sl-skyhop-stat">
                 <span class="sl-skyhop-stat-label">Wave</span>
@@ -982,6 +1057,9 @@ export class CelestialUIController implements ICelestialUIController {
     this.shellEl = q('[data-testid="celestial-ui-shell"]');
     this.toastEl = q('[data-testid="toast-banner"]');
     this.badgeToastEl = q('[data-testid="badge-toast"]');
+    this.celebrationEl = q('[data-testid="celebration-layer"]');
+    this.pwaTitleInstallBtn = q('[data-testid="title-install-btn"]');
+    this.pwaSettingInstallRow = q('[data-testid="setting-install-row"]');
     this.dialogueOverlay = q('[data-testid="dialogue-overlay"]');
 
     this.titleScreen = q('[data-screen="title"]');
@@ -1003,6 +1081,8 @@ export class CelestialUIController implements ICelestialUIController {
     this.oziasMetaEl = q('[data-testid="profile-ozias-meta"]');
     this.violetStatsEl = q('[data-testid="profile-violet-stats"]');
     this.oziasStatsEl = q('[data-testid="profile-ozias-stats"]');
+    this.titlePlayVioletSpan = q('[data-testid="title-play-violet"] span');
+    this.titlePlayOziasSpan = q('[data-testid="title-play-ozias"] span');
 
     this.hudPortraitCanvas = q('[data-testid="hud-trainer-portrait"]');
     this.hudLeadSpriteCanvas = q('[data-testid="hud-lead-sprite"]');
@@ -1018,6 +1098,9 @@ export class CelestialUIController implements ICelestialUIController {
     this.dpadContainer = q('[data-testid="touch-dpad"]');
     this.audioToggleBtn = q('[data-testid="toggle-audio"]');
     this.skyhopDockBtn = q('[data-testid="nav-skyhop"]');
+    this.navMenuBtn = q('[data-testid="nav-pokedex"]');
+    this.navBadgesBtn = q('[data-testid="nav-badges"]');
+    this.warpFarmBtn = q('[data-testid="warp-farm"]');
 
     this.enemyCardEl = q('[data-testid="battle-enemy-card"]');
     this.enemyNameEl = q('[data-testid="battle-enemy-name"]');
@@ -1076,8 +1159,11 @@ export class CelestialUIController implements ICelestialUIController {
     this.setTelemetryEl = q('[data-testid="engine-telemetry"]');
     this.parentTrainerProgressEl = q('[data-testid="parent-reset-trainer-fill"]');
     this.parentAllProgressEl = q('[data-testid="parent-reset-all-fill"]');
+    this.parentResetStatusEl = q('[data-testid="parent-reset-status"]');
 
+    this.skyPartnerEl = q('[data-testid="skyhop-partner-pill"]');
     this.skyScoreEl = q('[data-testid="skyhop-score"]');
+    this.skyStarsEl = q('[data-testid="skyhop-stars"]');
     this.skyWaveEl = q('[data-testid="skyhop-wave"]');
     this.skyComboEl = q('[data-testid="skyhop-combo"]');
     this.skyHighEl = q('[data-testid="skyhop-highscore"]');
@@ -1113,12 +1199,63 @@ export class CelestialUIController implements ICelestialUIController {
     this.hudPortraitCanvas?.addEventListener('click', () => {
       this.callbacks?.onNavigateScreen('style-studio', 'style');
     });
+    this.hudPortraitCanvas?.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter' || evt.key === ' ') {
+        evt.preventDefault();
+        this.callbacks?.onNavigateScreen('style-studio', 'style');
+      }
+    });
+    this.hudEconomyEl?.addEventListener('click', (evt) => {
+      const chip = (evt.target as HTMLElement | null)?.closest('[data-hud-nav]');
+      const target = chip?.getAttribute('data-hud-nav');
+      if (target === 'pokedex') this.callbacks?.onNavigateScreen('pokedex', 'pokedex');
+      else if (target === 'badges') this.callbacks?.onNavigateScreen('badges', 'badges');
+      else if (target === 'team') this.callbacks?.onNavigateScreen('pokedex', 'team');
+    });
     this.hudCompassEl?.addEventListener('click', () => {
       this.callbacks?.onNavigateScreen('pokedex', 'guide');
     });
     root.querySelector('[data-testid="nav-pokedex"]')?.addEventListener('click', () => {
       this.callbacks?.onNavigateScreen('pokedex', 'pokedex');
     });
+    root.querySelector('[data-testid="nav-badges"]')?.addEventListener('click', () => {
+      this.callbacks?.onNavigateScreen('badges', 'badges');
+    });
+
+    // V1 Parity (#9): Optional PWA beforeinstallprompt wiring (strictly hidden until triggered by browser)
+    const triggerInstall = async () => {
+      const promptEvt = this.deferredInstallPrompt;
+      if (!promptEvt) return;
+      try {
+        await promptEvt.prompt();
+        await promptEvt.userChoice;
+      } catch {
+        // Ignore user dismissal
+      }
+      this.deferredInstallPrompt = null;
+      setHidden(this.pwaTitleInstallBtn, true);
+      setHidden(this.pwaSettingInstallRow, true);
+    };
+    this.pwaTitleInstallBtn?.addEventListener('click', () => void triggerInstall());
+    root.querySelector('[data-testid="setting-install-btn"]')?.addEventListener('click', () => void triggerInstall());
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      this.beforeInstallHandler = (evt: Event) => {
+        evt.preventDefault();
+        this.deferredInstallPrompt = evt as unknown as {
+          prompt: () => Promise<void>;
+          userChoice?: Promise<{ outcome: string }>;
+        };
+        setHidden(this.pwaTitleInstallBtn, false);
+        setHidden(this.pwaSettingInstallRow, false);
+      };
+      this.appInstalledHandler = () => {
+        this.deferredInstallPrompt = null;
+        setHidden(this.pwaTitleInstallBtn, true);
+        setHidden(this.pwaSettingInstallRow, true);
+      };
+      window.addEventListener('beforeinstallprompt', this.beforeInstallHandler);
+      window.addEventListener('appinstalled', this.appInstalledHandler);
+    }
     root.querySelector('[data-testid="nav-briefing"]')?.addEventListener('click', () => {
       this.callbacks?.onOpenBriefingForBiome();
     });
@@ -1328,11 +1465,13 @@ export class CelestialUIController implements ICelestialUIController {
       this.callbacks?.onForceSave();
     });
 
-    // Parent Zone 3-second hold reset
+    // Parent Zone 3-second hold reset (V1 Parity #33: live status guidance + hold tick hook)
     const bindHoldReset = (sel: string, fillEl: HTMLElement | null, onConfirm: () => void) => {
       const btn = root.querySelector(sel) as HTMLButtonElement | null;
       if (!btn) return;
-      const cancelHold = () => {
+      let lastTickStep = -1;
+      const cancelHold = (notifyCancelled = false) => {
+        const wasHolding = this.holdTimerId !== null;
         if (this.holdTimerId !== null) {
           clearTimeout(this.holdTimerId);
           this.holdTimerId = null;
@@ -1342,28 +1481,44 @@ export class CelestialUIController implements ICelestialUIController {
           this.holdRafId = null;
         }
         if (fillEl) fillEl.style.setProperty('--hold-progress', '0');
+        if (notifyCancelled && wasHolding && this.parentResetStatusEl) {
+          this.parentResetStatusEl.textContent = 'Reset cancelled — hold for 3 full seconds to confirm.';
+        }
       };
       btn.addEventListener('pointerdown', () => {
-        cancelHold();
+        cancelHold(false);
         const startMs = Date.now();
+        lastTickStep = -1;
+        if (this.parentResetStatusEl) {
+          this.parentResetStatusEl.textContent = 'Holding... keep pressing for 3 full seconds!';
+        }
         const updateFill = () => {
           const pct = Math.min(1, (Date.now() - startMs) / 3000);
           if (fillEl) fillEl.style.setProperty('--hold-progress', String(pct));
+          const step = Math.floor(pct * 6);
+          if (step > lastTickStep) {
+            lastTickStep = step;
+            this.callbacks?.onParentHoldTick?.(pct);
+          }
           if (pct < 1 && this.holdTimerId !== null && typeof requestAnimationFrame === 'function') {
             this.holdRafId = requestAnimationFrame(updateFill);
           }
         };
         this.holdTimerId = setTimeout(() => {
-          cancelHold();
+          cancelHold(false);
+          if (this.parentResetStatusEl) {
+            this.parentResetStatusEl.textContent = 'Saved progress reset complete.';
+          }
           onConfirm();
         }, 3000);
         if (typeof requestAnimationFrame === 'function') {
           this.holdRafId = requestAnimationFrame(updateFill);
         }
       });
-      btn.addEventListener('pointerup', cancelHold);
-      btn.addEventListener('pointerleave', cancelHold);
-      btn.addEventListener('pointercancel', cancelHold);
+      btn.addEventListener('pointerup', () => cancelHold(true));
+      btn.addEventListener('pointerleave', () => cancelHold(true));
+      btn.addEventListener('pointercancel', () => cancelHold(false));
+      btn.addEventListener('contextmenu', (e) => e.preventDefault());
     };
 
     bindHoldReset('[data-testid="parent-reset-trainer"]', this.parentTrainerProgressEl, () => {
@@ -1423,6 +1578,10 @@ export class CelestialUIController implements ICelestialUIController {
       if (action === 'start') this.callbacks?.onStartSkyHop();
       else if (action === 'resume') this.callbacks?.onToggleSkyHopPause();
       else if (action === 'buy-charge') this.callbacks?.onBuySkyHopCharge();
+      else if (action === 'exit') {
+        this.skyPointerDown = false;
+        this.callbacks?.onCloseSkyHop();
+      }
     });
 
     // Dialogue overlay clicks
@@ -1470,6 +1629,28 @@ export class CelestialUIController implements ICelestialUIController {
     if (this.memo.get(key) === html) return;
     this.memo.set(key, html);
     el.innerHTML = html;
+  }
+
+  private setMemoAttr(key: string, el: Element | null, attr: string, value: string): void {
+    if (!el) return;
+    if (this.memo.get(key) === value) return;
+    this.memo.set(key, value);
+    el.setAttribute(attr, value);
+  }
+
+  private setMemoStyleProp(key: string, el: HTMLElement | null, prop: string, value: string): void {
+    if (!el) return;
+    if (this.memo.get(key) === value) return;
+    this.memo.set(key, value);
+    el.style.setProperty(prop, value);
+  }
+
+  private setMemoDisabled(key: string, btn: HTMLButtonElement | null, disabled: boolean): void {
+    if (!btn) return;
+    const val = disabled ? '1' : '0';
+    if (this.memo.get(key) === val) return;
+    this.memo.set(key, val);
+    btn.disabled = disabled;
   }
 
   sync(snapshot: UIRenderSnapshot): void {
@@ -1553,7 +1734,7 @@ export class CelestialUIController implements ICelestialUIController {
       setHidden(this.toastEl, true);
     }
 
-    // Animated Badge Unlock Toast
+    // Animated Badge Unlock Toast + Full-Screen Celebration Overlay (#8)
     if (snapshot.badgeToast) {
       const bt = snapshot.badgeToast;
       setHidden(this.badgeToastEl, false);
@@ -1570,10 +1751,24 @@ export class CelestialUIController implements ICelestialUIController {
           </div>
         `,
       );
+      if (bt.badgeId !== this.lastBadgeCelebratedId) {
+        this.lastBadgeCelebratedId = bt.badgeId;
+        this.triggerCelebration({
+          iconId: bt.iconId,
+          title: `BADGE UNLOCKED: ${bt.name}`,
+          subtitle: bt.description,
+          tone: 'badge',
+        });
+      }
     } else if (this.memo.get('badge-toast') !== '') {
       this.memo.set('badge-toast', '');
       this.badgeToastEl?.classList.remove('is-visible');
       setHidden(this.badgeToastEl, true);
+    }
+
+    if (snapshot.celebration && snapshot.celebration.seq > this.lastCelebrationSeq) {
+      this.lastCelebrationSeq = snapshot.celebration.seq;
+      this.triggerCelebration(snapshot.celebration);
     }
 
     const timeSec =
@@ -1582,6 +1777,17 @@ export class CelestialUIController implements ICelestialUIController {
     const charSheet = this.getSheetImage?.('characters') ?? null;
     const fallbackSheet = this.getSheetImage?.('fallbacks') ?? null;
     const profile = snapshot.profile ?? snapshot.save.profiles.violet;
+
+    // V1 Parity (#7): Dynamically update trainer outfit theme accent CSS variables on shell!
+    const look = getResolvedTrainerLook(profile.trainerId, profile.appearance);
+    const accentKey = `${look.accent}|${look.accentDark}`;
+    if (this.shellEl && this.memo.get('theme-accent') !== accentKey) {
+      this.memo.set('theme-accent', accentKey);
+      this.shellEl.style.setProperty('--sl-trainer-accent', look.accent);
+      this.shellEl.style.setProperty('--sl-trainer-accent-dark', look.accentDark);
+      this.shellEl.style.setProperty('--sl-trainer-accent-soft', `${look.accent}33`);
+      this.shellEl.style.setProperty('--sl-trainer-accent-border', `${look.accent}99`);
+    }
 
     if (screen === 'title') {
       this.syncTitle(snapshot, charSheet, fallbackSheet, timeSec);
@@ -1639,7 +1845,7 @@ export class CelestialUIController implements ICelestialUIController {
       metaEl: HTMLElement | null,
       statsEl: HTMLElement | null,
       key: string,
-      btnSel: string,
+      ctaSpan: HTMLElement | null,
       tagline: string,
     ) => {
       const name = getCleanTrainerName(p, p.trainerId);
@@ -1667,20 +1873,16 @@ export class CelestialUIController implements ICelestialUIController {
         </span>
       `;
       this.setMemoHtml(`${key}-stats`, statsEl, statsHtml);
-
-      const ctaBtn = this.root?.querySelector(btnSel);
-      const labelSpan = ctaBtn?.querySelector('span');
-      if (labelSpan) {
-        labelSpan.textContent = hasStarted ? 'Continue Adventure' : 'New Adventure';
-      }
+      this.setMemoText(`${key}-cta`, ctaSpan, hasStarted ? 'Continue Adventure' : 'New Adventure');
     };
 
     const v = snapshot.save.profiles.violet;
     const o = snapshot.save.profiles.ozias;
-    renderMeta(v, this.violetMetaEl, this.violetStatsEl, 'title-v-meta', '[data-testid="title-play-violet"]', 'Starlight Mystic & Explorer');
-    renderMeta(o, this.oziasMetaEl, this.oziasStatsEl, 'title-o-meta', '[data-testid="title-play-ozias"]', 'Thunder Champion & Ranger');
+    renderMeta(v, this.violetMetaEl, this.violetStatsEl, 'title-v-meta', this.titlePlayVioletSpan, 'Starlight Mystic & Explorer');
+    renderMeta(o, this.oziasMetaEl, this.oziasStatsEl, 'title-o-meta', this.titlePlayOziasSpan, 'Thunder Champion & Ranger');
 
-    const canvasStamp = [
+    // Static portraits redraw ONLY when appearance or character sheet changes
+    const portraitStamp = [
       v.appearance.styleId,
       v.appearance.accessory,
       v.appearance.cape,
@@ -1689,29 +1891,45 @@ export class CelestialUIController implements ICelestialUIController {
       o.appearance.accessory,
       o.appearance.cape,
       o.appearance.aura,
-      v.team[0]?.speciesId ?? 0,
-      o.team[0]?.speciesId ?? 0,
       Boolean(charSheet),
-      Boolean(fallbackSheet),
-      snapshot.spriteCacheVersion,
     ].join('|');
 
-    if (this.memo.get('title-canvases') !== canvasStamp || timeSec - this.lastTitleRenderTs >= 0.12) {
-      this.memo.set('title-canvases', canvasStamp);
-      this.lastTitleRenderTs = timeSec;
+    if (this.memo.get('title-portraits') !== portraitStamp) {
+      this.memo.set('title-portraits', portraitStamp);
       if (this.violetPortraitCanvas) {
         renderTrainerPortraitCanvas(this.violetPortraitCanvas, 'violet', charSheet, this.manifest, v.appearance);
       }
       if (this.oziasPortraitCanvas) {
         renderTrainerPortraitCanvas(this.oziasPortraitCanvas, 'ozias', charSheet, this.manifest, o.appearance);
       }
+    }
+
+    // Lead partner canvases only animate when decoded multi-frame GIFs exist
+    const vFrames = v.team[0] ? this.getCachedFrames?.(v.team[0].speciesId, false, v.team[0].isShiny) ?? null : null;
+    const oFrames = o.team[0] ? this.getCachedFrames?.(o.team[0].speciesId, false, o.team[0].isShiny) ?? null : null;
+    const anyAnimated = (vFrames?.frames.length ?? 0) > 1 || (oFrames?.frames.length ?? 0) > 1;
+    const leadStamp = [
+      v.team[0]?.speciesId ?? 0,
+      v.team[0]?.isShiny ?? false,
+      o.team[0]?.speciesId ?? 0,
+      o.team[0]?.isShiny ?? false,
+      Boolean(fallbackSheet),
+      snapshot.spriteCacheVersion,
+    ].join('|');
+
+    if (
+      this.memo.get('title-leads') !== leadStamp ||
+      (anyAnimated && timeSec - this.lastTitleRenderTs >= 0.14)
+    ) {
+      this.memo.set('title-leads', leadStamp);
+      this.lastTitleRenderTs = timeSec;
       if (this.violetLeadCanvas) {
         setHidden(this.violetLeadCanvas, !v.team[0]);
         if (v.team[0]) {
           renderPokemonPreviewCanvas(
             this.violetLeadCanvas,
             v.team[0].speciesId,
-            this.getCachedFrames?.(v.team[0].speciesId, false, v.team[0].isShiny) ?? null,
+            vFrames,
             fallbackSheet,
             this.manifest,
             v.team[0].isShiny,
@@ -1725,7 +1943,7 @@ export class CelestialUIController implements ICelestialUIController {
           renderPokemonPreviewCanvas(
             this.oziasLeadCanvas,
             o.team[0].speciesId,
-            this.getCachedFrames?.(o.team[0].speciesId, false, o.team[0].isShiny) ?? null,
+            oFrames,
             fallbackSheet,
             this.manifest,
             o.team[0].isShiny,
@@ -1745,11 +1963,18 @@ export class CelestialUIController implements ICelestialUIController {
   ): void {
     const ow = snapshot.overworld;
     const trainerName = getCleanTrainerName(profile, profile.trainerId);
-    const lv = getPlayerLevel(profile);
+    const prog = getPlayerProgression(profile);
+    const lv = prog.level;
     const bag = profile.bag;
 
     this.setMemoText('hud-name', this.hudTrainerNameEl, trainerName);
     this.setMemoText('hud-lv', this.hudTrainerLvEl, `Lv.${lv}`);
+    if (this.hudTrainerLvEl) {
+      const xpTip = prog.isMaxLevel
+        ? `Player Level ${prog.level} (Max • ${prog.xp} XP)`
+        : `Player Level ${prog.level} (${prog.xpIntoLevel}/${prog.xpToNext} XP to Lv.${prog.level + 1})`;
+      this.setMemoAttr('hud-lv-tip', this.hudTrainerLvEl, 'title', xpTip);
+    }
     this.setMemoText('hud-biome', this.hudBiomeNameEl, sanitizeNoEmoji(ow.currentBiomeName));
 
     // Lead Partner mini-sprite + live HP bar on top-left Adventurer Crest
@@ -1761,19 +1986,21 @@ export class CelestialUIController implements ICelestialUIController {
       const hpRatio = Math.max(0, Math.min(1, lead.hp / Math.max(1, maxHp)));
       this.setMemoText('hud-lead', this.hudLeadLabelEl, `${leadName} Lv.${lead.level}`);
       if (this.hudLeadHpBarEl) {
-        this.hudLeadHpBarEl.style.setProperty('--fill', String(hpRatio));
-        this.hudLeadHpBarEl.setAttribute('data-low', String(hpRatio <= 0.25));
-        this.hudLeadHpBarEl.setAttribute('data-mid', String(hpRatio > 0.25 && hpRatio <= 0.52));
+        this.setMemoStyleProp('hud-lead-fill', this.hudLeadHpBarEl, '--fill', hpRatio.toFixed(4));
+        this.setMemoAttr('hud-lead-low', this.hudLeadHpBarEl, 'data-low', String(hpRatio <= 0.25));
+        this.setMemoAttr('hud-lead-mid', this.hudLeadHpBarEl, 'data-mid', String(hpRatio > 0.25 && hpRatio <= 0.52));
       }
       if (this.hudLeadSpriteCanvas) {
         setHidden(this.hudLeadSpriteCanvas, false);
-        const leadStamp = `${lead.speciesId}|${lead.isShiny}|${snapshot.spriteCacheVersion}|${Math.floor(timeSec * 6)}`;
+        const leadFrames = this.getCachedFrames?.(lead.speciesId, false, lead.isShiny) ?? null;
+        const animTick = (leadFrames?.frames.length ?? 0) > 1 ? Math.floor(timeSec * 6) : 0;
+        const leadStamp = `${lead.speciesId}|${lead.isShiny}|${snapshot.spriteCacheVersion}|${animTick}`;
         if (this.memo.get('hud-lead-sprite') !== leadStamp) {
           this.memo.set('hud-lead-sprite', leadStamp);
           renderPokemonPreviewCanvas(
             this.hudLeadSpriteCanvas,
             lead.speciesId,
-            this.getCachedFrames?.(lead.speciesId, false, lead.isShiny) ?? null,
+            leadFrames,
             fallbackSheet,
             this.manifest,
             lead.isShiny,
@@ -1784,7 +2011,7 @@ export class CelestialUIController implements ICelestialUIController {
     } else {
       setHidden(this.hudLeadSpriteCanvas, true);
       this.setMemoText('hud-lead', this.hudLeadLabelEl, 'Visit Professor Willow');
-      this.hudLeadHpBarEl?.style.setProperty('--fill', '1');
+      this.setMemoStyleProp('hud-lead-fill', this.hudLeadHpBarEl, '--fill', '1');
     }
 
     // Live portrait sync including accessory, cape & aura
@@ -1810,15 +2037,54 @@ export class CelestialUIController implements ICelestialUIController {
     const caughtCount = Object.values(profile.pokedex.caught).filter((n) => Number(n) > 0).length;
     const totalBalls = (bag.greatBalls ?? 0) + (bag.starBalls ?? 0);
     const econHtml = `
-      <span class="sl-hud-chip">${createIconSvg('icon-pokedex', 'sl-icon-sm')} ${caughtCount}/${TOTAL_SPECIES_COUNT}</span>
-      <span class="sl-hud-chip">${createIconSvg('icon-badges', 'sl-icon-sm')} ${profile.badges.length}/28</span>
-      <span class="sl-hud-chip">${createIconSvg('icon-star-shard', 'sl-icon-sm')} ${bag.starShards}</span>
+      <span class="sl-hud-chip sl-hud-chip-link" data-hud-nav="pokedex" title="Open Pokédex">${createIconSvg('icon-pokedex', 'sl-icon-sm')} ${caughtCount}/${TOTAL_SPECIES_COUNT}</span>
+      <span class="sl-hud-chip sl-hud-chip-link" data-hud-nav="badges" title="View 28 Island Badges">${createIconSvg('icon-badges', 'sl-icon-sm')} ${profile.badges.length}/28</span>
+      <span class="sl-hud-chip sl-hud-chip-link" data-hud-nav="team" title="Star Shards (Open Team & Box)">${createIconSvg('icon-star-shard', 'sl-icon-sm')} ${bag.starShards}</span>
       <span class="sl-hud-chip">${createIconSvg('icon-potion', 'sl-icon-sm')} ${bag.potions}</span>
       <span class="sl-hud-chip">${createIconSvg('icon-starball', 'sl-icon-sm')} ${totalBalls}</span>
     `;
     this.setMemoHtml('hud-econ', this.hudEconomyEl, econHtml);
 
-    // Compass Pill (crisp rotated SVG arrow; helpful exploration summary when target is null)
+    if (this.navBadgesBtn) {
+      this.setMemoHtml(
+        'dock-badges',
+        this.navBadgesBtn,
+        `${createIconSvg('icon-badges', 'sl-icon-sm')}<span class="sl-dock-label sl-dock-label-wide sl-num">${profile.badges.length}/28</span>`,
+      );
+    }
+
+    // Compass Pill (V1 Parity #3: second sub-line with biome discovery stats + threat tone tinting!)
+    const curBiomeScaled = getBiomeScaledRange(ow.currentBiomeId, profile);
+    const curBiomeIsSafe = ow.currentBiomeId === 'village';
+    let biomeSubLine = '';
+    try {
+      const bStats = getBiomeDiscoveryStats(profile, ow.currentBiomeId) as {
+        caught?: number;
+        totalSpecies?: number;
+        chestsOpened?: number;
+        chestsTotal?: number;
+        shrineCleared?: boolean;
+      } | null;
+      const parts: string[] = [];
+      if (bStats && (bStats.totalSpecies ?? 0) > 0) {
+        parts.push(`Dex ${bStats.caught ?? 0}/${bStats.totalSpecies}`);
+      } else {
+        parts.push('Safe Sanctuary');
+      }
+      if (!curBiomeIsSafe) {
+        parts.push(`Lv.${curBiomeScaled.minLv}-${curBiomeScaled.maxLv} ${curBiomeScaled.threatLabel}`);
+      }
+      if (bStats && (bStats.chestsTotal ?? 0) > 0) {
+        parts.push(`Chests ${bStats.chestsOpened ?? 0}/${bStats.chestsTotal}`);
+      }
+      if (ow.currentBiomeId !== 'village') {
+        parts.push(bStats?.shrineCleared ? 'Shrine Cleared' : 'Shrine Open');
+      }
+      biomeSubLine = parts.join(' • ');
+    } catch {
+      biomeSubLine = `Shrines ${profile.shrinesCleared.length}/20`;
+    }
+    this.setMemoAttr('hud-compass-threat', this.hudCompassEl, 'data-threat', curBiomeIsSafe ? 'safe' : curBiomeScaled.threatTone);
     if (ow.compassTarget) {
       const deg = Math.round((ow.compassTarget.angleRad * 180) / Math.PI);
       this.setMemoHtml(
@@ -1828,8 +2094,13 @@ export class CelestialUIController implements ICelestialUIController {
           <span class="sl-compass-dial" aria-hidden="true">
             <span class="sl-compass-arrow" style="transform:rotate(${deg}deg);">${compassNeedleSvg()}</span>
           </span>
-          <span class="sl-compass-label">${safeText(ow.compassTarget.label)}</span>
-          <span class="sl-compass-dist sl-num">${ow.compassTarget.distanceTiles}m</span>
+          <span class="sl-compass-copy">
+            <span class="sl-compass-top-line">
+              <span class="sl-compass-label">${safeText(ow.compassTarget.label)}</span>
+              <span class="sl-compass-dist sl-num">${ow.compassTarget.distanceTiles}m</span>
+            </span>
+            <span class="sl-compass-sub sl-num">${safeText(biomeSubLine)}</span>
+          </span>
         `,
       );
     } else {
@@ -1839,12 +2110,15 @@ export class CelestialUIController implements ICelestialUIController {
         this.hudCompassEl,
         `
           <span class="sl-compass-dial" aria-hidden="true">${createIconSvg('icon-compass', 'sl-icon-sm')}</span>
-          <span class="sl-compass-label">Island Guide • Shrines ${shrinesCleared}/20</span>
+          <span class="sl-compass-copy">
+            <span class="sl-compass-label">Island Guide • Shrines ${shrinesCleared}/20</span>
+            <span class="sl-compass-sub sl-num">${safeText(biomeSubLine)}</span>
+          </span>
         `,
       );
     }
 
-    // Area Transition Scroll Banner: ONLY display when entering a DIFFERENT biome (never duplicates initial spawn!)
+    // Area Transition Scroll Banner (V1 Parity #5: includes level range & threat tag; CLS = 0)
     if (this.lastOverworldBiomeId === null) {
       this.lastOverworldBiomeId = ow.currentBiomeId;
       this.biomeBannerEl?.classList.remove('is-visible');
@@ -1858,13 +2132,16 @@ export class CelestialUIController implements ICelestialUIController {
         this.biomeBannerEl.classList.toggle('is-visible', showBanner);
         if (showBanner) {
           const vp = getBiomeVisualProfile(ow.currentBiomeId);
+          const lvTag = curBiomeIsSafe
+            ? 'Safe Zone'
+            : `Lv.${curBiomeScaled.minLv}-${curBiomeScaled.maxLv} • ${curBiomeScaled.threatLabel}`;
           this.setMemoHtml(
             'biome-banner',
             this.biomeBannerEl,
             `
               ${createIconSvg(typeToIconId(vp.elementalType), 'sl-icon-md')}
               <div>
-                <div class="sl-biome-name">${safeText(vp.displayName)}</div>
+                <div class="sl-biome-name">${safeText(vp.displayName)} <span class="sl-pill ${curBiomeIsSafe ? 'sl-pill-emerald' : 'sl-pill-gold'} sl-num" style="margin-left:6px; vertical-align:middle;">${safeText(lvTag)}</span></div>
                 <div class="sl-biome-sub">${safeText(vp.subtitle)}</div>
               </div>
             `,
@@ -1887,6 +2164,45 @@ export class CelestialUIController implements ICelestialUIController {
       }
     }
 
+    // V1 Parity: Highlight Menu button when any Team/Box Pokémon has a ready Evolution!
+    if (this.navMenuBtn) {
+      const hasReadyEvo = [...profile.team, ...profile.box].some((m) =>
+        getEvolutionRules(m.speciesId).some(
+          (r) => (r.minLevel && m.level >= r.minLevel) || (r.item && Number(bag.gems?.[r.item] ?? 0) > 0),
+        ),
+      );
+      const evoKey = String(hasReadyEvo);
+      if (this.memo.get('dock-evo-ready') !== evoKey) {
+        this.memo.set('dock-evo-ready', evoKey);
+        this.navMenuBtn.classList.toggle('has-evo-ready', hasReadyEvo);
+        this.navMenuBtn.title = hasReadyEvo
+          ? 'Open Pokédex & Team [P] — Evolution Ready!'
+          : 'Open Pokédex & Team [P]';
+      }
+    }
+
+    // V1 Parity (#2): Live Farm Zone level range on Farm button label & tooltip
+    if (this.warpFarmBtn) {
+      const farmKey = `${profile.playerLevel}|${profile.team.length}`;
+      if (this.memo.get('dock-farm-tip') !== farmKey) {
+        this.memo.set('dock-farm-tip', farmKey);
+        const rec = resolveRecommendedFarmingZone(profile) as {
+          biomeId?: string;
+          minLv?: number;
+          maxLv?: number;
+        } | null;
+        const minL = rec?.minLv ?? 2;
+        const maxL = rec?.maxLv ?? 7;
+        const bName = rec?.biomeId ? getBiomeVisualProfile(rec.biomeId as never).displayName : 'Whispering Forest';
+        this.warpFarmBtn.title = `Warp to ${bName} (Lv.${minL}-${maxL}) [T]`;
+        this.setMemoHtml(
+          'dock-farm-lbl',
+          this.warpFarmBtn,
+          `${createIconSvg('icon-warp-farm', 'sl-icon-sm')}<span class="sl-dock-label">Farm <span class="sl-dock-label-wide sl-num">Lv.${minL}-${maxL}</span></span>`,
+        );
+      }
+    }
+
     // Audio icon on dock
     const muted = snapshot.save.settings.audioMuted;
     this.setMemoHtml(
@@ -1894,34 +2210,78 @@ export class CelestialUIController implements ICelestialUIController {
       this.audioToggleBtn,
       createIconSvg(muted ? 'icon-audio-off' : 'icon-audio-on', 'sl-icon-sm'),
     );
-    this.audioToggleBtn?.setAttribute('aria-pressed', String(muted));
+    this.setMemoAttr('dock-audio-pressed', this.audioToggleBtn, 'aria-pressed', String(muted));
 
-    // Contextual Interact Pill (strictly hidden while JRPG dialogue modal is open!)
+    // Contextual Interact Pill (V1 Parity #4: Shrine/Rival target level & readiness tier badge/color!)
     if (ow.nearbyInteraction && !snapshot.dialogue) {
       const inter = ow.nearbyInteraction;
       setHidden(this.interactPillBtn, false);
+      let readinessTier = '';
+      let readinessChip = '';
+      if (inter.kind === 'shrine' && SHRINES[inter.id]) {
+        const sh = SHRINES[inter.id];
+        const guard = getScaledShrineGuard(sh, profile) as { level?: number; speciesId?: number } | null;
+        const gLv = guard?.level ?? sh.level;
+        const gType = getSpeciesEntry(guard?.speciesId ?? sh.guardianId).type;
+        const r = assessEncounterReadiness(profile, {
+          kind: 'shrine',
+          targetLv: gLv,
+          enemyTypes: [gType],
+          label: sh.name,
+        }) as { tier?: string; badgeText?: string } | null;
+        if (r?.tier) {
+          readinessTier = r.tier;
+          readinessChip = `<span class="sl-pill sl-readiness-pill sl-num" data-tier="${safeText(r.tier)}">Lv.${gLv} • ${safeText(stripEmojis(r.badgeText ?? r.tier))}</span>`;
+        }
+      } else if (inter.kind === 'rival' && RIVAL_TRAINERS[inter.id]) {
+        const rv = RIVAL_TRAINERS[inter.id];
+        const scaledParty = getScaledRivalParty(rv, profile) as Array<{ level: number; speciesId: number }> | null;
+        const maxLv =
+          scaledParty && scaledParty.length > 0
+            ? Math.max(...scaledParty.map((m) => m.level))
+            : Math.max(...(rv.party?.map((m) => m.level) ?? [5]));
+        const types = Array.from(
+          new Set((scaledParty ?? rv.party ?? []).map((m) => getSpeciesEntry(m.speciesId).type)),
+        );
+        const r = assessEncounterReadiness(profile, {
+          kind: 'rival',
+          targetLv: maxLv,
+          enemyTypes: types,
+          label: rv.name,
+        }) as { tier?: string; badgeText?: string } | null;
+        if (r?.tier) {
+          readinessTier = r.tier;
+          readinessChip = `<span class="sl-pill sl-readiness-pill sl-num" data-tier="${safeText(r.tier)}">Lv.${maxLv} • ${safeText(stripEmojis(r.badgeText ?? r.tier))}</span>`;
+        }
+      }
+      this.setMemoAttr('interact-readiness', this.interactPillBtn, 'data-readiness', readinessTier);
       this.setMemoHtml(
         'interact-pill',
         this.interactPillBtn,
         `
           ${createIconSvg(INTERACT_ICON_MAP[inter.kind] ?? 'icon-waypoint', 'sl-icon-sm')}
           <span>${safeText(inter.actionVerb)}: ${safeText(inter.label)}</span>
+          ${readinessChip}
         `,
       );
     } else if (this.memo.get('interact-pill') !== '' || (this.interactPillBtn && !this.interactPillBtn.hidden)) {
       this.memo.set('interact-pill', '');
+      this.setMemoAttr('interact-readiness', this.interactPillBtn, 'data-readiness', '');
       setHidden(this.interactPillBtn, true);
     }
 
-    // Touch D-Pad mode
+    // Touch D-Pad mode (cached matchMedia query to avoid 11x/sec style recalcs)
     if (this.dpadContainer) {
       const mode = snapshot.save.settings.showTouchPad;
-      const isCoarse =
-        typeof window !== 'undefined' &&
-        typeof window.matchMedia === 'function' &&
-        window.matchMedia('(pointer: coarse)').matches;
-      const active = mode === 'show' || (mode === 'auto' && isCoarse);
-      this.dpadContainer.setAttribute('data-touch-active', String(active));
+      if (this.cachedCoarsePointer === null) {
+        this.cachedCoarsePointer = Boolean(
+          typeof window !== 'undefined' &&
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(pointer: coarse)').matches,
+        );
+      }
+      const active = mode === 'show' || (mode === 'auto' && this.cachedCoarsePointer);
+      this.setMemoAttr('dpad-active', this.dpadContainer, 'data-touch-active', String(active));
     }
   }
 
@@ -1949,7 +2309,7 @@ export class CelestialUIController implements ICelestialUIController {
     };
     const isEnemyCaught = Number(snapshot.profile?.pokedex?.caught?.[e.speciesId] ?? 0) > 0;
 
-    this.battleDeckShellEl?.setAttribute('data-busy', String(!commandReady));
+    this.setMemoAttr('b-deck-busy', this.battleDeckShellEl, 'data-busy', String(!commandReady));
     if (this.battleTurnBadgeEl) {
       const label = battle.activeActionLabel ? sanitizeNoEmoji(battle.activeActionLabel) : '';
       setHidden(this.battleTurnBadgeEl, !label);
@@ -1959,15 +2319,15 @@ export class CelestialUIController implements ICelestialUIController {
 
     // Enemy Crest Plate (Top-Left)
     if (this.enemyCardEl) {
-      if (this.enemyCardEl.getAttribute('data-type') !== e.type) {
-        this.enemyCardEl.setAttribute('data-type', e.type);
-      }
-      this.enemyCardEl.setAttribute('data-braced', String(battle.enemy.bracedFlash > 0.05));
+      this.setMemoAttr('b-e-type', this.enemyCardEl, 'data-type', e.type);
+      this.setMemoAttr('b-e-braced', this.enemyCardEl, 'data-braced', String(battle.enemy.bracedFlash > 0.05));
     }
+    const lvGap = e.level - p.level;
+    const highThreat = lvGap >= 4;
     this.setMemoHtml(
       'b-e-name',
       this.enemyNameEl,
-      `<span class="sl-combatant-title">${safeText(sanitizeNoEmoji(e.displayName))}</span> <span class="sl-combatant-lv sl-num">Lv.${e.level}</span>`,
+      `<span class="sl-combatant-title">${safeText(sanitizeNoEmoji(e.displayName))}</span> <span class="sl-combatant-lv sl-num${highThreat ? ' is-high-threat' : ''}"${highThreat ? ` title="Strong foe (+${lvGap} Lv above active partner)"` : ''}>Lv.${e.level}</span>`,
     );
     const trait = getSanitizedTraitLabel(e.encounterTrait);
     const tierText =
@@ -1986,7 +2346,8 @@ export class CelestialUIController implements ICelestialUIController {
         <span>${safeText(e.type.toUpperCase())}</span>
       </span>
       <span class="sl-pill sl-tier-pill">${safeText(tierText)}</span>
-      ${isEnemyCaught ? `<span class="sl-pill sl-pill-emerald" data-testid="battle-enemy-caught">${createIconSvg('icon-pokeball', 'sl-icon-sm')} IN DEX</span>` : ''}
+      ${e.upgradeTier > 0 ? `<span class="sl-pill sl-pill-gold sl-num" title="Star Rank ${e.upgradeTier}">${createIconSvg('icon-star-rank', 'sl-icon-sm')} ${e.upgradeTier}</span>` : ''}
+      ${isEnemyCaught && battle.canCapture ? `<span class="sl-pill sl-pill-emerald" data-testid="battle-enemy-caught">${createIconSvg('icon-pokeball', 'sl-icon-sm')} IN DEX</span>` : ''}
       ${e.isShiny ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-sparkle', 'sl-icon-sm')} Shiny</span>` : ''}
       ${e.isElite ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-crown', 'sl-icon-sm')} Elite</span>` : ''}
     `;
@@ -1997,11 +2358,11 @@ export class CelestialUIController implements ICelestialUIController {
     const eHpRatio = Math.max(0, Math.min(1, e.hp / eMaxHp));
     const eTrailRatio = Math.max(eHpRatio, Math.min(1, eDisplayedHp / eMaxHp));
     if (this.enemyHpBarEl) {
-      this.enemyHpBarEl.style.setProperty('--fill', String(eHpRatio));
-      this.enemyHpBarEl.setAttribute('data-low', String(eHpRatio <= 0.25));
-      this.enemyHpBarEl.setAttribute('data-mid', String(eHpRatio > 0.25 && eHpRatio <= 0.52));
+      this.setMemoStyleProp('b-e-hp-fill', this.enemyHpBarEl, '--fill', eHpRatio.toFixed(4));
+      this.setMemoAttr('b-e-hp-low', this.enemyHpBarEl, 'data-low', String(eHpRatio <= 0.25));
+      this.setMemoAttr('b-e-hp-mid', this.enemyHpBarEl, 'data-mid', String(eHpRatio > 0.25 && eHpRatio <= 0.52));
     }
-    this.enemyHpTrailEl?.style.setProperty('--trail', String(eTrailRatio));
+    this.setMemoStyleProp('b-e-hp-trail', this.enemyHpTrailEl, '--trail', eTrailRatio.toFixed(4));
     this.setMemoText('b-e-hp', this.enemyHpValEl, `${Math.max(0, Math.round(eDisplayedHp))}/${e.maxHp}`);
 
     const eComposure = resolveComposureState(
@@ -2023,25 +2384,25 @@ export class CelestialUIController implements ICelestialUIController {
     `;
     this.setMemoHtml('b-e-buffs', this.enemyBuffsEl, eBuffHtml);
 
-    // Rival Enemy Party Poké Ball Pips (powered by #36 enemyPartyPips!)
+    // Rival Enemy Party Poké Ball Pips (zero inline filter: drop-shadow!)
     const pips = battle.enemyPartyPips;
     if (Array.isArray(pips) && pips.length > 1) {
       const dots = pips
         .map((pip) => {
           const title = `${sanitizeNoEmoji(pip.name)} Lv.${pip.level}${pip.fainted ? ' (Fainted)' : pip.active ? ' (Active)' : ''}`;
-          const style = pip.fainted
-            ? 'opacity:0.24; filter:grayscale(1);'
+          const cls = pip.fainted
+            ? 'sl-rival-pip is-fainted'
             : pip.active
-              ? 'color:var(--sl-brass-bright); filter:drop-shadow(0 0 4px rgba(255,230,153,0.75));'
-              : 'opacity:0.9;';
-          return `<span style="${style}" title="${safeText(title)}" data-pip-fainted="${pip.fainted}" data-pip-active="${pip.active}">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
+              ? 'sl-rival-pip is-active'
+              : 'sl-rival-pip';
+          return `<span class="${cls}" title="${safeText(title)}" data-pip-fainted="${pip.fainted}" data-pip-active="${pip.active}">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
         })
         .join('');
       this.setMemoHtml('b-e-dots', this.enemyRivalDotsEl, dots);
     } else if (battle.isTrainerBattle && battle.rivalTotalMons > 1) {
       const dots = Array.from({ length: battle.rivalTotalMons }, (_, i) => {
         const alive = i < battle.rivalRemainingMons;
-        return `<span style="opacity:${alive ? 1 : 0.24};">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
+        return `<span class="sl-rival-pip${alive ? '' : ' is-fainted'}">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
       }).join('');
       this.setMemoHtml('b-e-dots', this.enemyRivalDotsEl, dots);
     } else {
@@ -2063,10 +2424,8 @@ export class CelestialUIController implements ICelestialUIController {
 
     // Player Crest Plate (Bottom-Right above console, clear of Player Sprite)
     if (this.playerCardEl) {
-      if (this.playerCardEl.getAttribute('data-type') !== p.type) {
-        this.playerCardEl.setAttribute('data-type', p.type);
-      }
-      this.playerCardEl.setAttribute('data-braced', String(battle.player.bracedFlash > 0.05));
+      this.setMemoAttr('b-p-type', this.playerCardEl, 'data-type', p.type);
+      this.setMemoAttr('b-p-braced', this.playerCardEl, 'data-braced', String(battle.player.bracedFlash > 0.05));
     }
     this.setMemoHtml(
       'b-p-name',
@@ -2088,17 +2447,17 @@ export class CelestialUIController implements ICelestialUIController {
     const pHpRatio = Math.max(0, Math.min(1, p.hp / pMaxHp));
     const pTrailRatio = Math.max(pHpRatio, Math.min(1, pDisplayedHp / pMaxHp));
     if (this.playerHpBarEl) {
-      this.playerHpBarEl.style.setProperty('--fill', String(pHpRatio));
-      this.playerHpBarEl.setAttribute('data-low', String(pHpRatio <= 0.25));
-      this.playerHpBarEl.setAttribute('data-mid', String(pHpRatio > 0.25 && pHpRatio <= 0.52));
+      this.setMemoStyleProp('b-p-hp-fill', this.playerHpBarEl, '--fill', pHpRatio.toFixed(4));
+      this.setMemoAttr('b-p-hp-low', this.playerHpBarEl, 'data-low', String(pHpRatio <= 0.25));
+      this.setMemoAttr('b-p-hp-mid', this.playerHpBarEl, 'data-mid', String(pHpRatio > 0.25 && pHpRatio <= 0.52));
     }
-    this.playerHpTrailEl?.style.setProperty('--trail', String(pTrailRatio));
+    this.setMemoStyleProp('b-p-hp-trail', this.playerHpTrailEl, '--trail', pTrailRatio.toFixed(4));
     this.setMemoText('b-p-hp', this.playerHpValEl, `${Math.max(0, Math.round(pDisplayedHp))}/${p.maxHp}`);
 
     const pXpRatio = Number.isFinite(battle.player.displayedXpRatio)
       ? Math.max(0, Math.min(1, battle.player.displayedXpRatio))
       : Math.max(0, Math.min(1, p.xp / Math.max(1, p.xpToNext)));
-    this.playerXpBarEl?.style.setProperty('--fill', String(pXpRatio));
+    this.setMemoStyleProp('b-p-xp-fill', this.playerXpBarEl, '--fill', pXpRatio.toFixed(4));
 
     const pComposure = resolveComposureState(
       'player',
@@ -2196,8 +2555,10 @@ export class CelestialUIController implements ICelestialUIController {
         const mult = getTypeEffectiveness(m.type, e.type);
         if (mult === 0) {
           effTagHtml = `<span class="sl-eff-tag sl-eff-immune">0x IMMUNE</span>`;
-        } else if (mult > 1) {
+        } else if (mult >= 2) {
           effTagHtml = `<span class="sl-eff-tag sl-eff-super">${mult}x SUPER</span>`;
+        } else if (mult > 1) {
+          effTagHtml = `<span class="sl-eff-tag sl-eff-boost">${mult}x BOOST</span>`;
         } else if (mult < 1) {
           effTagHtml = `<span class="sl-eff-tag sl-eff-resist">${mult}x RESIST</span>`;
         }
@@ -2206,15 +2567,17 @@ export class CelestialUIController implements ICelestialUIController {
         }
       } else if (m.category === 'heal') {
         catTag = 'HEAL';
-        pwrText = 'RECOVER';
-        effTagHtml = `<span class="sl-eff-tag sl-eff-support">RESTORE</span>`;
+        pwrText = 'HEAL 38%';
+        effTagHtml = `<span class="sl-eff-tag sl-eff-support">RECOVER</span>`;
       } else if (m.category === 'shield') {
         catTag = 'SHLD';
-        pwrText = 'GUARD';
-        effTagHtml = `<span class="sl-eff-tag sl-eff-support">BARRIER</span>`;
+        pwrText = 'DEF +35%';
+        effTagHtml = `<span class="sl-eff-tag sl-eff-support">GUARD</span>`;
       } else {
+        const rawM = m as unknown as { buffStat?: string; buffStages?: number };
+        const statShort = ({ atk: 'ATK', def: 'DEF', spd: 'SPD' } as Record<string, string>)[rawM.buffStat ?? 'atk'] ?? 'STAT';
         catTag = 'BUFF';
-        pwrText = 'BOOST';
+        pwrText = `${statShort} +${rawM.buffStages ?? 1}`;
         effTagHtml = `<span class="sl-eff-tag sl-eff-support">STAT UP</span>`;
       }
 
@@ -2242,10 +2605,33 @@ export class CelestialUIController implements ICelestialUIController {
       );
     });
 
-    // Bag & Action Strip
-    if (this.ballPokeBtn) this.ballPokeBtn.disabled = !commandReady || !battle.canCapture;
+    // Bag & Action Strip (strictly memoized disabled/attr mutations + V1 Shrine/Rival capture labels)
+    if (this.ballPokeBtn) {
+      this.setMemoDisabled('b-poke-dis', this.ballPokeBtn, !commandReady || !battle.canCapture);
+      const ballLabel = !battle.canCapture
+        ? battle.isTrainerBattle
+          ? 'Rival Team'
+          : 'Guardian'
+        : 'Poké Ball';
+      const ballIcon: IconId = !battle.canCapture
+        ? battle.isTrainerBattle
+          ? 'icon-rival'
+          : 'icon-shield'
+        : 'icon-pokeball';
+      const ballTitle = !battle.canCapture
+        ? battle.isTrainerBattle
+          ? "Cannot catch another trainer's Pokémon"
+          : 'Shrine Guardians cannot be caught'
+        : 'Throw a Poké Ball [B]';
+      this.setMemoAttr('b-poke-tip', this.ballPokeBtn, 'title', ballTitle);
+      this.setMemoHtml(
+        'b-poke',
+        this.ballPokeBtn,
+        `${createIconSvg(ballIcon, 'sl-icon-sm')} <span>${ballLabel}</span>${battle.canCapture ? ' <kbd class="sl-kbd" aria-hidden="true">B</kbd>' : ''}`,
+      );
+    }
     if (this.ballGreatBtn) {
-      this.ballGreatBtn.disabled = !commandReady || !battle.canCapture || bag.greatBalls <= 0;
+      this.setMemoDisabled('b-great-dis', this.ballGreatBtn, !commandReady || !battle.canCapture || bag.greatBalls <= 0);
       this.setMemoHtml(
         'b-great',
         this.ballGreatBtn,
@@ -2253,7 +2639,7 @@ export class CelestialUIController implements ICelestialUIController {
       );
     }
     if (this.ballStarBtn) {
-      this.ballStarBtn.disabled = !commandReady || !battle.canCapture || bag.starBalls <= 0;
+      this.setMemoDisabled('b-star-dis', this.ballStarBtn, !commandReady || !battle.canCapture || bag.starBalls <= 0);
       this.setMemoHtml(
         'b-star',
         this.ballStarBtn,
@@ -2261,7 +2647,7 @@ export class CelestialUIController implements ICelestialUIController {
       );
     }
     if (this.potionBtn) {
-      this.potionBtn.disabled = !commandReady || bag.potions <= 0 || p.hp >= p.maxHp;
+      this.setMemoDisabled('b-pot-dis', this.potionBtn, !commandReady || bag.potions <= 0 || p.hp >= p.maxHp);
       this.setMemoHtml(
         'b-pot',
         this.potionBtn,
@@ -2276,19 +2662,22 @@ export class CelestialUIController implements ICelestialUIController {
       this.battleSwitchOpen = false;
     }
     if (this.switchToggleBtn) {
-      this.switchToggleBtn.disabled = isForcedSwitch || !commandReady || !hasHealthyBench;
-      this.switchToggleBtn.setAttribute('aria-pressed', String(this.battleSwitchOpen || isForcedSwitch));
-      this.switchToggleBtn.classList.toggle('is-active', this.battleSwitchOpen || isForcedSwitch);
+      this.setMemoDisabled('b-sw-dis', this.switchToggleBtn, isForcedSwitch || !commandReady || !hasHealthyBench);
+      const swActive = this.battleSwitchOpen || isForcedSwitch;
+      this.setMemoAttr('b-sw-pressed', this.switchToggleBtn, 'aria-pressed', String(swActive));
+      this.switchToggleBtn.classList.toggle('is-active', swActive);
     }
-    if (this.fleeBtn) {
-      this.fleeBtn.disabled = !commandReady || !battle.canRun;
-    }
+    this.setMemoDisabled('b-flee-dis', this.fleeBtn, !commandReady || !battle.canRun);
     if (this.offlineRigBtn) {
-      this.offlineRigBtn.setAttribute('aria-pressed', String(battle.forceOfflineRig));
-      this.offlineRigBtn.classList.toggle('is-active', battle.forceOfflineRig);
-      this.offlineRigBtn.title = battle.forceOfflineRig
-        ? 'Offline Pixel Rig active (click for Live animated sprites)'
-        : 'Live animated sprites active (click to preview Offline Pixel Rig)';
+      const rigStr = String(battle.forceOfflineRig);
+      if (this.memo.get('b-rig-pressed') !== rigStr) {
+        this.memo.set('b-rig-pressed', rigStr);
+        this.offlineRigBtn.setAttribute('aria-pressed', rigStr);
+        this.offlineRigBtn.classList.toggle('is-active', battle.forceOfflineRig);
+        this.offlineRigBtn.title = battle.forceOfflineRig
+          ? 'Offline Pixel Rig active (click for Live animated sprites)'
+          : 'Live animated sprites active (click to preview Offline Pixel Rig)';
+      }
       this.setMemoHtml(
         'b-rig',
         this.offlineRigBtn,
@@ -2343,6 +2732,8 @@ export class CelestialUIController implements ICelestialUIController {
                   ${createIconSvg(typeToIconId(sp.type), 'sl-icon-sm')}
                   <span>${safeText(stripEmojis(m.nickname || sp.name))}</span>
                   <span class="sl-num sl-switch-slot-lv">Lv.${m.level}</span>
+                  ${m.upgradeTier > 0 ? `<span class="sl-pill sl-pill-gold sl-num" style="min-height:18px; padding:0 5px; font-size:9.5px;">${createIconSvg('icon-star-rank', 'sl-icon-sm')} ${m.upgradeTier}</span>` : ''}
+                  ${m.isShiny ? `<span class="sl-pill sl-pill-gold" style="min-height:18px; padding:0 5px; font-size:9.5px;">${createIconSvg('icon-sparkle', 'sl-icon-sm')} Shiny</span>` : ''}
                 </span>
                 ${statusChip}
               </div>
@@ -2555,7 +2946,14 @@ export class CelestialUIController implements ICelestialUIController {
     _timeSec: number,
   ): void {
     const sh = snapshot.skyhop;
+    const arcadeUnlocked = Boolean(snapshot.profile?.arcade?.unlocked ?? true);
+    this.setMemoHtml(
+      'sh-partner',
+      this.skyPartnerEl,
+      `${createIconSvg(typeToIconId(sh.partnerType), 'sl-icon-sm')} <span>${safeText(sh.partnerName)}</span>`,
+    );
     this.setMemoText('sh-score', this.skyScoreEl, String(sh.score));
+    this.setMemoText('sh-stars', this.skyStarsEl, String(sh.starsCollected ?? 0));
     this.setMemoText('sh-wave', this.skyWaveEl, `${sh.wave}`);
     this.setMemoText('sh-combo', this.skyComboEl, `${sh.combo}x`);
     this.setMemoText('sh-high', this.skyHighEl, `${sh.highScore} (W${sh.bestWave})`);
@@ -2569,13 +2967,24 @@ export class CelestialUIController implements ICelestialUIController {
 
     const dashReadyRatio =
       sh.dashTimer > 0 ? 1 : Math.max(0, Math.min(1, 1 - sh.dashCooldown / 4.6));
-    this.skyDashBarEl?.style.setProperty('--fill', String(dashReadyRatio));
+    this.setMemoStyleProp('sh-dash-fill', this.skyDashBarEl, '--fill', dashReadyRatio.toFixed(3));
 
+    this.setMemoDisabled('sh-dash-dis', this.skyDashBtn, !sh.running || sh.paused || sh.gameOver || sh.dashCooldown > 0 || sh.dashTimer > 0);
     if (this.skyDashBtn) {
-      this.skyDashBtn.disabled = !sh.running || sh.paused || sh.gameOver || sh.dashCooldown > 0 || sh.dashTimer > 0;
+      const dashLabel =
+        sh.dashTimer > 0
+          ? 'Star Dashing!'
+          : sh.dashCooldown > 0
+            ? `Dash ${Math.ceil(sh.dashCooldown)}s`
+            : 'Star Dash';
+      this.setMemoHtml(
+        'sh-dash-lbl',
+        this.skyDashBtn,
+        `${createIconSvg('icon-dash', 'sl-icon-sm')} <span>${dashLabel}</span>`,
+      );
     }
     if (this.skyPauseBtn) {
-      this.skyPauseBtn.disabled = !sh.running || sh.gameOver;
+      this.setMemoDisabled('sh-pause-dis', this.skyPauseBtn, !sh.running || sh.gameOver);
       this.setMemoHtml(
         'sh-pause',
         this.skyPauseBtn,
@@ -2611,6 +3020,7 @@ export class CelestialUIController implements ICelestialUIController {
               ${rewards.isNewBest ? '<span class="sl-pill sl-pill-gold">NEW BEST</span>' : ''}
             </div>
             <div class="sl-num" style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
+              <span class="sl-pill">${createIconSvg('icon-sparkle', 'sl-icon-sm')} ${sh.starsCollected} Stars</span>
               ${rewards.starShards > 0 ? `<span class="sl-pill">${createIconSvg('icon-star-shard', 'sl-icon-sm')} +${rewards.starShards} Shards</span>` : ''}
               ${rewards.potions > 0 ? `<span class="sl-pill">${createIconSvg('icon-potion', 'sl-icon-sm')} +${rewards.potions} Potions</span>` : ''}
               ${rewards.greatBalls > 0 ? `<span class="sl-pill">${createIconSvg('icon-greatball', 'sl-icon-sm')} +${rewards.greatBalls} Great</span>` : ''}
@@ -2623,11 +3033,27 @@ export class CelestialUIController implements ICelestialUIController {
         `
         : '';
 
+      const rechargeBox = sh.outOfCharges
+        ? `<div class="sl-alert-item" data-severity="info" style="width:100%; text-align:left;">
+            ${createIconSvg('icon-compass', 'sl-icon-sm')}
+            <span>Recharge free charges by walking 50 steps, winning 2 battles, or clearing any Shrine/Rival (+1 Charge each)!</span>
+          </div>`
+        : !arcadeUnlocked && !sh.running
+          ? `<div class="sl-alert-item" data-severity="info" style="width:100%; text-align:left;">
+              ${createIconSvg('icon-lock', 'sl-icon-sm')}
+              <span>Secret Cabinet Standby: Earn 1 Badge or catch 5 species, then knock 3 times on the Star Emblem wall in Starlight Village!</span>
+            </div>`
+          : '';
+
       const actionButtons = sh.paused
         ? `
           <button type="button" class="sl-btn sl-btn-primary" data-skyhop-action="resume" data-testid="skyhop-resume">
             ${createIconSvg('icon-play', 'sl-icon-sm')}
             <span>Resume Flight</span>
+          </button>
+          <button type="button" class="sl-btn" data-skyhop-action="exit">
+            ${createIconSvg('icon-warp-safe', 'sl-icon-sm')}
+            <span>Back to Island</span>
           </button>
         `
         : sh.outOfCharges
@@ -2636,12 +3062,24 @@ export class CelestialUIController implements ICelestialUIController {
               ${createIconSvg('icon-star-shard', 'sl-icon-sm')}
               <span>Buy Charge (${sh.shardBuyInCost} Shards — Have ${sh.starShards})</span>
             </button>
+            <button type="button" class="sl-btn" data-skyhop-action="exit">
+              ${createIconSvg('icon-warp-safe', 'sl-icon-sm')}
+              <span>Back to Island</span>
+            </button>
           `
           : `
             <button type="button" class="sl-btn sl-btn-primary" data-skyhop-action="start" data-testid="skyhop-start">
               ${createIconSvg('icon-skyhop', 'sl-icon-sm')}
               <span>${sh.gameOver ? 'Fly Again' : 'Launch Flight'}</span>
             </button>
+            ${
+              sh.gameOver
+                ? `<button type="button" class="sl-btn" data-skyhop-action="exit" data-testid="skyhop-done">
+                    ${createIconSvg('icon-warp-safe', 'sl-icon-sm')}
+                    <span>Back to Island</span>
+                  </button>`
+                : ''
+            }
           `;
 
       const centerHtml = `
@@ -2661,6 +3099,7 @@ export class CelestialUIController implements ICelestialUIController {
         <p style="margin:0; font-size:12.5px; color:var(--sl-text-secondary); line-height:1.45;">
           Hold &amp; drag or press Up/Down to gather Stars &amp; Comets. Activate Star Dash to shatter Storm Orbs!
         </p>
+        ${rechargeBox}
         ${rewardsHtml}
         <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; width:100%;">
           ${actionButtons}
@@ -2668,6 +3107,48 @@ export class CelestialUIController implements ICelestialUIController {
       `;
       this.setMemoHtml('sh-center', this.skyCenterCardEl, centerHtml);
     }
+  }
+
+  private triggerCelebration(opts: {
+    iconId: IconId;
+    title: string;
+    subtitle?: string;
+    tone?: string;
+  }): void {
+    const layer = this.celebrationEl;
+    if (!layer) return;
+    if (this.celebrationTimer !== null) {
+      clearTimeout(this.celebrationTimer);
+      this.celebrationTimer = null;
+    }
+    const colors = ['#f5d882', '#7be6ff', '#c896ff', '#4ae388', '#fff5d6'];
+    const confettiHtml = Array.from({ length: 24 }, (_, i) => {
+      const ang = (Math.PI * 2 * i) / 24;
+      const dist = 72 + (i % 4) * 28;
+      const dx = Math.round(Math.cos(ang) * dist);
+      const dy = Math.round(Math.sin(ang) * dist - 22);
+      const col = colors[i % colors.length];
+      return `<span class="sl-confetti-bit" style="--dx:${dx}px; --dy:${dy}px; --col:${col}; --delay:${(i % 6) * 25}ms;"></span>`;
+    }).join('');
+    layer.setAttribute('data-tone', opts.tone ?? 'gold');
+    layer.innerHTML = `
+      <div class="sl-celebration-confetti-wrap">${confettiHtml}</div>
+      <div class="sl-celebration-ribbon sl-glass">
+        ${createIconSvg(opts.iconId, 'sl-icon-lg')}
+        <div style="display:flex; flex-direction:column; gap:2px; min-width:0;">
+          <strong style="font-family:var(--sl-font-display); font-size:15px; color:var(--sl-brass-bright);">${safeText(sanitizeNoEmoji(opts.title))}</strong>
+          ${opts.subtitle ? `<span style="font-size:12px; color:var(--sl-text-muted);">${safeText(sanitizeNoEmoji(opts.subtitle))}</span>` : ''}
+        </div>
+      </div>
+    `;
+    setHidden(layer, false);
+    this.celebrationTimer = setTimeout(() => {
+      this.celebrationTimer = null;
+      if (this.celebrationEl) {
+        setHidden(this.celebrationEl, true);
+        this.celebrationEl.innerHTML = '';
+      }
+    }, 2300);
   }
 
   private syncDialogue(
@@ -2737,6 +3218,18 @@ export class CelestialUIController implements ICelestialUIController {
     if (this.escapeGuardHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
       window.removeEventListener('keydown', this.escapeGuardHandler, true);
       this.escapeGuardHandler = null;
+    }
+    if (this.beforeInstallHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('beforeinstallprompt', this.beforeInstallHandler);
+      this.beforeInstallHandler = null;
+    }
+    if (this.appInstalledHandler && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('appinstalled', this.appInstalledHandler);
+      this.appInstalledHandler = null;
+    }
+    if (this.celebrationTimer !== null) {
+      clearTimeout(this.celebrationTimer);
+      this.celebrationTimer = null;
     }
     if (this.dpadRepeatTimer !== null) {
       clearInterval(this.dpadRepeatTimer);

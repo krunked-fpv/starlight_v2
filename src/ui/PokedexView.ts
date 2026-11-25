@@ -19,6 +19,7 @@ import {
   getEvolutionRules,
   getMoveEntry,
   getSpeciesEntry,
+  STARTER_IDS,
   TOTAL_SPECIES_COUNT,
   TYPE_PALETTES,
   typeToIconId,
@@ -30,7 +31,7 @@ export interface PokedexQueryOptions {
   typeFilter: ElementalType | 'all';
   abilityFilter?: string | 'all';
   genFilter?: number | 'all';
-  biomeFilter?: BiomeId | 'all';
+  biomeFilter?: BiomeId | 'starter' | 'all';
   caughtOnly: boolean;
   needToCatchOnly?: boolean;
   page: number;
@@ -83,11 +84,23 @@ export function filterAndPaginatePokedex(opts: PokedexQueryOptions): PokedexPage
     if (opts.typeFilter !== 'all' && sp.type !== opts.typeFilter) continue;
     if (abilityFilter !== 'all' && sp.ability !== abilityFilter) continue;
     if (genFilter !== 'all' && sp.generation !== genFilter) continue;
-    if (biomeFilter !== 'all' && sp.biome !== biomeFilter) continue;
+    if (biomeFilter === 'starter') {
+      if ((sp.biome as string) !== 'starter' && !STARTER_IDS.includes(sp.id)) continue;
+    } else if (biomeFilter !== 'all' && sp.biome !== biomeFilter) {
+      continue;
+    }
 
     if (q) {
       const padded = String(sp.id).padStart(4, '0');
-      if (!sp.name.toLowerCase().includes(q) && !padded.includes(q) && String(sp.id) !== q) {
+      const padded3 = String(sp.id).padStart(3, '0');
+      const abilityName = isSeen ? (getAbilityEntry(sp.ability)?.name ?? '').toLowerCase() : '';
+      if (
+        !sp.name.toLowerCase().includes(q) &&
+        !padded.includes(q) &&
+        !padded3.includes(q) &&
+        String(sp.id) !== q &&
+        (!abilityName || !abilityName.includes(q))
+      ) {
         continue;
       }
     }
@@ -199,7 +212,7 @@ export class PokedexView {
   private typeFilter: ElementalType | 'all' = 'all';
   private abilityFilter: string | 'all' = 'all';
   private genFilter: number | 'all' = 'all';
-  private biomeFilter: BiomeId | 'all' = 'all';
+  private biomeFilter: BiomeId | 'starter' | 'all' = 'all';
   private ownershipMode: OwnershipMode = 'all';
   private advancedOpen = false;
   private currentPage = 1;
@@ -214,6 +227,7 @@ export class PokedexView {
   private lastAssets: PokedexAssets | undefined;
 
   private searchInput: HTMLInputElement | null = null;
+  private searchClearBtn: HTMLButtonElement | null = null;
   private caughtToggleBtn: HTMLButtonElement | null = null;
   private filtersToggleBtn: HTMLButtonElement | null = null;
   private advancedTrayEl: HTMLElement | null = null;
@@ -242,6 +256,9 @@ export class PokedexView {
   private lastListKey = '';
   private lastDetailKey = '';
   private lastTilePaintStamp = '';
+  private lastPortraitStamp = '';
+  private lastCryStamp = '';
+  private lastHoloKey = '';
 
   mount(container: HTMLElement, callbacks: UIBridgeCallbacks): void {
     this.callbacks = callbacks;
@@ -250,6 +267,9 @@ export class PokedexView {
     this.lastListKey = '';
     this.lastDetailKey = '';
     this.lastTilePaintStamp = '';
+    this.lastPortraitStamp = '';
+    this.lastCryStamp = '';
+    this.lastHoloKey = '';
 
     const typeChipsHtml = [
       `<button type="button" class="sl-dex-filter-chip is-active" data-dex-type="all" aria-pressed="true">All Types</button>`,
@@ -272,6 +292,7 @@ export class PokedexView {
 
     const biomeChipsHtml = [
       `<button type="button" class="sl-dex-filter-chip is-active" data-dex-biome="all" aria-pressed="true">All Biomes</button>`,
+      `<button type="button" class="sl-dex-filter-chip" data-dex-biome="starter" aria-pressed="false">${createIconSvg('icon-lab', 'sl-icon-sm')}<span>Starters</span></button>`,
       ...BIOME_IDS.map((bId) => {
         const bp = getBiomeVisualProfile(bId);
         return `
@@ -308,9 +329,12 @@ export class PokedexView {
               type="search"
               class="sl-input sl-dex-search"
               data-testid="pokedex-search"
-              placeholder="Search #0001..#1025 or species name..."
-              aria-label="Search Pokédex species"
+              placeholder="Search name, #0001..#1025, or ability..."
+              aria-label="Search Pokédex by name, number, or ability"
             />
+            <button type="button" class="sl-btn sl-btn-icon sl-btn-ghost" data-testid="pokedex-search-clear" aria-label="Clear search" title="Clear search" hidden>
+              ${createIconSvg('icon-close', 'sl-icon-sm')}
+            </button>
             <button type="button" class="sl-btn" data-testid="pokedex-caught-toggle" aria-pressed="false">
               ${createIconSvg('icon-starball', 'sl-icon-sm')}
               <span>All 1,025</span>
@@ -432,6 +456,7 @@ export class PokedexView {
     `;
 
     this.searchInput = container.querySelector('[data-testid="pokedex-search"]');
+    this.searchClearBtn = container.querySelector('[data-testid="pokedex-search-clear"]');
     this.caughtToggleBtn = container.querySelector('[data-testid="pokedex-caught-toggle"]');
     this.filtersToggleBtn = container.querySelector('[data-testid="pokedex-filters-toggle"]');
     this.advancedTrayEl = container.querySelector('[data-testid="pokedex-advanced-tray"]');
@@ -464,10 +489,38 @@ export class PokedexView {
 
     this.searchInput?.addEventListener('input', () => {
       this.searchQuery = this.searchInput?.value ?? '';
+      if (this.searchClearBtn) this.searchClearBtn.hidden = !this.searchQuery;
       this.currentPage = 1;
       this.lastListKey = '';
       this.refreshListOnly();
       this.paintVisibleTileSprites(0);
+    });
+
+    this.searchClearBtn?.addEventListener('click', () => {
+      this.searchQuery = '';
+      if (this.searchInput) {
+        this.searchInput.value = '';
+        this.searchInput.focus();
+      }
+      if (this.searchClearBtn) this.searchClearBtn.hidden = true;
+      this.currentPage = 1;
+      this.lastListKey = '';
+      this.refreshListOnly();
+      this.paintVisibleTileSprites(0);
+    });
+
+    this.searchInput?.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Escape' && this.searchQuery) {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.searchQuery = '';
+        if (this.searchInput) this.searchInput.value = '';
+        if (this.searchClearBtn) this.searchClearBtn.hidden = true;
+        this.currentPage = 1;
+        this.lastListKey = '';
+        this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
+      }
     });
 
     this.caughtToggleBtn?.addEventListener('click', () => {
@@ -514,8 +567,26 @@ export class PokedexView {
 
       const biomeBtn = target?.closest('[data-dex-biome]') as HTMLButtonElement | null;
       if (biomeBtn) {
-        this.biomeFilter = (biomeBtn.getAttribute('data-dex-biome') as BiomeId | 'all') || 'all';
+        this.biomeFilter = (biomeBtn.getAttribute('data-dex-biome') as BiomeId | 'starter' | 'all') || 'all';
         this.currentPage = 1;
+        this.lastListKey = '';
+        this.syncFilterChipStates();
+        this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
+        return;
+      }
+
+      const resetBtn = target?.closest('[data-dex-reset-filters]') as HTMLButtonElement | null;
+      if (resetBtn) {
+        this.searchQuery = '';
+        this.typeFilter = 'all';
+        this.genFilter = 'all';
+        this.biomeFilter = 'all';
+        this.abilityFilter = 'all';
+        this.ownershipMode = 'all';
+        this.currentPage = 1;
+        if (this.searchInput) this.searchInput.value = '';
+        if (this.searchClearBtn) this.searchClearBtn.hidden = true;
         this.lastListKey = '';
         this.syncFilterChipStates();
         this.refreshListOnly();
@@ -556,6 +627,9 @@ export class PokedexView {
       const id = Number(btn.getAttribute('data-species-id'));
       if (Number.isInteger(id) && id >= 1) {
         this.callbacks?.onSelectPokedexSpecies(id);
+        if (btn.getAttribute('data-seen') === 'true') {
+          this.callbacks?.onPlaySpeciesCry(id);
+        }
       }
     });
 
@@ -564,7 +638,25 @@ export class PokedexView {
       if (!btn) return;
       const id = Number(btn.getAttribute('data-evo-species-id'));
       if (Number.isInteger(id) && id >= 1) {
+        // Auto-reset active filters if target evolution species isn't visible in current filter slice
+        const tilePresent = Boolean(this.listEl?.querySelector(`[data-species-id="${id}"]`));
+        if (!tilePresent && (this.searchQuery || this.typeFilter !== 'all' || this.genFilter !== 'all' || this.biomeFilter !== 'all' || this.abilityFilter !== 'all' || this.ownershipMode !== 'all')) {
+          this.searchQuery = '';
+          this.typeFilter = 'all';
+          this.genFilter = 'all';
+          this.biomeFilter = 'all';
+          this.abilityFilter = 'all';
+          this.ownershipMode = 'all';
+          if (this.searchInput) this.searchInput.value = '';
+          if (this.searchClearBtn) this.searchClearBtn.hidden = true;
+          this.currentPage = Math.max(1, Math.ceil(id / this.pageSize));
+          this.lastListKey = '';
+          this.syncFilterChipStates();
+        }
         this.callbacks?.onSelectPokedexSpecies(id);
+        if (this.getOwnedSummary(id).seen) {
+          this.callbacks?.onPlaySpeciesCry(id);
+        }
       }
     });
 
@@ -650,10 +742,12 @@ export class PokedexView {
     this.refreshDetailOnly();
     this.renderCanvases(timeSec, assets);
 
-    const tileStamp = `${this.lastListKey}|${assets?.spriteCacheVersion ?? 0}|${Math.floor(timeSec * 6)}`;
-    if (tileStamp !== this.lastTilePaintStamp) {
-      this.lastTilePaintStamp = tileStamp;
-      this.paintVisibleTileSprites(timeSec);
+    const tileBaseKey = `${this.lastListKey}|${assets?.spriteCacheVersion ?? 0}`;
+    if (tileBaseKey !== this.lastTilePaintStamp) {
+      this.lastTilePaintStamp = tileBaseKey;
+      this.paintVisibleTileSprites(timeSec, false);
+    } else if (Math.floor(timeSec * 5) !== Math.floor((timeSec - 0.09) * 5)) {
+      this.paintVisibleTileSprites(timeSec, true);
     }
   }
 
@@ -721,7 +815,9 @@ export class PokedexView {
     this.lastTilePaintStamp = '';
 
     if (this.countBadgeEl) {
-      this.countBadgeEl.textContent = `${result.caughtCount} Caught • ${result.seenCount} Seen / ${TOTAL_SPECIES_COUNT}`;
+      const wins = this.currentProfile.stats?.battlesWon ?? 0;
+      const shinies = this.currentProfile.stats?.shiniesFound ?? 0;
+      this.countBadgeEl.textContent = `${result.caughtCount} Caught • ${result.seenCount} Seen / ${TOTAL_SPECIES_COUNT} • ${wins} Wins • ${shinies} Shinies`;
     }
 
     if (this.caughtToggleBtn) {
@@ -745,7 +841,15 @@ export class PokedexView {
     if (this.nextPageBtn) this.nextPageBtn.disabled = result.page >= result.totalPages;
 
     if (result.items.length === 0) {
-      this.listEl.innerHTML = `<div class="sl-empty-state" style="grid-column:1 / -1;">No matching species in 1,025 catalog.</div>`;
+      this.listEl.innerHTML = `
+        <div class="sl-empty-state" style="grid-column:1 / -1; display:flex; flex-direction:column; align-items:center; gap:10px;">
+          <span>No matching Pokémon in the 1,025 catalog — keep exploring Starlight Island!</span>
+          <button type="button" class="sl-btn sl-btn-cyan" data-dex-reset-filters data-testid="pokedex-reset-filters">
+            ${createIconSvg('icon-compass', 'sl-icon-sm')}
+            <span>Show All Species</span>
+          </button>
+        </div>
+      `;
       return;
     }
 
@@ -765,7 +869,7 @@ export class PokedexView {
             : '';
         const visualSlot = seen
           ? `<canvas class="sl-dex-tile-canvas" width="54" height="50" data-tile-species="${sp.id}" aria-hidden="true"></canvas>`
-          : `<div class="sl-dex-tile-mystery" aria-hidden="true">?</div>`;
+          : `<div class="sl-dex-tile-mystery" aria-hidden="true">${createIconSvg('icon-pokeball', 'sl-icon-md')}<span class="sl-dex-mystery-q">?</span></div>`;
 
         return `
           <button
@@ -791,7 +895,7 @@ export class PokedexView {
       .join('');
   }
 
-  private paintVisibleTileSprites(timeSec: number): void {
+  private paintVisibleTileSprites(timeSec: number, animatedOnly = false): void {
     if (!this.listEl) return;
     const assets = this.lastAssets;
     this.listEl.querySelectorAll('canvas[data-tile-species]').forEach((node) => {
@@ -799,6 +903,7 @@ export class PokedexView {
       const id = Number(canvas.getAttribute('data-tile-species'));
       if (!Number.isInteger(id) || id < 1) return;
       const frames = assets?.getFrames?.(id) ?? (id === this.lastSelectedId ? assets?.frames ?? null : null);
+      if (animatedOnly && (!frames || frames.frames.length <= 1)) return;
       renderPokemonPreviewCanvas(
         canvas,
         id,
@@ -895,37 +1000,41 @@ export class PokedexView {
     }
 
     if (this.cardEvoEl) {
-      const pre = PRE_EVO_MAP.get(sp.id) ?? [];
-      const nextRules = getEvolutionRules(sp.id);
-      const itemMap = new Map(getAllEvolutionItems().map((it) => [it.id, it.name]));
+      if (!owned.seen) {
+        this.cardEvoEl.innerHTML = `<span class="sl-pill">Meet or catch this Pokémon to reveal its evolution family</span>`;
+      } else {
+        const pre = PRE_EVO_MAP.get(sp.id) ?? [];
+        const nextRules = getEvolutionRules(sp.id);
+        const itemMap = new Map(getAllEvolutionItems().map((it) => [it.id, it.name]));
 
-      const parts: string[] = [];
-      for (const p of pre) {
-        const preSp = getSpeciesEntry(p.fromId);
-        parts.push(`
-          <button type="button" class="sl-btn" data-evo-species-id="${preSp.id}">
-            <span>From ${safeText(preSp.name)} (${safeText(p.label)})</span>
-          </button>
-        `);
+        const parts: string[] = [];
+        for (const p of pre) {
+          const preSp = getSpeciesEntry(p.fromId);
+          parts.push(`
+            <button type="button" class="sl-btn" data-evo-species-id="${preSp.id}">
+              <span>From ${safeText(preSp.name)} (${safeText(p.label)})</span>
+            </button>
+          `);
+        }
+        for (const r of nextRules) {
+          const nextSp = getSpeciesEntry(r.to);
+          const req = r.item
+            ? (itemMap.get(r.item) ?? r.item)
+            : r.minLevel
+              ? `Lv.${r.minLevel}`
+              : 'Evolve';
+          parts.push(`
+            <button type="button" class="sl-btn sl-btn-cyan" data-evo-species-id="${nextSp.id}">
+              ${createIconSvg('icon-evolve', 'sl-icon-sm')}
+              <span>To ${safeText(nextSp.name)} (${safeText(req)})</span>
+            </button>
+          `);
+        }
+        this.cardEvoEl.innerHTML =
+          parts.length > 0
+            ? parts.join('')
+            : `<span class="sl-pill">Stand-alone Pokémon (No Evolution)</span>`;
       }
-      for (const r of nextRules) {
-        const nextSp = getSpeciesEntry(r.to);
-        const req = r.item
-          ? (itemMap.get(r.item) ?? r.item)
-          : r.minLevel
-            ? `Lv.${r.minLevel}`
-            : 'Evolve';
-        parts.push(`
-          <button type="button" class="sl-btn sl-btn-cyan" data-evo-species-id="${nextSp.id}">
-            ${createIconSvg('icon-evolve', 'sl-icon-sm')}
-            <span>To ${safeText(nextSp.name)} (${safeText(req)})</span>
-          </button>
-        `);
-      }
-      this.cardEvoEl.innerHTML =
-        parts.length > 0
-          ? parts.join('')
-          : `<span class="sl-pill">Final or Standalone Stage</span>`;
     }
 
     if (this.cardLoreEl) {
@@ -941,6 +1050,9 @@ export class PokedexView {
   private updateHoloCssVars(): void {
     if (!this.holoCardEl) return;
     const owned = this.getOwnedSummary(this.lastSelectedId);
+    const holoKey = `${this.lastSelectedId}|${this.pointerTiltX.toFixed(3)}|${this.pointerTiltY.toFixed(3)}|${owned.starRank}|${owned.bond}|${owned.caught}|${owned.shiny}|${this.reducedMotion}`;
+    if (holoKey === this.lastHoloKey) return;
+    this.lastHoloKey = holoKey;
     const metrics = computeHoloCardMetrics(
       {
         speciesId: this.lastSelectedId,
@@ -965,22 +1077,31 @@ export class PokedexView {
     const owned = this.getOwnedSummary(sp.id);
 
     if (this.portraitCanvas) {
-      renderPokemonPreviewCanvas(
-        this.portraitCanvas,
-        sp.id,
-        assets?.frames ?? null,
-        assets?.fallbacksSheet ?? null,
-        assets?.manifest ?? null,
-        owned.shiny,
-        timeSec,
-        !owned.seen,
-      );
+      const animated = owned.seen && (assets?.frames?.frames.length ?? 0) > 1;
+      const pStamp = `${sp.id}|${owned.shiny}|${owned.seen}|${assets?.spriteCacheVersion ?? 0}|${Boolean(assets?.frames)}|${animated ? Math.floor(timeSec * 8) : 0}`;
+      if (pStamp !== this.lastPortraitStamp) {
+        this.lastPortraitStamp = pStamp;
+        renderPokemonPreviewCanvas(
+          this.portraitCanvas,
+          sp.id,
+          assets?.frames ?? null,
+          assets?.fallbacksSheet ?? null,
+          assets?.manifest ?? null,
+          owned.shiny,
+          timeSec,
+          !owned.seen,
+        );
+      }
     }
 
     if (this.cryCanvas && this.currentWaveform) {
+      const activePlay = this.currentWaveform.playing && this.currentWaveform.speciesId === sp.id;
+      const cryStamp = `${sp.id}|${activePlay}|${activePlay ? Math.floor(timeSec * 16) : 0}|${this.currentWaveform.samples.length}`;
+      if (cryStamp === this.lastCryStamp) return;
+      this.lastCryStamp = cryStamp;
       let ctx: CanvasRenderingContext2D | null = null;
       try {
-        ctx = this.cryCanvas.getContext('2d', { willReadFrequently: true }) ?? this.cryCanvas.getContext('2d');
+        ctx = this.cryCanvas.getContext('2d');
       } catch {
         ctx = null;
       }
@@ -1013,7 +1134,6 @@ export class PokedexView {
       ctx.stroke();
 
       const samples = this.currentWaveform.samples;
-      const activePlay = this.currentWaveform.playing && this.currentWaveform.speciesId === sp.id;
 
       // Subtle vertical spectrum bars behind waveform
       const barCount = 24;

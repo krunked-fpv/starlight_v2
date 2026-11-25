@@ -14,9 +14,10 @@ import {
   getAllTrainerAuras,
   getAllTrainerStyles,
   getCleanTrainerName,
-  getPlayerLevel,
+  getPlayerProgression,
   getResolvedTrainerLook,
   getSpeciesEntry,
+  MAX_CHEER_CHARGES,
   SpriteAssetLoader,
   TOTAL_SPECIES_COUNT,
 } from '../core';
@@ -239,6 +240,7 @@ export class StyleStudioStage {
   private summaryLabel: HTMLElement | null = null;
   private statsGridEl: HTMLElement | null = null;
   private lastMemo = '';
+  private lastStageStamp = '';
 
   setRigSynthesizer(synth: IOfflineSpriteRigSynthesizer | null): void {
     this.rigSynthesizer = synth;
@@ -301,8 +303,7 @@ export class StyleStudioStage {
                   (o) => `
                   <button type="button" class="sl-style-option" data-testid="style-outfit-${o.id}" data-style-id="${o.id}">
                     <span class="sl-style-swatch" style="background: linear-gradient(135deg, ${o.outfitPrimary}, ${o.outfitSecondary});"></span>
-                    ${createIconSvg(o.iconId, 'sl-icon-sm')}
-                    <span>${safeText(o.name)}</span>
+                    <span class="sl-style-option-label">${safeText(o.name)}</span>
                   </button>
                 `,
                 )
@@ -318,14 +319,14 @@ export class StyleStudioStage {
                   (a) => `
                   <button type="button" class="sl-style-option" data-testid="style-accessory-${a.id}" data-accessory-id="${a.id}">
                     ${createIconSvg(a.iconId, 'sl-icon-sm')}
-                    <span>${safeText(a.name)}</span>
+                    <span class="sl-style-option-label">${safeText(a.name)}</span>
                   </button>
                 `,
                 )
                 .join('')}
               <button type="button" class="sl-style-option" data-testid="style-cape-toggle" aria-pressed="false">
                 ${createIconSvg('icon-cape', 'sl-icon-sm')}
-                <span data-cape-label>Cape: Off</span>
+                <span class="sl-style-option-label" data-cape-label>Cape: Off</span>
               </button>
             </div>
           </section>
@@ -338,8 +339,7 @@ export class StyleStudioStage {
                   (au) => `
                   <button type="button" class="sl-style-option" data-testid="style-aura-${au.id}" data-aura-id="${au.id}">
                     <span class="sl-style-swatch" style="background: ${au.color};"></span>
-                    ${createIconSvg(au.iconId, 'sl-icon-sm')}
-                    <span>${safeText(au.name)}</span>
+                    <span class="sl-style-option-label">${safeText(au.name)}</span>
                   </button>
                 `,
                 )
@@ -394,6 +394,22 @@ export class StyleStudioStage {
       if (this.nicknameInput) this.nicknameInput.value = '';
       this.applyPatch({ nickname: '' });
     });
+
+    this.nicknameInput?.addEventListener('keydown', (evt) => {
+      if (evt.key === 'Enter') {
+        evt.preventDefault();
+        if (this.nicknameInput) {
+          this.applyPatch({ nickname: this.nicknameInput.value });
+        }
+      } else if (evt.key === 'Escape') {
+        evt.preventDefault();
+        evt.stopPropagation();
+        if (this.nicknameInput) {
+          this.nicknameInput.value = this.currentProfile?.appearance?.nickname ?? '';
+          this.nicknameInput.blur();
+        }
+      }
+    });
   }
 
   private applyPatch(
@@ -414,6 +430,7 @@ export class StyleStudioStage {
         },
       };
       this.syncControls(this.currentProfile);
+      this.lastStageStamp = '';
       this.renderStageCanvas();
     }
     this.callbacks?.onUpdateAppearance(patch);
@@ -433,7 +450,12 @@ export class StyleStudioStage {
     if (!active) return;
 
     this.syncControls(profile);
-    this.renderStageCanvas();
+    const animTick = reducedMotion ? 0 : Math.floor(timeSec * 12);
+    const stageStamp = `${this.lastMemo}|${animTick}|${Boolean(assets?.charactersSheet)}|${Boolean(assets?.leadFrames)}|${profile.team[0]?.speciesId ?? 0}`;
+    if (stageStamp !== this.lastStageStamp) {
+      this.lastStageStamp = stageStamp;
+      this.renderStageCanvas();
+    }
   }
 
   private syncControls(profile: DojoProfileState): void {
@@ -453,6 +475,12 @@ export class StyleStudioStage {
       profile.chestsOpened.length,
       profile.arcade.highScore,
       profile.stats.battlesWon,
+      profile.stats.steps,
+      profile.stats.upgrades,
+      profile.stats.cheers,
+      profile.bag.starShards,
+      profile.bag.cheerCharges,
+      profile.playerLevel,
     ].join('|');
 
     if (key === this.lastMemo) return;
@@ -496,16 +524,23 @@ export class StyleStudioStage {
     }
 
     if (this.statsGridEl) {
-      const trainerLv = getPlayerLevel(profile);
+      const prog = getPlayerProgression(profile);
+      const xpVal = prog.isMaxLevel ? 'MAX' : `${prog.xpIntoLevel}/${prog.xpToNext}`;
       const items = [
-        { label: 'Trainer Lv', val: String(trainerLv) },
+        { label: 'Player Lv', val: `Lv.${prog.level}` },
+        { label: 'Trainer XP', val: xpVal },
+        { label: 'Steps', val: String(profile.stats.steps ?? 0) },
+        { label: 'Battles Won', val: String(profile.stats.battlesWon) },
         { label: 'Pokédex', val: `${caughtCount}/${TOTAL_SPECIES_COUNT}` },
         { label: 'Badges', val: `${profile.badges.length}/28` },
         { label: 'Shrines', val: `${profile.shrinesCleared.length}/20` },
+        { label: 'Rivals', val: `${profile.rivalsDefeated.length}/17` },
         { label: 'Quests', val: `${profile.questsCompleted.length}/23` },
         { label: 'Chests', val: `${profile.chestsOpened.length}/36` },
-        { label: 'Rivals', val: `${profile.rivalsDefeated.length}/17` },
-        { label: 'Battles Won', val: String(profile.stats.battlesWon) },
+        { label: 'Power Ups', val: String(profile.stats.upgrades ?? 0) },
+        { label: 'Star Shards', val: String(profile.bag.starShards) },
+        { label: 'Cheer Hearts', val: `${profile.bag.cheerCharges}/${MAX_CHEER_CHARGES}` },
+        { label: 'Cheers Given', val: String(profile.stats.cheers ?? 0) },
         { label: 'Shinies', val: String(profile.stats.shiniesFound) },
         { label: 'Sky-Hop Best', val: String(profile.arcade.highScore) },
       ];
@@ -536,14 +571,14 @@ export class StyleStudioStage {
     if (!this.canvas || !this.currentProfile) return;
     let ctx: CanvasRenderingContext2D | null = null;
     try {
-      ctx = this.canvas.getContext('2d', { willReadFrequently: true }) ?? this.canvas.getContext('2d');
+      ctx = this.canvas.getContext('2d');
     } catch {
       ctx = null;
     }
     if (!ctx) return;
 
-    const w = this.canvas.width || 280;
-    const h = this.canvas.height || 248;
+    const w = this.canvas.width || 268;
+    const h = this.canvas.height || 206;
     const t = this.reducedMotion ? 0 : this.timeSec;
     const profile = this.currentProfile;
     const look = getResolvedTrainerLook(profile.trainerId, profile.appearance);
@@ -551,36 +586,66 @@ export class StyleStudioStage {
     ctx.clearRect(0, 0, w, h);
     ctx.imageSmoothingEnabled = false;
 
-    const bg = ctx.createLinearGradient(0, 0, 0, h);
-    bg.addColorStop(0, '#0a102b');
-    bg.addColorStop(0.58, '#1a285c');
-    bg.addColorStop(1, '#080c20');
-    ctx.fillStyle = bg;
+    // Layered Observatory Tailor Gallery backdrop (no flat hard trapezoid!)
+    ctx.fillStyle = '#090d1c';
     ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#111730';
+    ctx.fillRect(0, 0, w, Math.round(h * 0.66));
+    ctx.fillStyle = '#182144';
+    ctx.fillRect(14, 10, w - 28, Math.round(h * 0.56));
 
-    // Warm boutique spotlight cone
-    const beam = ctx.createLinearGradient(w * 0.5, 6, w * 0.5, h * 0.85);
-    beam.addColorStop(0, 'rgba(255, 240, 189, 0.06)');
-    beam.addColorStop(0.65, `${look.accent}32`);
-    beam.addColorStop(1, 'rgba(245, 205, 109, 0.22)');
-    ctx.fillStyle = beam;
-    ctx.beginPath();
-    ctx.moveTo(w * 0.3, 6);
-    ctx.lineTo(w * 0.7, 6);
-    ctx.lineTo(w * 0.88, h * 0.82);
-    ctx.lineTo(w * 0.12, h * 0.82);
-    ctx.closePath();
-    ctx.fill();
+    // Architectural stone pillars framing left & right of gallery alcove
+    ctx.fillStyle = '#0f1429';
+    ctx.fillRect(0, 0, 16, h);
+    ctx.fillRect(w - 16, 0, 16, h);
+    ctx.fillStyle = '#2c355c';
+    ctx.fillRect(15, 0, 2, h);
+    ctx.fillRect(w - 17, 0, 2, h);
+    ctx.fillStyle = 'rgba(218, 178, 98, 0.45)';
+    ctx.fillRect(17, 0, 1, h);
+    ctx.fillRect(w - 18, 0, 1, h);
 
-    // Soft glowing circular showcase stage pedestal
+    // Subtle twilight window stars in alcove backdrop
+    const starPts: Array<[number, number]> = [
+      [42, 26], [88, 18], [134, 30], [186, 20], [222, 34], [64, 50], [206, 52],
+    ];
+    for (let i = 0; i < starPts.length; i++) {
+      const [sx, sy] = starPts[i];
+      const bright = 0.45 + 0.45 * Math.sin(t * 2.1 + i * 1.4);
+      ctx.fillStyle = i % 2 === 0 ? `rgba(255, 232, 160, ${bright.toFixed(2)})` : `rgba(148, 224, 255, ${bright.toFixed(2)})`;
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+
+    // Soft stepped starlight gallery illumination (clean pixel-art aesthetic)
+    ctx.fillStyle = `${look.accent}18`;
+    ctx.fillRect(Math.round(w * 0.14), 12, Math.round(w * 0.72), Math.round(h * 0.66));
+    ctx.fillStyle = `${look.accent}1a`;
+    ctx.fillRect(Math.round(w * 0.24), 18, Math.round(w * 0.52), Math.round(h * 0.6));
+
+    // Tiered brass-bound showcase dais pedestal
     const pedX = Math.round(w * 0.5);
     const pedY = Math.round(h * 0.79);
+    ctx.fillStyle = '#0c1022';
+    ctx.fillRect(0, pedY - 2, w, h - pedY + 2);
+    ctx.fillStyle = 'rgba(218, 178, 98, 0.22)';
+    ctx.fillRect(18, pedY - 2, w - 36, 1);
+
     ctx.save();
-    ctx.fillStyle = 'rgba(30, 48, 108, 0.72)';
+    // Lower pedestal plinth
+    ctx.fillStyle = '#141a33';
     ctx.beginPath();
-    ctx.ellipse(pedX, pedY, w * 0.38, 16, 0, 0, Math.PI * 2);
+    ctx.ellipse(pedX, pedY + 6, w * 0.4, 16, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = 'rgba(245, 205, 109, 0.78)';
+    ctx.strokeStyle = 'rgba(154, 114, 48, 0.72)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Upper velvet dais surface
+    ctx.fillStyle = '#1e2548';
+    ctx.beginPath();
+    ctx.ellipse(pedX, pedY, w * 0.37, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#e5be6a';
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
