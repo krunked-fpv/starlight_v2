@@ -11,6 +11,7 @@ export interface BriefingModalAssets {
   manifest: AtlasManifest | null;
   fallbacksSheet: CanvasImageSource | null;
   frames: DecodedSpriteFrames | null;
+  isRematch?: boolean;
 }
 
 export class BriefingModal {
@@ -82,6 +83,7 @@ export class BriefingModal {
   sync(b: TacticalBriefingData | null, active: boolean, timeSec: number, assets: BriefingModalAssets): void {
     if (!active || !b || !this.contentEl) return;
 
+    const isRematch = Boolean(assets.isRematch);
     const key = [
       b.kind,
       b.targetId,
@@ -98,6 +100,7 @@ export class BriefingModal {
       b.canChallenge,
       b.farmZoneBiomeName,
       b.suggestedCounterTypes.join(','),
+      isRematch,
     ].join('|');
 
     if (key !== this.lastKey) {
@@ -137,12 +140,15 @@ export class BriefingModal {
             ? 'Mixed Type Matchup'
             : 'Neutral Type Matchup';
 
+      const displayTitle =
+        isRematch && !/rematch/i.test(b.title) ? `${b.title} (Rematch)` : b.title;
+
       this.contentEl.innerHTML = `
         <div class="sl-briefing-score-box">
           <canvas class="sl-briefing-preview" width="84" height="84" data-testid="briefing-preview-canvas" aria-hidden="true"></canvas>
           <div class="sl-briefing-title-col">
             <div class="sl-briefing-title-row">
-              <strong>${safeText(b.title)}</strong>
+              <strong>${safeText(displayTitle)}</strong>
               <span class="sl-pill sl-readiness-pill" data-tier="${b.tier}" data-testid="briefing-tier-badge">
                 ${createIconSvg(b.iconId, 'sl-icon-sm')}
                 <span>${safeText(b.label)}</span>
@@ -166,9 +172,12 @@ export class BriefingModal {
           </div>
           <div class="sl-vital-box">
             ${createIconSvg('icon-bond', 'sl-icon-md')}
-            <div class="sl-vital-copy">
+            <div class="sl-vital-copy" style="flex:1;">
               <span class="sl-vital-label">Party Readiness</span>
               <span class="sl-vital-val">HP ${hpPct}% (${b.healthyCount} Ready / ${b.faintedCount} Fainted)</span>
+              <div class="sl-bar-track sl-bar-track-sm" style="margin-top:3px;">
+                <div class="sl-bar-fill sl-bar-hp" data-low="${hpPct <= 25}" data-mid="${hpPct > 25 && hpPct <= 55}" style="--fill:${Math.max(0, Math.min(1, b.avgHpRatio))};"></div>
+              </div>
             </div>
           </div>
         </div>

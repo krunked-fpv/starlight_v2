@@ -1513,6 +1513,213 @@ describe('Task 7: CelestialUIController Full-Screen Integration', () => {
 
     ui.dispose();
   });
+
+  it('verifies Celestial Pixel-Glass polish & combat UI fixes (Composure gauge, healthy-bench Switch guard, Switch auto-close, Struggle label, STAB/ACC, Drawer sync)', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1); // Bulbasaur (Grass)
+    const activeProfile = bridge.manager.getActiveProfile()!;
+    activeProfile.team.push({
+      ...activeProfile.team[0],
+      uid: 'bench-pikachu-1',
+      speciesId: 25,
+      nickname: 'Sparky',
+      hp: 24,
+      level: 5,
+    });
+    const loader = new SpriteAssetLoader({ forceOffline: true });
+    const overworld = new DojoOverworldSim(bridge, loader);
+    const battleCtrl = new DojoBattleController(bridge, loader);
+    const skyCtrl = new DojoSkyHopController(bridge, loader);
+
+    const doc = new MockDocument();
+    const root = doc.createElement('div');
+    doc.body.appendChild(root);
+
+    const callbacks = makeMockCallbacks();
+    const ui = new CelestialUIController();
+    ui.mount(root as unknown as HTMLElement, callbacks);
+
+    battleCtrl.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 7 }); // Squirtle (Water)
+    for (let i = 0; i < 30; i += 1) battleCtrl.update(0.05);
+    const baseBattle = battleCtrl.getState();
+
+    // 1. Composure gauge renders READY when healthy, BRACED when bracedFlash > 0, SPENT at low HP
+    const snapReady = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+      screen: 'battle',
+      battle: baseBattle,
+    });
+    ui.sync(snapReady);
+    expect(root.querySelector('[data-testid="battle-player-composure"]')?.textContent).toContain('GUARD');
+    expect(root.querySelector('[data-testid="battle-enemy-composure"]')?.textContent).toContain('GUARD');
+    expect(root.querySelector('[data-testid="battle-player-composure"] .sl-composure-chip')?.getAttribute('data-state')).toBe('ready');
+
+    // Move cards show ACC + STAB while keeping PP X/Y cleanly formatted
+    const moveTexts = [0, 1, 2, 3].map((i) => root.querySelector(`[data-testid="battle-move-${i}"]`)?.textContent ?? '');
+    expect(moveTexts.some((t) => t.includes('STAB'))).toBe(true);
+    expect(moveTexts.some((t) => t.includes('ACC '))).toBe(true);
+    expect(moveTexts[0]).toMatch(/PP \d+\/\d+/);
+
+    // 2. Switch button enabled when bench partner is healthy; clicking opens Switch Drawer
+    const switchBtn = root.querySelector('[data-testid="battle-switch-btn"]');
+    expect(switchBtn?.disabled).toBe(false);
+    switchBtn?.click();
+    expect(root.querySelector('[data-testid="battle-switch-drawer"]')?.hidden).toBe(false);
+
+    // Throwing a Poké Ball resets battleSwitchOpen so drawer closes on next sync
+    root.querySelector('[data-testid="battle-ball-poke"]')?.click();
+    expect(callbacks.calls.onBattleThrowBall?.at(-1)).toEqual(['poke']);
+    ui.sync(snapReady);
+    expect(root.querySelector('[data-testid="battle-switch-drawer"]')?.hidden).toBe(true);
+
+    // Re-open Switch drawer and verify Flee also resets battleSwitchOpen
+    switchBtn?.click();
+    expect(root.querySelector('[data-testid="battle-switch-drawer"]')?.hidden).toBe(false);
+    root.querySelector('[data-testid="battle-flee"]')?.click();
+    expect(callbacks.calls.onBattleFlee?.length).toBeGreaterThan(0);
+    ui.sync(snapReady);
+    expect(root.querySelector('[data-testid="battle-switch-drawer"]')?.hidden).toBe(true);
+
+    // 3. Fainting all bench partners disables Switch button even though team.length > 1
+    const benchFaintedSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+      screen: 'battle',
+      battle: baseBattle,
+    });
+    benchFaintedSnap.profile!.team.forEach((m) => {
+      if (m.uid !== baseBattle.player.mon.uid) m.hp = 0;
+    });
+    ui.sync(benchFaintedSnap);
+    expect(root.querySelector('[data-testid="battle-switch-btn"]')?.disabled).toBe(true);
+
+    // 4. Struggle tag reads STRUGGLE (not RECOIL)
+    const zeroPpBattle: BattleSceneState = {
+      ...baseBattle,
+      player: {
+        ...baseBattle.player,
+        bracedFlash: 0.6,
+        mon: {
+          ...baseBattle.player.mon,
+          moves: baseBattle.player.mon.moves.map((m) => ({ ...m, currentPp: 0 })),
+        },
+      },
+    };
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'battle', battle: zeroPpBattle }));
+    expect(root.querySelector('[data-testid="battle-player-composure"]')?.textContent).toContain('BRACED');
+    const struggleText = root.querySelector('[data-testid="battle-move-0"]')?.textContent ?? '';
+    expect(struggleText).toContain('STRUGGLE');
+    expect(struggleText).not.toContain('RECOIL');
+
+    // 5. Badges data-earned + Style Studio is-active/is-equipped + Island Guide exploration summary
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'badges', activeDrawerTab: 'badges' }));
+    const badgeCard = root.querySelector('.sl-badge-card');
+    expect(badgeCard?.getAttribute('data-earned')).not.toBeNull();
+    expect(badgeCard?.getAttribute('data-unlocked')).toBe(badgeCard?.getAttribute('data-earned'));
+
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'style-studio', activeDrawerTab: 'style' }));
+    const activeStyleBtn = root.querySelector('.sl-style-option.is-active');
+    expect(activeStyleBtn).not.toBeNull();
+    expect(activeStyleBtn?.classList.contains('is-equipped')).toBe(true);
+
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'pokedex', activeDrawerTab: 'guide' }));
+    expect(root.querySelector('[data-testid="guide-explore-summary"]')?.textContent).toContain('Biomes');
+
+    // 6. Victory singular "+1 Star Shard" + leading "a " stripped from trailDrop + interact pill hidden while dialogue open
+    const oneShardVictory: BattleSceneState = {
+      ...baseBattle,
+      phase: 'victory',
+      statusMessage: 'Wild Squirtle fainted!',
+      rewardSummary: {
+        xpGained: 18,
+        shardsGained: 1,
+        newBadges: [],
+        caught: false,
+        leveledUp: false,
+        trailDrop: 'a Great Ball',
+      },
+    };
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'battle', battle: oneShardVictory }));
+    const resText = root.querySelector('[data-testid="battle-result-banner"]')?.textContent ?? '';
+    expect(resText).toContain('+1 Star Shard');
+    expect(resText).not.toContain('+1 Star Shards');
+    expect(root.querySelector('[data-testid="battle-trail-drop"]')?.textContent?.trim()).toBe('Great Ball');
+
+    const dlgSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+      screen: 'overworld',
+      dialogue: {
+        speaker: 'Professor Willow',
+        speakerPortrait: 'willow',
+        lines: ['Hello!'],
+        currentIndex: 0,
+      },
+    });
+    dlgSnap.overworld = {
+      ...dlgSnap.overworld,
+      nearbyInteraction: {
+        kind: 'npc',
+        id: 'willow',
+        label: 'Professor Willow',
+        actionVerb: 'Talk',
+        x: 5,
+        y: 5,
+      },
+    };
+    ui.sync(dlgSnap);
+    expect(root.querySelector('[data-testid="interact-pill"]')?.hidden).toBe(true);
+
+    // 7. Rival Rematch label in BriefingModal when rival is already defeated
+    const rematchSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+      screen: 'briefing',
+      briefing: {
+        kind: 'rival',
+        targetId: 'rival_forest',
+        biomeId: 'forest',
+        title: 'Rival Maya',
+        subtitle: 'Forest Challenger',
+        previewSpeciesId: 25,
+        previewSpeciesName: 'Pikachu',
+        enemyTypes: ['electric'],
+        enemyCount: 2,
+        teamLevel: 5,
+        targetLevel: 6,
+        levelDelta: -1,
+        avgHpRatio: 1,
+        faintedCount: 0,
+        healthyCount: 2,
+        tier: 'balanced',
+        label: 'Even Match',
+        iconId: 'icon-balance',
+        tip: 'Watch out for Thunder Shock!',
+        hasTypeAdvantage: false,
+        hasTypeRisk: false,
+        suggestedCounterTypes: ['ground'],
+        needsHeal: false,
+        farmZoneBiomeId: 'village',
+        farmZoneBiomeName: 'Celestial Village',
+        canChallenge: true,
+      },
+    });
+    rematchSnap.overworld = {
+      ...rematchSnap.overworld,
+      rivals: [
+        {
+          id: 'rival_forest',
+          biomeId: 'forest',
+          x: 10,
+          y: 10,
+          name: 'Rival Maya',
+          title: 'Forest Challenger',
+          accentHex: '#c68cff',
+          defeated: true,
+          rematchCount: 1,
+          readinessTier: 'balanced',
+        },
+      ],
+    };
+    ui.sync(rematchSnap);
+    expect(root.querySelector('[data-testid="briefing-content"]')?.textContent).toContain('Rival Maya (Rematch)');
+
+    ui.dispose();
+  });
 });
 
 describe('Task 7: LivingTitleRenderer & SkyHopRenderer Frame Output', () => {

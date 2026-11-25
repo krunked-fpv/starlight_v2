@@ -85,9 +85,11 @@ export function drawPixelTrainerStageCharacter(
     }
   }
 
-  // Ground shadow
-  ctx.fillStyle = 'rgba(4, 8, 22, 0.55)';
-  ctx.fillRect(Math.round(-16 * s), Math.round(24 * s), Math.round(32 * s), Math.round(6 * s));
+  // Grounded elliptical shadow disc (matches live partner shadow)
+  ctx.fillStyle = 'rgba(4, 8, 22, 0.56)';
+  ctx.beginPath();
+  ctx.ellipse(0, Math.round(25 * s), Math.round(17 * s), Math.round(4.5 * s), 0, 0, Math.PI * 2);
+  ctx.fill();
 
   ctx.translate(0, bob);
 
@@ -255,10 +257,10 @@ export class StyleStudioStage {
 
     container.innerHTML = `
       <div class="sl-style-body">
-        <div class="sl-style-stage-wrap">
-          <canvas class="sl-style-canvas" width="280" height="248" data-testid="style-stage-canvas" aria-label="Live Animated Trainer Preview"></canvas>
-          <div style="display:flex; align-items:center; gap:10px; width:100%;">
-            <canvas class="sl-portrait-canvas-sm" width="52" height="52" data-testid="style-portrait-canvas" aria-hidden="true"></canvas>
+        <div class="sl-style-stage-wrap sl-pixel-card">
+          <canvas class="sl-style-canvas" width="268" height="206" data-testid="style-stage-canvas" aria-label="Live Animated Trainer Preview"></canvas>
+          <div class="sl-style-portrait-row">
+            <canvas class="sl-portrait-canvas-sm" width="48" height="48" data-testid="style-portrait-canvas" aria-hidden="true"></canvas>
             <div class="sl-pill sl-pill-gold" style="flex:1; justify-content:center; overflow:hidden; text-overflow:ellipsis;" data-testid="style-loadout-summary">Violet</div>
           </div>
 
@@ -281,12 +283,12 @@ export class StyleStudioStage {
             </div>
           </div>
 
-          <div style="width:100%; padding-top:6px; border-top:1px solid var(--sl-border-soft);">
-            <h4 class="sl-style-group-title" style="font-size:12.5px; margin-bottom:6px;">
+          <div class="sl-style-stats-box">
+            <h4 class="sl-style-group-title" style="font-size:12px;">
               ${createIconSvg('icon-trophy', 'sl-icon-sm')}
               <span>Adventure Record</span>
             </h4>
-            <div class="sl-num" data-testid="style-adventure-stats" style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px;"></div>
+            <div class="sl-style-stats-grid sl-num" data-testid="style-adventure-stats"></div>
           </div>
         </div>
 
@@ -459,23 +461,28 @@ export class StyleStudioStage {
     for (const [id, btn] of this.styleButtons) {
       const equipped = app.styleId === id;
       btn.classList.toggle('is-equipped', equipped);
+      btn.classList.toggle('is-active', equipped);
       btn.setAttribute('aria-pressed', String(equipped));
     }
     for (const [id, btn] of this.accButtons) {
       const equipped = app.accessory === id;
       btn.classList.toggle('is-equipped', equipped);
+      btn.classList.toggle('is-active', equipped);
       btn.setAttribute('aria-pressed', String(equipped));
     }
     for (const [id, btn] of this.auraButtons) {
       const equipped = app.aura === id;
       btn.classList.toggle('is-equipped', equipped);
+      btn.classList.toggle('is-active', equipped);
       btn.setAttribute('aria-pressed', String(equipped));
     }
     if (this.capeToggleBtn) {
-      this.capeToggleBtn.classList.toggle('is-equipped', Boolean(app.cape));
-      this.capeToggleBtn.setAttribute('aria-pressed', String(Boolean(app.cape)));
+      const capeOn = Boolean(app.cape);
+      this.capeToggleBtn.classList.toggle('is-equipped', capeOn);
+      this.capeToggleBtn.classList.toggle('is-active', capeOn);
+      this.capeToggleBtn.setAttribute('aria-pressed', String(capeOn));
       const lbl = this.capeToggleBtn.querySelector('[data-cape-label]');
-      if (lbl) lbl.textContent = app.cape ? 'Cape: On' : 'Cape: Off';
+      if (lbl) lbl.textContent = capeOn ? 'Cape: On' : 'Cape: Off';
     }
 
     if (this.nicknameInput && this.nicknameInput.ownerDocument?.activeElement !== this.nicknameInput) {
@@ -505,9 +512,9 @@ export class StyleStudioStage {
       this.statsGridEl.innerHTML = items
         .map(
           (it) => `
-          <div class="sl-pill" style="justify-content:space-between; border-radius:var(--sl-radius-xs); padding:4px 8px;">
-            <span style="color:var(--sl-text-dim); font-size:10.5px;">${safeText(it.label)}</span>
-            <strong style="color:var(--sl-gold-bright); font-size:11.5px;">${safeText(it.val)}</strong>
+          <div class="sl-style-stat-cell">
+            <span class="sl-style-stat-k">${safeText(it.label)}</span>
+            <strong class="sl-style-stat-v">${safeText(it.val)}</strong>
           </div>
         `,
         )
@@ -580,9 +587,9 @@ export class StyleStudioStage {
 
     // Animated Trainer wearing Outfit + Accessory + Cape + Aura
     drawPixelTrainerStageCharacter(ctx, look, {
-      cx: w * 0.35,
-      cy: h * 0.61,
-      scale: 1.55,
+      cx: w * 0.34,
+      cy: h * 0.60,
+      scale: 1.38,
       time: t,
       reducedMotion: this.reducedMotion,
       charactersSheet: this.currentAssets?.charactersSheet,
@@ -598,7 +605,7 @@ export class StyleStudioStage {
       const liveFrame = SpriteAssetLoader.selectFrame(this.currentAssets?.leadFrames ?? null, t);
 
       if (liveFrame && liveFrame.width > 0 && liveFrame.height > 0) {
-        const maxDraw = 82;
+        const maxDraw = 74;
         const scale = Math.min(maxDraw / liveFrame.width, maxDraw / liveFrame.height);
         const dw = Math.max(16, Math.round(liveFrame.width * scale));
         const dh = Math.max(16, Math.round(liveFrame.height * scale));

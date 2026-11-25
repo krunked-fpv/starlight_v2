@@ -45,7 +45,7 @@ export class BadgesShowcase {
           <div class="sl-badge-velvet">
             <div class="sl-badge-grid" data-testid="badges-grid"></div>
           </div>
-          <aside class="sl-badge-detail" data-testid="badge-detail" aria-live="polite"></aside>
+          <aside class="sl-badge-detail sl-pixel-card" data-testid="badge-detail" aria-live="polite"></aside>
         </div>
       </div>
     `;
@@ -78,6 +78,7 @@ export class BadgesShowcase {
             data-testid="badge-card-${b.index}"
             data-material="${material.id}"
             data-unlocked="false"
+            data-earned="false"
           >
             ${createIconSvg(badgeIconId(b.index), 'sl-icon-xl')}
             <span class="sl-badge-name">${safeText(b.name)}</span>
@@ -135,6 +136,7 @@ export class BadgesShowcase {
       const btn = this.badgeButtons.get(b.id);
       if (btn) {
         btn.setAttribute('data-unlocked', String(unlocked));
+        btn.setAttribute('data-earned', String(unlocked));
         btn.classList.toggle('is-selected', b.id === this.selectedBadgeId);
         btn.setAttribute('aria-pressed', String(b.id === this.selectedBadgeId));
       }
@@ -155,6 +157,8 @@ export class BadgesShowcase {
     if (this.detailEl && activeBadge) {
       const unlocked = this.currentUnlocked.has(activeBadge.id);
       const material = getBadgeMaterial(activeBadge.index);
+      this.detailEl.setAttribute('data-material', material.id);
+      this.detailEl.setAttribute('data-earned', String(unlocked));
       this.detailEl.innerHTML = `
         <div class="sl-badge-pedestal" style="opacity:${unlocked ? 1 : 0.6};">
           ${createIconSvg(badgeIconId(activeBadge.index), 'sl-icon-xxl')}
