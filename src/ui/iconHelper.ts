@@ -466,63 +466,75 @@ function mixHexSimple(hexA: string, hexB: string, ratio: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-const STARTER_PIXELS_16: Record<number, readonly string[]> = {
-  // #0001 Bulbasaur — teal-mint quadruped with lush green bulb on back
+const STARTER_PIXELS_20: Record<number, readonly string[]> = {
+  // #0001 Bulbasaur — detailed shaded teal quadruped with layered lush green bulb & crimson eyes
   1: [
-    '......OOOO......',
-    '.....OGGGGO.....',
-    '....OGLLGGGO....',
-    '...OGGLLGGGGO...',
-    '...OGGGGGGGGO...',
-    '..OOOOPPPPOOOO..',
-    '.OPPPPLLPPLPPPO.',
-    '.OPWEOPLLPOEWPO.',
-    '.OPPPPPPPPPPPPO.',
-    '.OPSPPPPPPPPSPO.',
-    '..OPPPSSSSPPPO..',
-    '..OPSOOOOOOSPO..',
-    '..OPPO....OPPO..',
-    '..OOO......OOO..',
-    '................',
-    '................',
+    '........OOOO........',
+    '.......OGLLGO.......',
+    '......OGLLGGGO......',
+    '.....OGGLGGGGGO.....',
+    '....OGGGGGGGGGGO....',
+    '....OGGGGSSGGGGO....',
+    '...OOOOPPPPPPOOOO...',
+    '..OPPLPPPPPPPPLPPO..',
+    '.OPPPPLPPPPPPLPPPPO.',
+    '.OPPRWOPPPPPOWRPPO..',
+    '.OPPRROPPPPPPRRPPO..',
+    '.OPPPPPPPPPPPPPPPO..',
+    '.OPPSPPSSPPSSPPPSO..',
+    '..OPPPSSSSSSPPPPO...',
+    '..OPSOOOOOOOOSPO....',
+    '..OPSO..OO..OSPO....',
+    '..OPPO......OPPO....',
+    '..OOO........OOO....',
+    '....................',
+    '....................',
   ],
-  // #0004 Charmander — warm orange lizard with golden-red tail flame
+  // #0004 Charmander — charismatic warm flame lizard with sunlit cream belly & bright tail flame
   4: [
-    '.....OOOO.......',
-    '....OPLPPO......',
-    '...OPLPPWEO.....',
-    '...OPPPPPPO..OO.',
-    '....OPPPPO..OFO.',
-    '....OCCCCO.OFYO.',
-    '...OPCCCCPOOFYO.',
-    '...OPCCCCPO.OO..',
-    '....OPCCCPO.O...',
-    '....OPPPPOO.....',
-    '....OPPSPO......',
-    '....OPPO.O......',
-    '...OPPO.OPPO....',
-    '...OOO...OOO....',
-    '................',
-    '................',
+    '......OOOOOO........',
+    '.....OPLLLLPO.......',
+    '....OPLLPPPPPO......',
+    '....OPLPPPWEO.......',
+    '....OPPPPPPPO...OO..',
+    '.....OPPPPPPO..OFO..',
+    '.....OOCCCCOO.OFYO..',
+    '....OPCCCCCCPOFYYO..',
+    '...OPLCCCCCCPOFFYO..',
+    '...OPOCCCCCCPOOFFO..',
+    '....OOCCCCCCPO.OO...',
+    '.....OPCCCCPO..O....',
+    '.....OPPPPPPOOO.....',
+    '.....OPPPSSPO.......',
+    '.....OPSO.OPO.......',
+    '....OPPO..OPPO......',
+    '....OWOO..OOWO......',
+    '....OOO....OOO......',
+    '....................',
+    '....................',
   ],
-  // #0007 Squirtle — sky-blue turtle with brown shell, cream belly & curled tail
+  // #0007 Squirtle — charming azure turtle with chestnut plated shell, cream belly & curled tail
   7: [
-    '.....OOOO.......',
-    '....OPLLPO......',
-    '...OPLPPWEO.....',
-    '...OPPPPPPO.....',
-    '....OPPPPO......',
-    '...OOBBBBOO.....',
-    '..OBBCCBPPPO....',
-    '..OBBCCBPPLPO...',
-    '..OBBCCBPPPO....',
-    '..OOBBBOOPO..OO.',
-    '...OPPPPO..OPLO.',
-    '...OPSO.O..OPLO.',
-    '...OPPO.OPPOOO..',
-    '...OOO...OOO....',
-    '................',
-    '................',
+    '......OOOOOO........',
+    '.....OPLLLLPO.......',
+    '....OPLLPPWEO.......',
+    '....OPPPPPPPO.......',
+    '.....OPPPPPPO.......',
+    '....OOOBBBBOOO......',
+    '...OBBCCCCCCBPO.....',
+    '..OBBCCCCCCCCPPO....',
+    '..OBBCCBBCCCPPLPO...',
+    '..OBBCCCCCCCCPPO....',
+    '..OOBBCCCCCCBPO..OO.',
+    '...OOBBBBBBBOO..OPLO',
+    '....OPPPPPPO...OPLLO',
+    '....OPSO..OPO..OPLPO',
+    '....OPPO..OPPO.OOOPO',
+    '....OWOO..OWOO..OOO.',
+    '....OOO....OOO......',
+    '....................',
+    '....................',
+    '....................',
   ],
 };
 
@@ -537,7 +549,7 @@ export function drawPixelArchetypeSprite(
 ): void {
   const sp = getSpeciesEntry(speciesId);
   const pal = TYPE_PALETTES[sp.type] ?? TYPE_PALETTES.normal;
-  const starterGrid = STARTER_PIXELS_16[speciesId];
+  const starterGrid = STARTER_PIXELS_20[speciesId];
   const grid = starterGrid ?? ARCHETYPE_PIXELS_12[sp.archetype] ?? ARCHETYPE_PIXELS_12.biped;
   const gridDim = grid.length;
   const pxSize = Math.max(1, Math.floor(size / gridDim));
@@ -554,6 +566,7 @@ export function drawPixelArchetypeSprite(
         A: '#2c447c',
         E: '#0f1733',
         W: '#38528f',
+        R: '#1a274a',
         G: '#1f335c',
         C: '#1a274a',
         B: '#182444',
@@ -561,18 +574,19 @@ export function drawPixelArchetypeSprite(
         Y: '#2e4782',
       }
     : {
-        O: '#111633',
-        P: speciesId === 1 && !shiny ? '#4fd1a5' : speciesId === 4 && !shiny ? '#fb7b2c' : speciesId === 7 && !shiny ? '#4bb4f8' : base,
-        L: speciesId === 1 && !shiny ? '#86efac' : speciesId === 4 && !shiny ? '#fdba74' : speciesId === 7 && !shiny ? '#93e1ff' : mixHexSimple(base, '#ffffff', 0.42),
-        S: speciesId === 1 && !shiny ? '#15803d' : speciesId === 4 && !shiny ? '#c2410c' : speciesId === 7 && !shiny ? '#1d6fb8' : mixHexSimple(base, pal.dark, 0.52),
+        O: '#11162c',
+        P: speciesId === 1 && !shiny ? '#4fd1a5' : speciesId === 4 && !shiny ? '#f5782c' : speciesId === 7 && !shiny ? '#48b2f5' : base,
+        L: speciesId === 1 && !shiny ? '#94f5c6' : speciesId === 4 && !shiny ? '#ffc17a' : speciesId === 7 && !shiny ? '#9ce6ff' : mixHexSimple(base, '#ffffff', 0.42),
+        S: speciesId === 1 && !shiny ? '#167d47' : speciesId === 4 && !shiny ? '#bf3f0c' : speciesId === 7 && !shiny ? '#1a68b2' : mixHexSimple(base, pal.dark, 0.52),
         A: shiny ? '#7ce8ff' : pal.glow,
-        E: '#0d132b',
+        E: '#0e1328',
         W: '#ffffff',
-        G: shiny ? '#bef264' : '#22c55e',
-        C: '#fde68a',
-        B: '#a16207',
+        R: '#e11d48',
+        G: shiny ? '#bef264' : '#26ba5a',
+        C: '#fef0b8',
+        B: '#9e5c1a',
         F: '#ef4444',
-        Y: '#fde047',
+        Y: '#fef08a',
       };
 
   for (let row = 0; row < grid.length; row++) {
@@ -595,7 +609,7 @@ export function drawPixelArchetypeSprite(
 
 function getSafe2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
   try {
-    return canvas.getContext('2d', { willReadFrequently: true }) ?? canvas.getContext('2d');
+    return canvas.getContext('2d');
   } catch {
     return null;
   }
@@ -604,7 +618,8 @@ function getSafe2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D |
 /**
  * Draws the live animated Pokémon frame or crisp `fallbacks-atlas.png` pixel sprite
  * (`imageSmoothingEnabled = false`) onto any preview `<canvas>` in Pokédex, Starter Lab,
- * Team/Box, or Tactical Briefing. Never emits `<img>` tags or blurry upscales.
+ * Team/Box, or Tactical Briefing. Uses fast layered pixel-chamber backdrops (zero per-frame
+ * radial gradient allocations!) and never emits blurry upscales.
  */
 export function renderPokemonPreviewCanvas(
   canvas: HTMLCanvasElement,
@@ -627,25 +642,43 @@ export function renderPokemonPreviewCanvas(
   ctx.clearRect(0, 0, w, h);
   ctx.imageSmoothingEnabled = false;
 
-  // Soft elemental spotlight halo & grounded pedestal shadow (no boxy edges)
-  const bg = ctx.createRadialGradient(w * 0.5, h * 0.46, Math.max(4, w * 0.08), w * 0.5, h * 0.5, w * 0.66);
-  bg.addColorStop(0, silhouette ? 'rgba(99, 132, 224, 0.24)' : shiny ? 'rgba(255, 224, 130, 0.34)' : `${pal.primary}44`);
-  bg.addColorStop(0.55, silhouette ? 'rgba(18, 28, 64, 0.72)' : `${pal.dark}66`);
-  bg.addColorStop(1, 'rgba(7, 11, 28, 0.88)');
-  ctx.fillStyle = bg;
+  // Fast crisp observatory alcove backdrop (zero radial gradient allocation overhead!)
+  ctx.fillStyle = silhouette ? '#0d1226' : '#0a0e1d';
   ctx.fillRect(0, 0, w, h);
 
-  // Subtle grounded elliptical shadow disc under sprite
-  ctx.save();
-  ctx.fillStyle = 'rgba(4, 7, 20, 0.58)';
-  ctx.beginPath();
-  ctx.ellipse(w * 0.5, h * 0.83, w * 0.31, Math.max(3, h * 0.075), 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = silhouette ? 'rgba(108, 229, 255, 0.16)' : shiny ? 'rgba(255, 224, 130, 0.24)' : `${pal.glow}24`;
-  ctx.beginPath();
-  ctx.ellipse(w * 0.5, h * 0.82, w * 0.26, Math.max(2, h * 0.055), 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  // Layered observatory archway + stepped elemental jewel aura (crisp pixel depth!)
+  const archX = Math.round(w * 0.1);
+  const archW = w - archX * 2;
+  ctx.fillStyle = silhouette ? '#131b36' : '#121830';
+  ctx.fillRect(archX, Math.round(h * 0.08), archW, Math.round(h * 0.78));
+  ctx.fillStyle = silhouette ? 'rgba(99, 132, 224, 0.15)' : shiny ? 'rgba(245, 205, 102, 0.22)' : `${pal.primary}2c`;
+  ctx.fillRect(Math.round(w * 0.14), Math.round(h * 0.16), Math.round(w * 0.72), Math.round(h * 0.58));
+  ctx.fillStyle = silhouette ? 'rgba(124, 180, 255, 0.12)' : shiny ? 'rgba(255, 240, 175, 0.2)' : `${pal.glow}24`;
+  ctx.fillRect(Math.round(w * 0.22), Math.round(h * 0.22), Math.round(w * 0.56), Math.round(h * 0.44));
+  ctx.fillStyle = silhouette ? 'rgba(180, 220, 255, 0.08)' : shiny ? 'rgba(255, 248, 210, 0.18)' : `${pal.glow}1c`;
+  ctx.fillRect(Math.round(w * 0.31), Math.round(h * 0.3), Math.round(w * 0.38), Math.round(h * 0.28));
+
+  // Crisp antique-brass inner corner ticks & subtle top filigree on showcase canvases
+  if (w >= 68) {
+    ctx.fillStyle = shiny ? 'rgba(255, 234, 170, 0.78)' : 'rgba(222, 182, 98, 0.52)';
+    ctx.fillRect(4, 4, 7, 1);
+    ctx.fillRect(4, 4, 1, 7);
+    ctx.fillRect(w - 11, 4, 7, 1);
+    ctx.fillRect(w - 5, 4, 1, 7);
+    ctx.fillRect(4, h - 5, 7, 1);
+    ctx.fillRect(4, h - 11, 1, 7);
+    ctx.fillRect(w - 11, h - 5, 7, 1);
+    ctx.fillRect(w - 5, h - 11, 1, 7);
+  }
+
+  // Stepped museum dais pedestal & grounded contact shadow beneath sprite
+  const daisY = Math.round(h * 0.8);
+  ctx.fillStyle = 'rgba(4, 6, 16, 0.78)';
+  ctx.fillRect(Math.round(w * 0.16), daisY, Math.round(w * 0.68), Math.max(4, Math.round(h * 0.09)));
+  ctx.fillStyle = silhouette ? 'rgba(124, 210, 255, 0.26)' : shiny ? 'rgba(255, 224, 130, 0.46)' : `${pal.glow}4a`;
+  ctx.fillRect(Math.round(w * 0.22), daisY + 1, Math.round(w * 0.56), Math.max(2, Math.round(h * 0.035)));
+  ctx.fillStyle = 'rgba(218, 176, 88, 0.42)';
+  ctx.fillRect(Math.round(w * 0.18), daisY + Math.max(4, Math.round(h * 0.08)), Math.round(w * 0.64), 1);
 
   const frameCanvas = SpriteAssetLoader.selectFrame(frames, timeSec);
   if (frameCanvas && frameCanvas.width > 0 && frameCanvas.height > 0 && !silhouette) {

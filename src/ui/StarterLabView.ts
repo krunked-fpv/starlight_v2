@@ -407,7 +407,11 @@ export class StarterLabView {
       }
     }
 
-    const stamp = `${Math.floor(timeSec * 12)}|${assets.spriteCacheVersion ?? 0}|${Boolean(assets.fallbacksSheet)}`;
+    const hasAnimatedStarter = STARTER_IDS.some(
+      (id) => (assets.getFrames?.(id)?.frames.length ?? 0) > 1,
+    );
+    const animTick = hasAnimatedStarter ? Math.floor(timeSec * 8) : 0;
+    const stamp = `${animTick}|${assets.spriteCacheVersion ?? 0}|${Boolean(assets.fallbacksSheet)}`;
     if (stamp !== this.lastSpriteStamp) {
       this.lastSpriteStamp = stamp;
       for (const id of STARTER_IDS) {

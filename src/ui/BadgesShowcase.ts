@@ -19,12 +19,14 @@ export class BadgesShowcase {
   private selectedBadgeId = '';
   private badgeButtons = new Map<string, HTMLButtonElement>();
   private progressPillEl: HTMLElement | null = null;
+  private shrinesPillEl: HTMLElement | null = null;
   private progressBarEl: HTMLElement | null = null;
   private detailEl: HTMLElement | null = null;
   private gridEl: HTMLElement | null = null;
   private lastMemo = '';
   private currentBadges: DojoBadgeEntry[] = getAllBadges();
   private currentUnlocked = new Set<string>();
+  private currentShrinesCleared = 0;
 
   mount(container: HTMLElement, _callbacks: UIBridgeCallbacks): void {
     this.badgeButtons.clear();
@@ -36,7 +38,8 @@ export class BadgesShowcase {
       <div class="sl-badges-body">
         <div class="sl-badges-summary">
           <span class="sl-pill sl-pill-gold sl-num" data-testid="badges-progress-summary">0 / 28 Island Badges Earned</span>
-          <div style="flex: 1 1 220px; max-width: 420px;">
+          <span class="sl-pill sl-pill-cyan sl-num" data-testid="badges-shrines-summary">${createIconSvg('icon-shrine', 'sl-icon-sm')} Shrines Cleared: 0 / 20</span>
+          <div style="flex: 1 1 200px; max-width: 380px;">
             <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-dash" data-testid="badges-progress-bar" style="--fill: 0;"></div></div>
           </div>
           <span class="sl-pill">Select any crest to inspect unlock criteria</span>
@@ -51,6 +54,7 @@ export class BadgesShowcase {
     `;
 
     this.progressPillEl = container.querySelector('[data-testid="badges-progress-summary"]');
+    this.shrinesPillEl = container.querySelector('[data-testid="badges-shrines-summary"]');
     this.progressBarEl = container.querySelector('[data-testid="badges-progress-bar"]');
     this.gridEl = container.querySelector('[data-testid="badges-grid"]');
     this.detailEl = container.querySelector('[data-testid="badge-detail"]');
@@ -100,11 +104,6 @@ export class BadgesShowcase {
         this.lastMemo = '';
         this.updateSelectionAndDetail();
       });
-      btn.addEventListener('mouseenter', () => {
-        this.selectedBadgeId = b.id;
-        this.lastMemo = '';
-        this.updateSelectionAndDetail();
-      });
     }
   }
 
@@ -120,12 +119,13 @@ export class BadgesShowcase {
       }
     }
     this.currentUnlocked = unlocked;
+    this.currentShrinesCleared = Array.isArray(profile.shrinesCleared) ? profile.shrinesCleared.length : 0;
     if (!active) return;
     this.updateSelectionAndDetail();
   }
 
   private updateSelectionAndDetail(): void {
-    const memo = `${this.selectedBadgeId}|${Array.from(this.currentUnlocked).sort().join(',')}`;
+    const memo = `${this.selectedBadgeId}|${this.currentShrinesCleared}|${Array.from(this.currentUnlocked).sort().join(',')}`;
     if (memo === this.lastMemo) return;
     this.lastMemo = memo;
 
@@ -144,6 +144,9 @@ export class BadgesShowcase {
 
     if (this.progressPillEl) {
       this.progressPillEl.textContent = `${totalEarned} / ${this.currentBadges.length} Island Badges Earned`;
+    }
+    if (this.shrinesPillEl) {
+      this.shrinesPillEl.innerHTML = `${createIconSvg('icon-shrine', 'sl-icon-sm')} Shrines Cleared: ${this.currentShrinesCleared} / 20`;
     }
     if (this.progressBarEl) {
       this.progressBarEl.style.setProperty(

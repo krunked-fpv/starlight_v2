@@ -4,7 +4,15 @@ import type {
   TacticalBriefingData,
   UIBridgeCallbacks,
 } from '../contracts';
-import { getBiomeVisualProfile, typeToIconId } from '../core';
+import {
+  getAllBadges,
+  getBiomeVisualProfile,
+  getSpeciesEntry,
+  RIVAL_TRAINERS,
+  SHRINES,
+  stripEmojis,
+  typeToIconId,
+} from '../core';
 import { createIconSvg, renderPokemonPreviewCanvas, safeText } from './iconHelper';
 
 export interface BriefingModalAssets {
@@ -100,6 +108,10 @@ export class BriefingModal {
       b.canChallenge,
       b.farmZoneBiomeName,
       b.suggestedCounterTypes.join(','),
+      b.upgradeTier ?? 0,
+      b.badgeName ?? '',
+      b.rematchNumber ?? 0,
+      b.partyPreview?.map((m) => `${m.speciesId}:${m.level}`).join(',') ?? '',
       isRematch,
     ].join('|');
 
@@ -109,6 +121,49 @@ export class BriefingModal {
       const hpPct = Math.round(Math.max(0, Math.min(1, b.avgHpRatio)) * 100);
       const deltaLabel = b.levelDelta >= 0 ? `+${b.levelDelta}` : `${b.levelDelta}`;
       const showBiomeChip = b.title.trim().toLowerCase() !== biomeVisual.displayName.trim().toLowerCase();
+
+      // V1 Parity (#32): resolve badge reward, rival full party roster, Star Rank & Rematch pills
+      const shrineObj = b.kind === 'shrine' || b.kind === 'shrine-trial' ? SHRINES[b.targetId] : null;
+      const rivalObj = b.kind === 'rival' ? RIVAL_TRAINERS[b.targetId] : null;
+      const badgeLookup = shrineObj?.badgeId ? getAllBadges().find((bg) => bg.id === shrineObj.badgeId) : null;
+      const resolvedBadgeName = b.badgeName || (badgeLookup ? stripEmojis(badgeLookup.name) : '');
+      const resolvedUpgradeTier = b.upgradeTier ?? (shrineObj ? 2 : 0);
+      const resolvedParty =
+        Array.isArray(b.partyPreview) && b.partyPreview.length > 0
+          ? b.partyPreview
+          : rivalObj && Array.isArray(rivalObj.party)
+            ? rivalObj.party.map((slot) => {
+                const sp = getSpeciesEntry(slot.speciesId);
+                return {
+                  speciesId: sp.id,
+                  name: sp.name,
+                  level: Math.max(1, slot.level),
+                  type: sp.type,
+                  upgradeTier: 0,
+                };
+              })
+            : [];
+
+      const partyRosterHtml =
+        resolvedParty.length > 0
+          ? `
+            <div class="sl-briefing-roster" data-testid="briefing-party-roster">
+              <span class="sl-vital-label" style="margin-bottom:2px;">Opponent Party (${resolvedParty.length})</span>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                ${resolvedParty
+                  .map(
+                    (m) => `
+                  <span class="sl-pill sl-num">
+                    ${createIconSvg(typeToIconId(m.type), 'sl-icon-sm')}
+                    <span>${safeText(stripEmojis(m.name))} Lv.${m.level}${m.upgradeTier ? ` Rank ${m.upgradeTier}` : ''}</span>
+                  </span>
+                `,
+                  )
+                  .join('')}
+              </div>
+            </div>
+          `
+          : '';
 
       const enemyTypePills = b.enemyTypes
         .map(
@@ -158,9 +213,13 @@ export class BriefingModal {
             <div class="sl-briefing-types">
               ${showBiomeChip ? `<span class="sl-pill">${safeText(biomeVisual.displayName)}</span>` : ''}
               ${enemyTypePills}
+              ${resolvedUpgradeTier > 0 ? `<span class="sl-pill sl-pill-gold sl-num">${createIconSvg('icon-star-rank', 'sl-icon-sm')} Rank ${resolvedUpgradeTier}</span>` : ''}
+              ${resolvedBadgeName ? `<span class="sl-pill sl-pill-gold">${createIconSvg('icon-badges', 'sl-icon-sm')} ${safeText(resolvedBadgeName)}</span>` : ''}
+              ${b.rematchNumber && b.rematchNumber > 0 ? `<span class="sl-pill sl-pill-cyan sl-num">Rematch #${b.rematchNumber}</span>` : isRematch ? `<span class="sl-pill sl-pill-cyan">Rematch</span>` : ''}
             </div>
           </div>
         </div>
+        ${partyRosterHtml}
 
         <div class="sl-briefing-kpis sl-num">
           <div class="sl-vital-box">
@@ -210,14 +269,21 @@ export class BriefingModal {
               : 'Challenge Now';
         }
       }
+      if (this.healBtn) {
+        this.healBtn.classList.toggle('sl-btn-primary', Boolean(b.needsHeal));
+        this.healBtn.classList.toggle('sl-btn-cyan', !b.needsHeal);
+      }
       if (this.farmBtn) {
+        const recommendFarm = !b.needsHeal && (b.tier === 'danger' || b.tier === 'challenging');
+        this.farmBtn.classList.toggle('sl-btn-cyan', recommendFarm);
         const span = this.farmBtn.querySelector('span');
         if (span) span.textContent = `Farm: ${b.farmZoneBiomeName}`;
       }
       this.lastRenderStamp = '';
     }
 
-    const stamp = `${b.previewSpeciesId}|${Math.floor(timeSec * 12)}|${Boolean(assets.fallbacksSheet)}|${Boolean(assets.frames)}`;
+    const animated = (assets.frames?.frames.length ?? 0) > 1;
+    const stamp = `${b.previewSpeciesId}|${animated ? Math.floor(timeSec * 8) : 0}|${Boolean(assets.fallbacksSheet)}|${Boolean(assets.frames)}`;
     if (this.previewCanvas && stamp !== this.lastRenderStamp) {
       this.lastRenderStamp = stamp;
       renderPokemonPreviewCanvas(
