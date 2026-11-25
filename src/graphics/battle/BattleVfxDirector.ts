@@ -24,6 +24,17 @@ export interface CombatantRenderAnchor {
   size: number;
 }
 
+export interface BattleCeremonyState {
+  shinyIntroSide: 'player' | 'enemy' | null;
+  shinyIntroElapsed: number;
+  eliteIntroSide: 'player' | 'enemy' | null;
+  eliteIntroElapsed: number;
+  buddyEndureSide: 'player' | 'enemy' | null;
+  buddyEndureElapsed: number;
+  celebrationMode: 'victory' | 'capture' | null;
+  celebrationElapsed: number;
+}
+
 export function getSideAnchor(
   side: 'player' | 'enemy',
   layout: BattleStageLayout,
@@ -450,14 +461,16 @@ function drawPixelBallSprite(
   openAmount: number,
 ): void {
   const px = Math.max(2, Math.round(size / 12));
+  // V1 parity palette: Star Ball = cosmic royal violet dome + gold star emblem + gold rim
   const topColor =
-    kind === 'star' ? '#2c3d9e' : kind === 'great' ? '#2570d9' : '#e03e3e';
+    kind === 'star' ? '#7e22ce' : kind === 'great' ? '#0ea5e9' : '#ef4444';
   const topShade =
-    kind === 'star' ? '#1c2670' : kind === 'great' ? '#1a4da3' : '#a8232c';
+    kind === 'star' ? '#4c1d95' : kind === 'great' ? '#0369a1' : '#b91c1c';
   const topHighlight =
-    kind === 'star' ? '#7be8ff' : kind === 'great' ? '#75c4ff' : '#ff9999';
+    kind === 'star' ? '#d8b4fe' : kind === 'great' ? '#7dd3fc' : '#fca5a5';
+  const rimOutline = kind === 'star' ? '#fde047' : '#121026';
   const trimColor =
-    kind === 'star' ? '#ffd954' : kind === 'great' ? '#e84855' : '#1b1d36';
+    kind === 'star' ? '#fde047' : kind === 'great' ? '#f43f5e' : '#1b1d36';
 
   ctx.save();
   ctx.imageSmoothingEnabled = false;
@@ -471,7 +484,7 @@ function drawPixelBallSprite(
   for (let r = 0; r < 4; r++) {
     const hw = rows[r];
     const y = (-4 + r) * px - split;
-    ctx.fillStyle = '#121026';
+    ctx.fillStyle = rimOutline;
     ctx.fillRect(-(hw + 1) * px, y, (hw * 2 + 2) * px, px);
     ctx.fillStyle = topColor;
     ctx.fillRect(-hw * px, y, hw * 2 * px, px);
@@ -483,9 +496,13 @@ function drawPixelBallSprite(
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(-3 * px, -3 * px - split, px, px);
   if (kind === 'star') {
-    ctx.fillStyle = '#ffe566';
-    ctx.fillRect(-px, -3 * px - split, px * 2, px);
-    ctx.fillRect(-px * 0.5, -2 * px - split, px, px);
+    // V1 gold cosmic cross-star emblem + corner starlight dots
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(-2 * px, -3 * px - split, px * 4, px);
+    ctx.fillRect(-px * 0.5, -4 * px - split, px, px * 3);
+    ctx.fillStyle = '#fef08a';
+    ctx.fillRect(-4 * px, -2 * px - split, px, px);
+    ctx.fillRect(3 * px, -2 * px - split, px, px);
   } else if (kind === 'great') {
     ctx.fillStyle = trimColor;
     ctx.fillRect(-5 * px, -2 * px - split, px * 2, px);
@@ -496,9 +513,9 @@ function drawPixelBallSprite(
   for (let r = 4; r < 8; r++) {
     const hw = rows[r];
     const y = (-4 + r) * px + split;
-    ctx.fillStyle = '#121026';
+    ctx.fillStyle = rimOutline;
     ctx.fillRect(-(hw + 1) * px, y, (hw * 2 + 2) * px, px);
-    ctx.fillStyle = r >= 6 ? '#bccbe6' : '#f4f8ff';
+    ctx.fillStyle = r >= 6 ? '#c4d2eb' : kind === 'star' ? '#f5f3ff' : '#f4f8ff';
     ctx.fillRect(-hw * px, y, hw * 2 * px, px);
   }
 
@@ -508,13 +525,37 @@ function drawPixelBallSprite(
     ctx.fillRect(-6 * px, -px * 0.5, 12 * px, px);
     ctx.fillStyle = trimColor;
     ctx.fillRect(-px * 1.5, -px * 1.5, px * 3, px * 3);
-    ctx.fillStyle = kind === 'star' ? '#7be8ff' : '#ffffff';
+    ctx.fillStyle = kind === 'star' ? '#fef08a' : '#ffffff';
     ctx.fillRect(-px * 0.5, -px * 0.5, px, px);
   } else {
-    drawPixelCrossStar(ctx, 0, 0, px * 3, px, '#7be8ff', '#ffffff');
+    drawPixelCrossStar(ctx, 0, 0, px * 3, px, kind === 'star' ? '#fde047' : '#7be8ff', '#ffffff');
   }
 
   ctx.restore();
+}
+
+function drawPixelMiniHeart(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  px: number,
+  fill: string,
+  highlight = '#ffe4ef',
+): void {
+  const s = Math.max(2, px);
+  const sx = snap(cx, s);
+  const sy = snap(cy, s);
+  ctx.fillStyle = '#3b0b22';
+  ctx.fillRect(sx - s * 3, sy - s * 2, s * 6, s * 3);
+  ctx.fillRect(sx - s * 2, sy + s, s * 4, s);
+  ctx.fillRect(sx - s, sy + s * 2, s * 2, s);
+  ctx.fillStyle = fill;
+  ctx.fillRect(sx - s * 2, sy - s * 2, s * 2, s * 2);
+  ctx.fillRect(sx, sy - s * 2, s * 2, s * 2);
+  ctx.fillRect(sx - s * 2, sy - s, s * 4, s * 2);
+  ctx.fillRect(sx - s, sy + s, s * 2, s);
+  ctx.fillStyle = highlight;
+  ctx.fillRect(sx - s * 2, sy - s * 2, s, s);
 }
 
 function drawPixelChevronGlyph(
@@ -586,6 +627,7 @@ export class BattleVfxDirector {
     events: BattleVfxEvent[],
     width: number,
     height: number,
+    ceremony?: BattleCeremonyState | null,
   ): void {
     const layout = computeBattleStageLayout(width, height);
     const motionScale = state.reducedMotion ? 0.35 : 1.0;
@@ -725,6 +767,60 @@ export class BattleVfxDirector {
       }
     }
 
+    // V1 Parity Ceremony PointLights (Shiny intro, Elite/Trial intro, Buddy Endure, Victory/Capture Celebration)
+    if (ceremony) {
+      if (ceremony.shinyIntroSide && ceremony.shinyIntroElapsed < 1.15) {
+        const anchor = getSideAnchor(ceremony.shinyIntroSide, layout, state);
+        const fade = Math.sin(clamp(ceremony.shinyIntroElapsed / 1.15, 0, 1) * Math.PI);
+        backend.addPointLight({
+          id: 'ceremony-shiny-intro',
+          x: anchor.x,
+          y: anchor.y,
+          radius: 210,
+          color: [1.0, 0.90, 0.45],
+          intensity: clamp(fade * 1.55, 0, 1.8),
+        });
+      }
+      if (ceremony.eliteIntroSide && ceremony.eliteIntroElapsed < 1.15) {
+        const anchor = getSideAnchor(ceremony.eliteIntroSide, layout, state);
+        const fade = Math.sin(clamp(ceremony.eliteIntroElapsed / 1.15, 0, 1) * Math.PI);
+        backend.addPointLight({
+          id: 'ceremony-elite-intro',
+          x: anchor.x,
+          y: anchor.y,
+          radius: 230,
+          color: [0.78, 0.48, 1.0],
+          intensity: clamp(fade * 1.65, 0, 1.9),
+        });
+      }
+      if (ceremony.buddyEndureSide && ceremony.buddyEndureElapsed < 1.1) {
+        const anchor = getSideAnchor(ceremony.buddyEndureSide, layout, state);
+        const fade = Math.sin(clamp(ceremony.buddyEndureElapsed / 1.1, 0, 1) * Math.PI);
+        backend.addPointLight({
+          id: 'ceremony-buddy-endure',
+          x: anchor.x,
+          y: anchor.y,
+          radius: 205,
+          color: [0.96, 0.45, 0.72],
+          intensity: clamp(fade * 1.6, 0, 1.8),
+        });
+      }
+      if (ceremony.celebrationMode && ceremony.celebrationElapsed < 2.2) {
+        const fade = clamp(1 - ceremony.celebrationElapsed / 2.2, 0, 1);
+        const origin = ceremony.celebrationMode === 'capture'
+          ? getSideAnchor('enemy', layout, state)
+          : getSideAnchor('player', layout, state);
+        backend.addPointLight({
+          id: 'ceremony-celebration',
+          x: origin.x,
+          y: origin.y,
+          radius: 250,
+          color: ceremony.celebrationMode === 'capture' ? [0.45, 0.90, 1.0] : [1.0, 0.90, 0.46],
+          intensity: clamp(fade * 1.45, 0, 1.7),
+        });
+      }
+    }
+
     // Evolution phase starlight particles & radiance light
     if (state.phase === 'evolving') {
       const anchor = getSideAnchor('player', layout, state);
@@ -853,6 +949,7 @@ export class BattleVfxDirector {
     state: BattleSceneState,
     events: BattleVfxEvent[],
     camera: BattleCameraTransform,
+    ceremony?: BattleCeremonyState | null,
   ): void {
     const isCapturedResting =
       state.phase !== 'capturing' &&
@@ -860,12 +957,20 @@ export class BattleVfxDirector {
     const hasFloating = Array.isArray(state.floatingTexts) && state.floatingTexts.length > 0;
     const hasPlayerOv = hasCombatantOverlayWork(state, state.player);
     const hasEnemyOv = hasCombatantOverlayWork(state, state.enemy);
+    const hasCeremony = Boolean(
+      ceremony &&
+      ((ceremony.shinyIntroSide && ceremony.shinyIntroElapsed < 1.15) ||
+        (ceremony.eliteIntroSide && ceremony.eliteIntroElapsed < 1.15) ||
+        (ceremony.buddyEndureSide && ceremony.buddyEndureElapsed < 1.1) ||
+        (ceremony.celebrationMode && ceremony.celebrationElapsed < 2.2)),
+    );
 
     if (
       events.length === 0 &&
       !hasFloating &&
       !hasPlayerOv &&
       !hasEnemyOv &&
+      !hasCeremony &&
       state.phase !== 'capturing' &&
       !isCapturedResting &&
       state.phase !== 'evolving'
@@ -891,6 +996,11 @@ export class BattleVfxDirector {
       // 2. All 18-Type & Support Handcrafted Pixel VFX Choreographies
       for (let i = 0; i < events.length; i++) {
         this.drawEventChoreography(ctx, state, events[i], layout, px);
+      }
+
+      // 2b. V1 Ceremony VFX (Shiny Intro Sparkles, Elite/Trial Intro Aura, Buddy Endure Burst, Victory/Capture Confetti)
+      if (ceremony && hasCeremony) {
+        this.drawCeremonyEffects(ctx, state, ceremony, layout, px);
       }
 
       // 3. Poké / Great / Star Ball Capture Arc, Impact Flash, Wobble Shakes & Resting Caught Ball
@@ -1625,6 +1735,160 @@ export class BattleVfxDirector {
     ctx.restore();
   }
 
+  private drawCeremonyEffects(
+    ctx: CanvasRenderingContext2D,
+    state: BattleSceneState,
+    ceremony: BattleCeremonyState,
+    layout: BattleStageLayout,
+    px: number,
+  ): void {
+    const reduced = state.reducedMotion;
+
+    // 1. V1 Shiny Intro Sparkle Burst (24 golden/ivory/rose/white pixel stars)
+    if (ceremony.shinyIntroSide && ceremony.shinyIntroElapsed < 1.15) {
+      const p = clamp(ceremony.shinyIntroElapsed / 1.15, 0, 1);
+      const anchor = getSideAnchor(ceremony.shinyIntroSide, layout, state);
+      const cols = ['#fde047', '#fef08a', '#ffffff', '#f472b6'];
+      const count = reduced ? 8 : 20;
+      ctx.save();
+      ctx.globalAlpha = clamp(1 - p * 0.85, 0, 1);
+      drawPixelImpactRing(
+        ctx,
+        anchor.x,
+        anchor.y,
+        (20 + p * 74),
+        (14 + p * 54),
+        '#fde047',
+        '#ffffff',
+        px,
+      );
+      for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2 + p * 1.4;
+        const speed = 24 + (i % 4) * 20;
+        const sx = anchor.x + Math.cos(a) * (16 + p * speed);
+        const sy = anchor.y + Math.sin(a) * (12 + p * speed * 0.78) - p * 26;
+        drawPixelCrossStar(ctx, sx, sy, px * (i % 3 === 0 ? 2 : 1), px, cols[i % cols.length], '#ffffff');
+      }
+      ctx.restore();
+    }
+
+    // 2. V1 Elite / Astral Trial Intro Aura (3 gold/violet rings + orbiting star/lightning sparks)
+    if (ceremony.eliteIntroSide && ceremony.eliteIntroElapsed < 1.15) {
+      const p = clamp(ceremony.eliteIntroElapsed / 1.15, 0, 1);
+      const anchor = getSideAnchor(ceremony.eliteIntroSide, layout, state);
+      const ringCols = ['#fbbf24', '#a855f7', '#fde047'];
+      const auraCols = ['#fde047', '#c084fc', '#fb923c', '#ffffff'];
+      ctx.save();
+      ctx.globalAlpha = clamp(Math.sin(p * Math.PI) * 1.2, 0, 1);
+      for (let r = 0; r < 3; r++) {
+        const rp = clamp(p * 1.35 - r * 0.14, 0, 1);
+        if (rp <= 0) continue;
+        drawPixelShockwave(
+          ctx,
+          anchor.x,
+          anchor.y,
+          18 + rp * (76 + r * 18),
+          12 + rp * (52 + r * 12),
+          ringCols[r],
+          px * 2,
+          24,
+        );
+      }
+      const orbCount = reduced ? 8 : 16;
+      for (let i = 0; i < orbCount; i++) {
+        const dir = i % 2 === 0 ? 1 : -1;
+        const ang = (i / orbCount) * Math.PI * 2 + p * 4.8 * dir;
+        const rad = (54 + (i % 3) * 10) * (1 - p * 0.22);
+        const ox = anchor.x + Math.cos(ang) * rad;
+        const oy = anchor.y + Math.sin(ang) * rad * 0.74;
+        if (i % 2 === 0) {
+          drawPixelCrossStar(ctx, ox, oy, px * 2, px, auraCols[i % auraCols.length], '#ffffff');
+        } else {
+          drawPixelRect(ctx, ox - px, oy - px, px * 2, px * 2, auraCols[i % auraCols.length], px);
+        }
+      }
+      ctx.restore();
+    }
+
+    // 3. V1 Buddy Endure Rose Heart & Gold Ring Burst
+    if (ceremony.buddyEndureSide && ceremony.buddyEndureElapsed < 1.1) {
+      const p = clamp(ceremony.buddyEndureElapsed / 1.1, 0, 1);
+      const anchor = getSideAnchor(ceremony.buddyEndureSide, layout, state);
+      const cols = ['#f472b6', '#fb7185', '#fde047', '#ffffff'];
+      ctx.save();
+      ctx.globalAlpha = clamp(1 - p * 0.85, 0, 1);
+      drawPixelImpactRing(ctx, anchor.x, anchor.y, 16 + p * 88, 12 + p * 64, '#f472b6', '#fde047', px);
+      const count = reduced ? 8 : 16;
+      for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2;
+        const dist = 16 + p * (58 + (i % 3) * 24);
+        const hx = anchor.x + Math.cos(a) * dist;
+        const hy = anchor.y + Math.sin(a) * dist * 0.76 - p * 34;
+        if (i % 2 === 0) {
+          drawPixelMiniHeart(ctx, hx, hy, px, cols[i % 2]);
+        } else {
+          drawPixelCrossStar(ctx, hx, hy, px * 2, px, cols[2 + (i % 2)], '#ffffff');
+        }
+      }
+      ctx.restore();
+    }
+
+    // 4. V1 Victory / Capture Celebration Stage Glow & Multi-Wave Pixel Confetti
+    if (ceremony.celebrationMode && ceremony.celebrationElapsed < 2.2) {
+      const p = clamp(ceremony.celebrationElapsed / 2.2, 0, 1);
+      const isCapture = ceremony.celebrationMode === 'capture';
+      const origin = isCapture
+        ? getSideAnchor('enemy', layout, state)
+        : getSideAnchor('player', layout, state);
+      const palette = ['#fde047', '#38bdf8', '#f472b6', '#4ade80', '#c084fc', '#ffffff'];
+      const fade = p < 0.72 ? 1 : clamp((1 - p) / 0.28, 0, 1);
+
+      ctx.save();
+      // Subtle stage celebration rim wash
+      ctx.fillStyle = isCapture
+        ? `rgba(56, 189, 248, ${(fade * 0.08).toFixed(3)})`
+        : `rgba(253, 224, 71, ${(fade * 0.08).toFixed(3)})`;
+      ctx.fillRect(0, 0, layout.width, layout.height);
+
+      // Expanding celebration halo rings during opening 0.75s
+      if (ceremony.celebrationElapsed < 0.78) {
+        const rp = clamp(ceremony.celebrationElapsed / 0.78, 0, 1);
+        ctx.globalAlpha = clamp(1 - rp, 0, 1);
+        drawPixelImpactRing(
+          ctx,
+          origin.x,
+          origin.y,
+          18 + rp * 116,
+          12 + rp * 74,
+          isCapture ? '#38bdf8' : '#fde047',
+          '#f472b6',
+          px,
+        );
+      }
+
+      // Multi-wave pixel confetti & starlight sparkles
+      ctx.globalAlpha = fade;
+      const count = reduced ? 14 : 38;
+      for (let i = 0; i < count; i++) {
+        const waveDelay = (i % 3) * 0.14;
+        const t = ceremony.celebrationElapsed - waveDelay;
+        if (t <= 0) continue;
+        const ang = (i / count) * Math.PI * 2 + (i % 5) * 0.19;
+        const speed = 78 + (i % 7) * 26;
+        const cx = origin.x + Math.cos(ang) * speed * t * 0.85;
+        const cy = origin.y + Math.sin(ang) * speed * t * 0.55 - 88 * t + 115 * t * t;
+        const col = palette[i % palette.length];
+        if (i % 4 === 0) {
+          drawPixelCrossStar(ctx, cx, cy, px * 2, px, col, '#ffffff');
+        } else {
+          const flutter = Math.sin(t * 14 + i) > 0 ? px * 2 : px;
+          drawPixelRect(ctx, cx, cy, flutter, px * 2, col, px);
+        }
+      }
+      ctx.restore();
+    }
+  }
+
   private drawEvolutionSequence(
     ctx: CanvasRenderingContext2D,
     state: BattleSceneState,
@@ -1633,23 +1897,42 @@ export class BattleVfxDirector {
   ): void {
     const anchor = getSideAnchor('player', layout, state);
     const t = state.reducedMotion ? 0.5 : state.elapsedSeconds;
+    const spiralCols = ['#fde047', '#f472b6', '#38bdf8', '#c084fc', '#67e8f9', '#ffffff'];
 
     ctx.save();
+    // V1 prismatic expanding halo pulse
+    const pulsePhase = (t * 1.15) % 1;
+    ctx.globalAlpha = clamp(1 - pulsePhase, 0.15, 0.9);
+    drawPixelImpactRing(
+      ctx,
+      anchor.x,
+      anchor.y,
+      20 + pulsePhase * 92,
+      14 + pulsePhase * 62,
+      '#f472b6',
+      '#fde047',
+      px,
+    );
+    ctx.globalAlpha = 1;
+
+    // V1 6-color converging counter-rotating starlight spiral
     for (let strand = 0; strand < 2; strand++) {
-      const col = strand === 0 ? '#ffe566' : '#7be8ff';
+      const dir = strand === 0 ? 1 : -1;
       for (let i = 0; i <= 22; i++) {
         const f = i / 22;
-        const ang = f * Math.PI * 4 + t * 4 + strand * Math.PI;
-        const rx = anchor.size * 0.48 * (1 - f * 0.34);
+        const ang = f * Math.PI * 4 + t * 4.6 * dir + strand * Math.PI;
+        const rx = anchor.size * 0.52 * (1 - f * 0.36);
         const sx = anchor.x + Math.cos(ang) * rx;
-        const sy = anchor.padY - f * anchor.size * 1.35;
-        drawPixelRect(ctx, sx - px, sy - px, px * 2, px * 2, col, px);
-        if (i % 4 === 0) {
-          drawPixelRect(ctx, sx, sy, px, px, '#ffffff', px);
+        const sy = anchor.padY - f * anchor.size * 1.38;
+        const col = spiralCols[(i + strand * 3) % spiralCols.length];
+        if (i % 5 === 0) {
+          drawPixelCrossStar(ctx, sx, sy, px * 2, px, col, '#ffffff');
+        } else {
+          drawPixelRect(ctx, sx - px, sy - px, px * 2, px * 2, col, px);
         }
       }
     }
-    drawPixelHexagon(ctx, anchor.x, anchor.padY - 4, anchor.size * 0.56, anchor.size * 0.22, t * 0.9, '#ffe599', px);
+    drawPixelHexagon(ctx, anchor.x, anchor.padY - 4, anchor.size * 0.56, anchor.size * 0.22, t * 0.9, '#fde047', px);
     ctx.restore();
   }
 

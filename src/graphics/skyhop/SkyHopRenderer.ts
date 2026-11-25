@@ -940,47 +940,71 @@ export class SkyHopRenderer implements ISkyHopRenderer {
         this.drawEntity(ctx, cw, ch, sx, sy, state.entities[i], t, reducedMotion);
       }
 
-      // 8. World Particles (crisp pixel cross-sparks & stepped pixel rings — zero smooth arcs!)
+      // 8. World Particles (all 4 V1 shapes: 'ring', 'star', rotated 'spark', and 'dot'!)
       for (let i = 0; i < state.particles.length; i++) {
         const p = state.particles[i];
-        const alpha = clamp(1 - p.life / Math.max(0.05, p.maxLife), 0, 1);
+        const progress = clamp(p.life / Math.max(0.05, p.maxLife), 0, 1);
+        const alpha = clamp(1 - progress, 0, 1);
         const pxX = Math.round(p.x * sx);
         const pyY = Math.round(p.y * sy);
-        const rad = Math.max(2, Math.round((p.maxSize ? p.size + (p.maxSize - p.size) * (p.life / p.maxLife) : p.size) * sx));
+        const rad = Math.max(2, Math.round((p.maxSize ? p.size + (p.maxSize - p.size) * progress : p.size) * sx));
         ctx.save();
         ctx.globalAlpha = alpha;
         if (p.shape === 'ring') {
           ctx.fillStyle = p.color;
-          const pts = 16;
+          const pts = 20;
           for (let k = 0; k < pts; k++) {
             const a = (k / pts) * Math.PI * 2;
             ctx.fillRect(Math.round(pxX + Math.cos(a) * rad), Math.round(pyY + Math.sin(a) * rad), 3, 3);
           }
         } else if (p.shape === 'star') {
-          const half = Math.max(2, Math.floor(rad * 0.6));
+          // Crisp pixel 4-point cross-star + diagonal core with white glint (V1 star burst parity!)
+          const arm = Math.max(3, Math.round(rad * (1 - progress * 0.35)));
+          const core = Math.max(2, Math.round(arm * 0.42));
           ctx.fillStyle = p.color;
-          ctx.fillRect(pxX - half, pyY - 1, half * 2 + 1, 2);
-          ctx.fillRect(pxX - 1, pyY - half, 2, half * 2 + 1);
+          ctx.fillRect(pxX - arm, pyY - 1, arm * 2 + 1, 2);
+          ctx.fillRect(pxX - 1, pyY - arm, 2, arm * 2 + 1);
+          ctx.fillRect(pxX - core, pyY - core, core * 2, core * 2);
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(pxX - 1, pyY - 1, 2, 2);
-        } else {
+        } else if (p.shape === 'spark') {
+          // Velocity-aligned rotated pixel spark streak (V1 spark trail/shatter parity!)
+          const len = Math.max(4, Math.round(rad * 2.2 * (1 - progress * 0.45)));
+          ctx.translate(pxX, pyY);
+          ctx.rotate(Math.atan2(p.vy, p.vx));
           ctx.fillStyle = p.color;
-          ctx.fillRect(pxX - Math.floor(rad * 0.5), pyY - Math.floor(rad * 0.5), rad, rad);
+          ctx.fillRect(Math.round(-len * 0.5), -1, len, 3);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(Math.round(-len * 0.25), 0, Math.max(2, Math.round(len * 0.5)), 1);
+        } else {
+          const d = Math.max(2, Math.round(rad * (1 - progress * 0.5)));
+          ctx.fillStyle = p.color;
+          ctx.fillRect(pxX - Math.floor(d * 0.5), pyY - Math.floor(d * 0.5), d, d);
         }
         ctx.restore();
+      }
+
+      // 8b. V1 Wave 5+ gentle crosswind drift streaks across flight lane
+      if (state.wave >= 5 && !reducedMotion) {
+        ctx.fillStyle = 'rgba(200, 238, 255, 0.22)';
+        for (let i = 0; i < 6; i++) {
+          const wy = Math.round(((i + 0.5) / 6) * ch * 0.78 + ch * 0.08);
+          const wx = Math.round((cw - ((t * 360 + i * 210) % (cw + 80))) % (cw + 80));
+          ctx.fillRect(wx, wy, 44, 2);
+        }
       }
 
       // 9. Crisp Starlight Pixel Slipstream Afterimages & Speed Sparks
       this.drawSlipstreamAfterimages(ctx, sx, sy, state);
 
-      // 10. Animated Lead Pokémon Sprite
+      // 10. Animated Lead Pokémon Sprite + V1 Protective Type/Dash Ring & Translucent Invuln Blink
       const px = Math.round(state.playerX * sx);
       const py = Math.round(state.playerY * sy);
       const spriteSize = Math.round(Math.max(48, Math.min(cw, ch) * 0.132));
 
       // Pixel-stepped Magnet aura ring (rotating cyan pixel beads)
       if (state.magnetTimer > 0) {
-        const ringR = spriteSize * 0.72;
+        const ringR = spriteSize * 0.76;
         ctx.fillStyle = 'rgba(124, 232, 255, 0.85)';
         for (let k = 0; k < 12; k++) {
           const a = t * 3.2 * motion + (k / 12) * Math.PI * 2;
@@ -990,10 +1014,14 @@ export class SkyHopRenderer implements ISkyHopRenderer {
         }
       }
 
-      const blinkSkip = state.hitInvulnTimer > 0 && Math.floor(this.localTime * 18) % 2 === 1;
-      if (!blinkSkip) {
-        this.drawPartnerSprite(ctx, px, py, spriteSize, state, fallbackSheet, reducedMotion);
+      // V1 Parity: translucent 0.45 alpha blink on hitInvulnTimer (keeps partner visible while dodging!)
+      const invulnBlink = state.hitInvulnTimer > 0 && Math.floor(state.hitInvulnTimer * 14) % 2 === 0;
+      ctx.save();
+      if (invulnBlink) {
+        ctx.globalAlpha = 0.45;
       }
+      this.drawPartnerSprite(ctx, px, py, spriteSize, state, fallbackSheet, reducedMotion);
+      ctx.restore();
 
       // 11. Cached Seamless Near Foreground Cloud Billows (2 drawImage blits!)
       const nearClouds = getCachedCloudSeaStrip('near', skyIdx, palette.accent, cw, ch);
@@ -1006,6 +1034,12 @@ export class SkyHopRenderer implements ISkyHopRenderer {
         ctx.drawImage(nearClouds, -offset, ny);
         ctx.drawImage(nearClouds, nw - offset, ny);
         ctx.restore();
+      }
+
+      // 12. V1 Parity On-Canvas Sky Biome Pill + Wave 5+ Crosswind Indicator + Paused Overlay (Zero Emojis!)
+      this.drawSkyBiomeBadge(ctx, ch, palette.name, palette.accent, state.wave >= 5);
+      if (state.paused && !state.gameOver) {
+        this.drawPausedOverlay(ctx, cw, ch);
       }
     }, 'world');
 
@@ -1123,17 +1157,29 @@ export class SkyHopRenderer implements ISkyHopRenderer {
     ctx.imageSmoothingEnabled = false;
 
     // Cached glowing backing aura (zero per-frame createRadialGradient!)
-    const [gr, gg, gb] = hexToRgb255(state.dashTimer > 0 ? '#7ce8ff' : pal.glow);
+    const [gr, gg, gb] = hexToRgb255(state.dashTimer > 0 ? '#fde047' : pal.glow);
     const auraSprite = getCachedGlowSprite(
-      state.dashTimer > 0 ? 'rgba(124, 232, 255, 0.58)' : `rgba(${gr}, ${gg}, ${gb}, 0.34)`,
-      state.dashTimer > 0 ? 'rgba(124, 232, 255, 0.22)' : `rgba(${gr}, ${gg}, ${gb}, 0.12)`,
+      state.dashTimer > 0 ? 'rgba(253, 224, 71, 0.56)' : `rgba(${gr}, ${gg}, ${gb}, 0.34)`,
+      state.dashTimer > 0 ? 'rgba(124, 232, 255, 0.24)' : `rgba(${gr}, ${gg}, ${gb}, 0.12)`,
     );
     if (auraSprite) {
-      const auraR = Math.round(size * 0.78);
+      const auraR = Math.round(size * (state.dashTimer > 0 ? 0.86 : 0.76));
       ctx.save();
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(auraSprite, -auraR, -auraR, auraR * 2, auraR * 2);
       ctx.restore();
+    }
+
+    // V1 Parity: Crisp pixel-stepped type-colored Shield / Golden Star Dash Halo ring around flying partner
+    const ringR = Math.round(size * (state.dashTimer > 0 ? 0.64 : 0.54));
+    const ringColor = state.dashTimer > 0 ? '#fde047' : pal.glow;
+    const ringPts = 24;
+    ctx.fillStyle = ringColor;
+    for (let k = 0; k < ringPts; k++) {
+      const a = (k / ringPts) * Math.PI * 2;
+      const rx = Math.round(Math.cos(a) * ringR);
+      const ry = Math.round(Math.sin(a) * ringR);
+      ctx.fillRect(rx - 1, ry - 1, state.dashTimer > 0 ? 3 : 2, state.dashTimer > 0 ? 3 : 2);
     }
 
     if (frameCanvas && frameCanvas.width > 0 && frameCanvas.height > 0) {
@@ -1417,5 +1463,108 @@ export class SkyHopRenderer implements ISkyHopRenderer {
       ctx.fillRect(sxp - 2, syp, 5, 1);
       ctx.fillRect(sxp, syp - 2, 1, 5);
     }
+  }
+
+  /**
+   * V1 Parity On-Canvas Sky Biome Pill + Wave 5+ Crosswind Indicator (100% crisp pixel art, zero emojis!).
+   * Anchored bottom-left so it never overlaps the centered top HUD bar or bottom flight controls.
+   */
+  private drawSkyBiomeBadge(
+    ctx: CanvasRenderingContext2D,
+    ch: number,
+    skyName: string,
+    accentHex: string,
+    hasCrosswind: boolean,
+  ): void {
+    const label = hasCrosswind ? `${skyName}  |  WIND` : skyName;
+    const h = 28;
+    const x = 18;
+    const y = Math.max(88, ch - h - 18);
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.font = 'bold 11px monospace';
+    const measuredW = typeof ctx.measureText === 'function' ? ctx.measureText(label).width : 0;
+    const textW = measuredW > 0 ? Math.ceil(measuredW) : label.length * 7;
+    const rightPad = hasCrosswind ? 30 : 14;
+    const w = Math.max(156, Math.min(310, 26 + textW + rightPad));
+
+    // Outer midnight ink frame + slate-indigo body + beveled accent border
+    ctx.fillStyle = '#070b1c';
+    ctx.fillRect(x - 2, y - 2, w + 4, h + 4);
+    ctx.fillStyle = 'rgba(13, 20, 48, 0.90)';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+    ctx.fillRect(x + 2, y + 2, w - 4, 4);
+    ctx.strokeStyle = accentHex;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+    // Pixel star emblem inside pill
+    const sx = x + 13;
+    const sy = y + 14;
+    ctx.fillStyle = accentHex;
+    ctx.fillRect(sx - 4, sy - 1, 9, 2);
+    ctx.fillRect(sx - 1, sy - 4, 2, 9);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(sx - 1, sy - 1, 2, 2);
+
+    // Optional pixel crosswind chevron on Wave 5+
+    if (hasCrosswind) {
+      const cx = x + w - 16;
+      const cy = y + 14;
+      ctx.fillStyle = '#7ce8ff';
+      ctx.fillRect(cx - 5, cy - 3, 7, 2);
+      ctx.fillRect(cx - 2, cy + 1, 8, 2);
+    }
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + 24, y + 14);
+    ctx.restore();
+  }
+
+  /**
+   * V1 Parity Translucent Paused Canvas Overlay (`C:\dojo\js\minigame.js:2090-2121`, zero emojis!).
+   */
+  private drawPausedOverlay(ctx: CanvasRenderingContext2D, cw: number, ch: number): void {
+    const cardW = 304;
+    const cardH = 92;
+    const cardX = Math.round((cw - cardW) * 0.5);
+    const cardY = Math.round((ch - cardH) * 0.5);
+
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = 'rgba(7, 11, 24, 0.56)';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // Beveled celestial brass & slate pause frame
+    ctx.fillStyle = '#070a1a';
+    ctx.fillRect(cardX - 3, cardY - 3, cardW + 6, cardH + 6);
+    ctx.fillStyle = 'rgba(15, 23, 52, 0.94)';
+    ctx.fillRect(cardX, cardY, cardW, cardH);
+    ctx.fillStyle = 'rgba(253, 224, 71, 0.14)';
+    ctx.fillRect(cardX + 2, cardY + 2, cardW - 4, 6);
+    ctx.strokeStyle = '#fde047';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cardX + 1, cardY + 1, cardW - 2, cardH - 2);
+
+    // Crisp pixel pause bars icon left of PAUSED title
+    const ix = Math.round(cw * 0.5 - 52);
+    const iy = cardY + 26;
+    ctx.fillStyle = '#fde047';
+    ctx.fillRect(ix, iy, 4, 14);
+    ctx.fillRect(ix + 7, iy, 4, 14);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fef08a';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText('PAUSED', cw * 0.5 + 10, cardY + 34);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText('Press P or tap Resume to fly', cw * 0.5, cardY + 64);
+    ctx.restore();
   }
 }

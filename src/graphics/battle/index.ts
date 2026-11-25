@@ -14,5 +14,9 @@ export {
 } from './BattleArenas';
 
 export { OfflineSpriteRigSynthesizer } from './OfflineSpriteRigSynthesizer';
-export { BattleVfxDirector } from './BattleVfxDirector';
-export { BattleTheaterRenderer } from './BattleTheaterRenderer';
+export { BattleVfxDirector, type BattleCeremonyState } from './BattleVfxDirector';
+export {
+  BattleTheaterRenderer,
+  resolveSpriteMotionStyle,
+  type SpriteMotionStyle,
+} from './BattleTheaterRenderer';

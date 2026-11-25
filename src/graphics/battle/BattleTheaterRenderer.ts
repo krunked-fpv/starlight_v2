@@ -34,7 +34,7 @@ import {
   type BattleCameraTransform,
   type BattleStageLayout,
 } from './BattleArenas';
-import { BattleVfxDirector } from './BattleVfxDirector';
+import { BattleVfxDirector, type BattleCeremonyState } from './BattleVfxDirector';
 import { OfflineSpriteRigSynthesizer } from './OfflineSpriteRigSynthesizer';
 import {
   SILHOUETTE_CONTOUR_PAD,
@@ -100,6 +100,20 @@ interface CameraSpringState {
   shakePhase: number;
 }
 
+export type SpriteMotionStyle = 'breathe' | 'bob' | 'float' | 'flutter';
+
+/**
+ * Matches Starlight V1 (`C:\dojo\js\battle.js:345-364`) per-type idle sprite animation personalities.
+ */
+export function resolveSpriteMotionStyle(type: string, speciesId: number): SpriteMotionStyle {
+  const t = String(type || '').toLowerCase();
+  if (t === 'flying' || t === 'bug') return 'flutter';
+  if (t === 'ghost' || t === 'psychic' || t === 'fairy' || t === 'dragon') return 'float';
+  if (t === 'electric' || t === 'water' || t === 'fighting' || t === 'dark') return 'bob';
+  if (t === 'ice') return Number.isFinite(speciesId) && speciesId % 2 === 0 ? 'float' : 'breathe';
+  return 'breathe';
+}
+
 interface PreparedCombatant {
   visual: BattleCombatantVisual;
   pad: BattleStageLayout['playerPad'];
@@ -113,6 +127,7 @@ interface PreparedCombatant {
   facing: 'left' | 'right';
   rimColor: string;
   tilt: number;
+  hoverLift: number;
   flipX: boolean;
   liveFrame: HTMLCanvasElement | null;
   opaqueBounds: SpriteOpaqueBounds | null;
@@ -267,6 +282,22 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   private cachedViewportWidth = 960;
   private cachedViewportHeight = 540;
 
+  // V1 Parity Ceremony Trackers (Shiny intro, Elite/Astral Trial intro, Buddy Endure, Victory/Capture Celebration)
+  private lastEnemyUid = '';
+  private lastPlayerUid = '';
+  private lastObservedPhase: BattleSceneState['phase'] = 'shutter';
+  private lastEnduredTextId = '';
+  private ceremony: BattleCeremonyState = {
+    shinyIntroSide: null,
+    shinyIntroElapsed: 99,
+    eliteIntroSide: null,
+    eliteIntroElapsed: 99,
+    buddyEndureSide: null,
+    buddyEndureElapsed: 99,
+    celebrationMode: null,
+    celebrationElapsed: 99,
+  };
+
   attachAssets(
     manifest: AtlasManifest | null,
     getArenaImage: (biomeId: BiomeId) => HTMLImageElement | null,
@@ -301,6 +332,18 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     this.pendingCameraCue = null;
     this.lastObservedCue = 'idle';
     this.lastObservedCueSeq = -1;
+    this.lastEnemyUid = '';
+    this.lastPlayerUid = '';
+    this.lastObservedPhase = 'shutter';
+    this.lastEnduredTextId = '';
+    this.ceremony.shinyIntroSide = null;
+    this.ceremony.shinyIntroElapsed = 99;
+    this.ceremony.eliteIntroSide = null;
+    this.ceremony.eliteIntroElapsed = 99;
+    this.ceremony.buddyEndureSide = null;
+    this.ceremony.buddyEndureElapsed = 99;
+    this.ceremony.celebrationMode = null;
+    this.ceremony.celebrationElapsed = 99;
     this.spring.x = 0;
     this.spring.y = 0;
     this.spring.zoom = 1;
@@ -488,6 +531,51 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       this.spring.shakeAmp *= Math.exp(-dt * 11.5);
       if (this.spring.shakeAmp < 0.1) this.spring.shakeAmp = 0;
     }
+
+    // Advance & trigger V1 Ceremony visual states (Shiny intro, Elite/Trial intro, Buddy Endure, Victory/Capture celebration)
+    this.ceremony.shinyIntroElapsed += dt;
+    this.ceremony.eliteIntroElapsed += dt;
+    this.ceremony.buddyEndureElapsed += dt;
+    this.ceremony.celebrationElapsed += dt;
+
+    if (!state.shutter.active) {
+      if (state.enemy.mon.uid !== this.lastEnemyUid) {
+        this.lastEnemyUid = state.enemy.mon.uid;
+        if (state.enemy.mon.isShiny) {
+          this.ceremony.shinyIntroSide = 'enemy';
+          this.ceremony.shinyIntroElapsed = 0;
+        }
+        if (state.enemy.mon.isElite || state.tier === 'shrine-trial') {
+          this.ceremony.eliteIntroSide = 'enemy';
+          this.ceremony.eliteIntroElapsed = 0;
+        }
+      }
+      if (state.player.mon.uid !== this.lastPlayerUid) {
+        this.lastPlayerUid = state.player.mon.uid;
+        if (state.player.mon.isShiny) {
+          this.ceremony.shinyIntroSide = 'player';
+          this.ceremony.shinyIntroElapsed = 0;
+        }
+      }
+    }
+
+    if (Array.isArray(state.floatingTexts)) {
+      for (let i = state.floatingTexts.length - 1; i >= 0; i--) {
+        const ft = state.floatingTexts[i];
+        if (ft.id !== this.lastEnduredTextId && ft.text.toUpperCase().includes('ENDUR')) {
+          this.lastEnduredTextId = ft.id;
+          this.ceremony.buddyEndureSide = ft.side;
+          this.ceremony.buddyEndureElapsed = 0;
+          break;
+        }
+      }
+    }
+
+    if (state.phase === 'victory' && this.lastObservedPhase !== 'victory') {
+      this.ceremony.celebrationMode = state.rewardSummary?.caught ? 'capture' : 'victory';
+      this.ceremony.celebrationElapsed = 0;
+    }
+    this.lastObservedPhase = state.phase;
   }
 
   render(backend: IRenderBackend, state: BattleSceneState): void {
@@ -600,11 +688,12 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       activeEvents,
       this.cachedViewportWidth,
       this.cachedViewportHeight,
+      this.ceremony,
     );
 
     // 5. Post-Light Composite (cached foreground framing + pixel VFX merged into ONE 'post-light' blit!)
     renderArenaForeground(backend, arena, state, camera, state.elapsedSeconds, 'post-light');
-    this.vfxDirector.renderPostLightVfx(backend, state, activeEvents, camera);
+    this.vfxDirector.renderPostLightVfx(backend, state, activeEvents, camera, this.ceremony);
 
     // 6. 4-Mode Encounter Transition Shutter ('screen' layer)
     if (activeShutter.active || (activeShutter.progress > 0 && activeShutter.progress < 1)) {
@@ -650,12 +739,31 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     captureAlpha *= sendOutAlpha * (1 - faintDrop);
     if (captureAlpha <= 0.01) return null;
 
-    const bobPx =
-      state.reducedMotion || faintDrop > 0.05
-        ? 0
-        : Math.round(
-            Math.sin(state.elapsedSeconds * 3.1 + (visual.side === 'player' ? 0 : 1.7)) * 2,
-          );
+    const mon = visual.mon;
+    const motionStyle = resolveSpriteMotionStyle(mon.type, mon.speciesId);
+    const phaseOff = visual.side === 'player' ? 0 : 1.7;
+    let bobPx = 0;
+    let hoverLift = 0;
+    let idleTilt = 0;
+    let breatheScaleY = 1;
+    if (!state.reducedMotion && faintDrop <= 0.05) {
+      const t = state.elapsedSeconds;
+      if (motionStyle === 'flutter') {
+        hoverLift = 5 + Math.sin(t * 7.8 + phaseOff) * 3.5;
+        bobPx = Math.round(hoverLift);
+        idleTilt = Math.sin(t * 5.2 + phaseOff) * 0.032;
+      } else if (motionStyle === 'float') {
+        hoverLift = 6 + Math.sin(t * 2.4 + phaseOff) * 4.2;
+        bobPx = Math.round(hoverLift);
+        idleTilt = Math.cos(t * 1.8 + phaseOff) * 0.018;
+      } else if (motionStyle === 'bob') {
+        bobPx = Math.round(Math.abs(Math.sin(t * 3.6 + phaseOff)) * 3.2);
+      } else {
+        // 'breathe': grounded subtle rhythmic breath
+        breatheScaleY = 1 + Math.sin(t * 2.6 + phaseOff) * 0.022;
+      }
+    }
+
     const evoScale =
       visual.side === 'player' && state.phase === 'evolving' && !state.reducedMotion
         ? 1 + Math.sin(state.elapsedSeconds * 9) * 0.08
@@ -667,14 +775,13 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
     const groundY = pad.y + faintDropPx;
     const drawSize = pad.size * captureScale * evoScale;
     const facing: 'left' | 'right' = visual.side === 'player' ? 'right' : 'left';
-    const mon = visual.mon;
     const monPal = TYPE_PALETTES[mon.type] ?? TYPE_PALETTES.normal;
     const rimType =
       state.arenaLightingType && state.arenaLightingPulse > 0.25
         ? state.arenaLightingType
         : mon.type;
     const rimColor = TYPE_PALETTES[rimType]?.glow ?? monPal.glow;
-    const tilt = clamp(visual.lungeOffset * 0.11 - visual.recoilOffset * 0.13, -0.2, 0.2) * dir;
+    const tilt = clamp(visual.lungeOffset * 0.11 - visual.recoilOffset * 0.13, -0.2, 0.2) * dir + idleTilt;
 
     const liveFrame =
       !state.forceOfflineRig && !visual.useOfflineRig
@@ -706,15 +813,15 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       }
 
       liveDrawW = Math.max(1, Math.round(liveFrameW * scale));
-      liveDrawH = Math.max(1, Math.round(liveFrameH * scale));
+      liveDrawH = Math.max(1, Math.round(liveFrameH * scale * breatheScaleY));
 
       if (opaqueBounds) {
         const rawCenterX = (opaqueBounds.minX + opaqueBounds.maxX + 1) * 0.5;
         const alignedCenterX = flipX ? liveFrameW - rawCenterX : rawCenterX;
         liveDrawX = Math.round(cx - alignedCenterX * scale);
-        const feetOffsetY = (opaqueBounds.maxY + 1) * scale;
+        const feetOffsetY = (opaqueBounds.maxY + 1) * scale * breatheScaleY;
         const standingDy = groundY - feetOffsetY + 2 + shiftY - bobPx;
-        const contentCenterY = (opaqueBounds.minY + opaqueBounds.maxY + 1) * 0.5 * scale;
+        const contentCenterY = (opaqueBounds.minY + opaqueBounds.maxY + 1) * 0.5 * scale * breatheScaleY;
         const pullDy = cy - contentCenterY;
         liveDrawY = Math.round(standingDy * captureScale + pullDy * (1 - captureScale));
         liveVisibleW = clamp(
@@ -743,6 +850,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       facing,
       rimColor,
       tilt,
+      hoverLift,
       flipX,
       liveFrame,
       opaqueBounds,
@@ -789,9 +897,10 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       );
     }
 
-    // 2. Grounded 2-tier pixel-stepped contact shadow directly beneath feet
-    const shadowRx = Math.max(pad.size * 0.27 * captureScale, liveVisibleW * 0.44);
-    const shadowRy = Math.max(px * 2.5, pad.size * 0.09 * captureScale);
+    // 2. Grounded 2-tier pixel-stepped contact shadow directly beneath feet (contracts subtly when floating/fluttering!)
+    const hoverScale = clamp(1 - prep.hoverLift * 0.016, 0.78, 1);
+    const shadowRx = Math.max(pad.size * 0.27 * captureScale, liveVisibleW * 0.44) * hoverScale;
+    const shadowRy = Math.max(px * 2.5, pad.size * 0.09 * captureScale) * hoverScale;
     drawPixelSteppedDisc(
       ctx,
       cx,
@@ -953,7 +1062,11 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
             ? [1.0, 0.42, 0.45, 0.58]
             : undefined;
 
-    // 2. Main crisp animated pixel sprite
+    // 2. Main crisp animated pixel sprite (with V1 Evolution radiant glow swell!)
+    const isEvoGlow = visual.side === 'player' && state.phase === 'evolving';
+    const evoEmissive = isEvoGlow
+      ? 0.45 + (state.reducedMotion ? 0.2 : Math.abs(Math.sin(state.elapsedSeconds * 7.5)) * 0.45)
+      : 0;
     backend.drawSprite({
       source: liveFrame,
       sx: 0,
@@ -968,14 +1081,19 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       rotation: tilt,
       alpha: captureAlpha,
       tint,
-      rimColor: rimRgba,
-      emissive: visual.hitFlash > 0.05 ? visual.hitFlash * 0.85 : mon.isShiny ? 0.22 : 0,
+      rimColor: isEvoGlow ? [1.0, 0.90, 0.48, 0.85] : rimRgba,
+      emissive: Math.max(visual.hitFlash > 0.05 ? visual.hitFlash * 0.85 : mon.isShiny ? 0.22 : 0, evoEmissive),
       pixelCrisp: true,
       depth,
     });
 
-    // 3. Crisp pixel-accurate ivory hit-flash silhouette (pops vividly even on dark sprites!)
-    if (visual.hitFlash > 0.05) {
+    // 3. Crisp pixel-accurate ivory hit-flash silhouette (or V1 Evolution peak flash pulse!)
+    const evoFlashAmt =
+      isEvoGlow && !state.reducedMotion
+        ? clamp((Math.sin(state.elapsedSeconds * 11) - 0.55) * 1.4, 0, 0.72)
+        : 0;
+    const flashStrength = Math.max(visual.hitFlash, evoFlashAmt);
+    if (flashStrength > 0.05) {
       const flashMask = getSpriteHitFlashCanvas(liveFrame);
       backend.drawSprite({
         source: flashMask ?? liveFrame,
@@ -989,7 +1107,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         dh,
         flipX,
         rotation: tilt,
-        alpha: visual.hitFlash * (flashMask ? 0.86 : 0.82) * captureAlpha,
+        alpha: flashStrength * (flashMask ? 0.86 : 0.82) * captureAlpha,
         additive: !flashMask,
         pixelCrisp: true,
         depth: depth + 0.1,

@@ -27,6 +27,7 @@ import {
   BattleVfxDirector,
   OfflineSpriteRigSynthesizer,
   computeBattleStageLayout,
+  resolveSpriteMotionStyle,
 } from './index';
 import { SkyHopRenderer } from '../skyhop';
 import type { SkyHopState } from '../../contracts';
@@ -1066,6 +1067,72 @@ describe('SkyHopRenderer (cached pixel sky/islands/clouds, handcrafted entity st
     expect(stats.activeParticles).toBeGreaterThan(0);
     expect(custom2dGradients).toBe(0);
     expect(ctx._calls.fillRect.mock.calls.length).toBeGreaterThan(30);
+
+    // V1 parity: verify Wave 5+ crosswind badge, rotated 'spark' particle, and Paused canvas overlay
+    state.wave = 5;
+    state.paused = true;
+    state.particles.push({
+      x: 260,
+      y: 220,
+      vx: -90,
+      vy: 35,
+      life: 0.08,
+      maxLife: 0.35,
+      size: 6,
+      color: '#fde047',
+      shape: 'spark',
+    });
+    ctx._calls.fillText.mockClear();
+    backend.beginFrame(5.0, 0.016);
+    skyHop.render(backend, state);
+    backend.endFrame();
+
+    expect(ctx._calls.fillText).toHaveBeenCalledWith(expect.stringContaining('WIND'), expect.any(Number), expect.any(Number));
+    expect(ctx._calls.fillText).toHaveBeenCalledWith('PAUSED', expect.any(Number), expect.any(Number));
+
+    backend.dispose();
+  });
+
+  it('V1 parity: differentiates idle sprite motion styles and renders Shiny/Elite intro, Buddy Endure, and Victory celebration ceremonies', async () => {
+    expect(resolveSpriteMotionStyle('flying', 18)).toBe('flutter');
+    expect(resolveSpriteMotionStyle('bug', 12)).toBe('flutter');
+    expect(resolveSpriteMotionStyle('ghost', 94)).toBe('float');
+    expect(resolveSpriteMotionStyle('psychic', 150)).toBe('float');
+    expect(resolveSpriteMotionStyle('ice', 144)).toBe('float');
+    expect(resolveSpriteMotionStyle('ice', 131)).toBe('breathe');
+    expect(resolveSpriteMotionStyle('electric', 25)).toBe('bob');
+    expect(resolveSpriteMotionStyle('grass', 1)).toBe('breathe');
+
+    const { backend } = await createCanvasBackendHarness(1280, 720);
+    const renderer = new BattleTheaterRenderer();
+    const state = makeBattleFixture('sanctum', 'shrine-trial', false, true);
+    state.shutter.active = false;
+    state.phase = 'intro';
+    state.enemy.mon.isShiny = true;
+    state.enemy.mon.isElite = true;
+    state.floatingTexts = [
+      { id: 'ft-endure', side: 'player', text: 'ENDURED! 1 HP', color: '#f472b6', size: 22, elapsed: 0.1, delay: 0, duration: 1.5, offsetY: -20 },
+    ];
+
+    const addLightSpy = vi.spyOn(backend, 'addPointLight');
+    renderer.update(state, 0.05);
+    backend.beginFrame(0.5, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-shiny-intro' }));
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-elite-intro' }));
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-buddy-endure' }));
+
+    // Transition to victory -> triggers celebration confetti & glow
+    addLightSpy.mockClear();
+    state.phase = 'victory';
+    renderer.update(state, 0.05);
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-celebration' }));
 
     backend.dispose();
   });
