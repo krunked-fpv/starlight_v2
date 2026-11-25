@@ -27,7 +27,10 @@ import {
   BattleVfxDirector,
   OfflineSpriteRigSynthesizer,
   computeBattleStageLayout,
+  resolveSpriteMotionStyle,
 } from './index';
+import { SkyHopRenderer } from '../skyhop';
+import type { SkyHopState } from '../../contracts';
 
 function createGradientStub() {
   return { addColorStop: vi.fn() };
@@ -898,6 +901,238 @@ describe('BattleTheaterRenderer shutters, camera cues, hit-stop & reducedMotion 
     const cam = renderer.getCameraTransform(false);
     expect(cam.shakeX).toBe(0);
     expect(cam.shakeY).toBe(0);
+
+    backend.dispose();
+  });
+
+  it('consolidates world custom2D passes before live sprites and skips empty post-light VFX work on idle battle frames', async () => {
+    const { backend } = await createCanvasBackendHarness(1280, 720);
+    const renderer = new BattleTheaterRenderer();
+    const manifest = makeFallbackManifest();
+    const arenaImg = makeFakeImage(480, 270);
+    renderer.attachAssets(manifest, () => arenaImg, () => null);
+
+    const frameP = { width: 56, height: 56 } as unknown as HTMLCanvasElement;
+    const frameE = { width: 56, height: 56 } as unknown as HTMLCanvasElement;
+    const state = makeBattleFixture('forest', 'wild', false, false);
+    state.shutter.active = false;
+    state.phase = 'command';
+    state.player.useOfflineRig = false;
+    state.enemy.useOfflineRig = false;
+    state.player.mon.isShiny = false;
+    state.enemy.mon.isShiny = false;
+    state.enemy.mon.isElite = false;
+    state.enemy.mon.encounterTrait = null;
+    state.player.mon.encounterTrait = null;
+    state.player.frames = {
+      key: '25:b:n',
+      speciesId: 25,
+      back: true,
+      shiny: false,
+      width: 56,
+      height: 56,
+      frames: [{ canvas: frameP, delayMs: 120 }],
+      totalDurationMs: 120,
+      sourceKind: 'animated-gif',
+      archetype: 'quadruped',
+      mirrorX: false,
+    };
+    state.enemy.frames = {
+      key: '1:f:n',
+      speciesId: 1,
+      back: false,
+      shiny: false,
+      width: 56,
+      height: 56,
+      frames: [{ canvas: frameE, delayMs: 120 }],
+      totalDurationMs: 120,
+      sourceKind: 'animated-gif',
+      archetype: 'quadruped',
+      mirrorX: false,
+    };
+
+    const callOrder: string[] = [];
+    const origSprite = backend.drawSprite.bind(backend);
+    const origCustom = backend.drawCustom2D.bind(backend);
+    vi.spyOn(backend, 'drawSprite').mockImplementation((cmd) => {
+      callOrder.push(cmd.source === arenaImg ? 'sprite:arena' : 'sprite:mon');
+      origSprite(cmd);
+    });
+    vi.spyOn(backend, 'drawCustom2D').mockImplementation((fn, layer = 'world') => {
+      callOrder.push(`custom:${layer}`);
+      origCustom(fn, layer);
+    });
+
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    // Arena sprite -> contiguous world custom2D draws (1 WebGL2 hybrid blit!) -> contiguous combatant sprites -> 1 post-light foreground draw (idle VFX skipped!)
+    const firstMonIdx = callOrder.indexOf('sprite:mon');
+    const worldCustomIndices = callOrder
+      .map((entry, idx) => (entry === 'custom:world' ? idx : -1))
+      .filter((idx) => idx >= 0);
+    expect(firstMonIdx).toBeGreaterThan(0);
+    expect(worldCustomIndices.every((idx) => idx < firstMonIdx)).toBe(true);
+    expect(callOrder.filter((e) => e === 'custom:post-light')).toHaveLength(1);
+
+    backend.dispose();
+  });
+});
+
+describe('SkyHopRenderer (cached pixel sky/islands/clouds, handcrafted entity stamps, zero per-frame gradients)', () => {
+  it('renders all 7 entity types, Star Dash, Magnet ring, and particles with ZERO createLinearGradient/createRadialGradient calls on main ctx', async () => {
+    const { backend, ctx } = await createCanvasBackendHarness(1280, 720);
+    const skyHop = new SkyHopRenderer({ rigSynthesizer: new OfflineSpriteRigSynthesizer() });
+    const state: SkyHopState = {
+      active: true,
+      running: true,
+      paused: false,
+      gameOver: false,
+      outOfCharges: false,
+      partnerSpeciesId: 25,
+      partnerName: 'Pikachu',
+      partnerType: 'electric',
+      partnerShiny: false,
+      partnerFrames: null,
+      playerX: 132,
+      playerY: 210,
+      playerVy: -15,
+      bankAngle: -0.08,
+      dashTimer: 0.6,
+      dashCooldown: 0,
+      magnetTimer: 2.0,
+      hitInvulnTimer: 0,
+      shakeTimer: 0.1,
+      wave: 2,
+      waveName: 'Starfall Cascade',
+      waveBannerTimer: 0,
+      skyIndex: 1,
+      score: 420,
+      combo: 6,
+      comboStreak: 6,
+      starsCollected: 12,
+      highScore: 500,
+      bestWave: 3,
+      hearts: 3,
+      maxHearts: 3,
+      charges: 2,
+      maxCharges: 3,
+      starShards: 10,
+      canBuyWithShards: false,
+      shardBuyInCost: 5,
+      elapsedSeconds: 4.2,
+      reducedMotion: false,
+      entities: [
+        { id: 'e-1', kind: 'star', x: 300, y: 120, baseY: 120, vy: 0, radius: 16, speed: 120, age: 0.4, bobAmp: 4, bobFreq: 2 },
+        { id: 'e-2', kind: 'bigstar', x: 360, y: 180, baseY: 180, vy: 0, radius: 22, speed: 120, age: 0.5, bobAmp: 4, bobFreq: 2 },
+        { id: 'e-3', kind: 'comet', x: 420, y: 220, baseY: 220, vy: 0, radius: 18, speed: 160, age: 0.6, bobAmp: 4, bobFreq: 2 },
+        { id: 'e-4', kind: 'cloud', x: 480, y: 140, baseY: 140, vy: 0, radius: 24, speed: 130, age: 0.7, bobAmp: 4, bobFreq: 2 },
+        { id: 'e-5', kind: 'storm_orb', x: 540, y: 260, baseY: 260, vy: 0, radius: 20, speed: 135, age: 0.8, bobAmp: 4, bobFreq: 2 },
+        { id: 'e-6', kind: 'void_meteor', x: 610, y: 300, baseY: 300, vy: 0, radius: 22, speed: 200, age: 0.9, bobAmp: 0, bobFreq: 0 },
+        { id: 'e-7', kind: 'void_meteor', x: 758, y: 200, baseY: 200, vy: 0, radius: 22, speed: 200, age: 0.1, bobAmp: 0, bobFreq: 0 },
+        { id: 'e-8', kind: 'heart', x: 500, y: 310, baseY: 310, vy: 0, radius: 16, speed: 120, age: 0.3, bobAmp: 4, bobFreq: 2 },
+      ],
+      particles: [
+        { x: 200, y: 200, vx: -40, vy: 10, life: 0.1, maxLife: 0.4, size: 6, maxSize: 18, color: '#7ce8ff', shape: 'ring' },
+        { x: 220, y: 210, vx: -30, vy: -10, life: 0.05, maxLife: 0.3, size: 5, color: '#ffe066', shape: 'star' },
+        { x: 240, y: 190, vx: -20, vy: 5, life: 0.1, maxLife: 0.3, size: 4, color: '#ffffff', shape: 'dot' },
+      ],
+      lastRunRewards: null,
+    };
+
+    for (let i = 0; i < 4; i++) {
+      skyHop.update(state, 0.025);
+    }
+
+    let custom2dGradients = 0;
+    const origCustom = backend.drawCustom2D.bind(backend);
+    vi.spyOn(backend, 'drawCustom2D').mockImplementation((fn, layer = 'world') => {
+      origCustom((c, w, h, dpr) => {
+        const beforeLin = (c.createLinearGradient as ReturnType<typeof vi.fn>).mock.calls.length;
+        const beforeRad = (c.createRadialGradient as ReturnType<typeof vi.fn>).mock.calls.length;
+        fn(c, w, h, dpr);
+        custom2dGradients +=
+          (c.createLinearGradient as ReturnType<typeof vi.fn>).mock.calls.length - beforeLin +
+          (c.createRadialGradient as ReturnType<typeof vi.fn>).mock.calls.length - beforeRad;
+      }, layer);
+    });
+
+    backend.beginFrame(4.2, 0.016);
+    skyHop.render(backend, state);
+    const stats = backend.endFrame();
+
+    expect(stats.drawCalls).toBeGreaterThan(2);
+    expect(stats.activeLights).toBeGreaterThan(0);
+    expect(stats.activeParticles).toBeGreaterThan(0);
+    expect(custom2dGradients).toBe(0);
+    expect(ctx._calls.fillRect.mock.calls.length).toBeGreaterThan(30);
+
+    // V1 parity: verify Wave 5+ crosswind badge, rotated 'spark' particle, and Paused canvas overlay
+    state.wave = 5;
+    state.paused = true;
+    state.particles.push({
+      x: 260,
+      y: 220,
+      vx: -90,
+      vy: 35,
+      life: 0.08,
+      maxLife: 0.35,
+      size: 6,
+      color: '#fde047',
+      shape: 'spark',
+    });
+    ctx._calls.fillText.mockClear();
+    backend.beginFrame(5.0, 0.016);
+    skyHop.render(backend, state);
+    backend.endFrame();
+
+    expect(ctx._calls.fillText).toHaveBeenCalledWith(expect.stringContaining('WIND'), expect.any(Number), expect.any(Number));
+    expect(ctx._calls.fillText).toHaveBeenCalledWith('PAUSED', expect.any(Number), expect.any(Number));
+
+    backend.dispose();
+  });
+
+  it('V1 parity: differentiates idle sprite motion styles and renders Shiny/Elite intro, Buddy Endure, and Victory celebration ceremonies', async () => {
+    expect(resolveSpriteMotionStyle('flying', 18)).toBe('flutter');
+    expect(resolveSpriteMotionStyle('bug', 12)).toBe('flutter');
+    expect(resolveSpriteMotionStyle('ghost', 94)).toBe('float');
+    expect(resolveSpriteMotionStyle('psychic', 150)).toBe('float');
+    expect(resolveSpriteMotionStyle('ice', 144)).toBe('float');
+    expect(resolveSpriteMotionStyle('ice', 131)).toBe('breathe');
+    expect(resolveSpriteMotionStyle('electric', 25)).toBe('bob');
+    expect(resolveSpriteMotionStyle('grass', 1)).toBe('breathe');
+
+    const { backend } = await createCanvasBackendHarness(1280, 720);
+    const renderer = new BattleTheaterRenderer();
+    const state = makeBattleFixture('sanctum', 'shrine-trial', false, true);
+    state.shutter.active = false;
+    state.phase = 'intro';
+    state.enemy.mon.isShiny = true;
+    state.enemy.mon.isElite = true;
+    state.floatingTexts = [
+      { id: 'ft-endure', side: 'player', text: 'ENDURED! 1 HP', color: '#f472b6', size: 22, elapsed: 0.1, delay: 0, duration: 1.5, offsetY: -20 },
+    ];
+
+    const addLightSpy = vi.spyOn(backend, 'addPointLight');
+    renderer.update(state, 0.05);
+    backend.beginFrame(0.5, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-shiny-intro' }));
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-elite-intro' }));
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-buddy-endure' }));
+
+    // Transition to victory -> triggers celebration confetti & glow
+    addLightSpy.mockClear();
+    state.phase = 'victory';
+    renderer.update(state, 0.05);
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    expect(addLightSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'ceremony-celebration' }));
 
     backend.dispose();
   });
