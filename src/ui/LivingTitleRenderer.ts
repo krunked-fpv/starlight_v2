@@ -386,12 +386,17 @@ export class LivingTitleRenderer {
         const look = getResolvedTrainerLook(profile.trainerId, profile.appearance);
         ctx.save();
 
-        // Pixel-stepped glowing pedestal
-        ctx.fillStyle = isSelected ? 'rgba(255, 213, 102, 0.24)' : 'rgba(124, 232, 255, 0.14)';
-        ctx.fillRect(Math.round(centerX - 66), pedY - 6, 132, 12);
-        ctx.strokeStyle = isSelected ? '#ffd566' : look.accent;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(Math.round(centerX - 66), pedY - 6, 132, 12);
+        // Soft radial pixel-glow pedestal (no harsh wireframe rectangle)
+        const pedGrad = ctx.createRadialGradient(centerX, pedY, 6, centerX, pedY, 72);
+        pedGrad.addColorStop(0, isSelected ? 'rgba(255, 224, 130, 0.34)' : 'rgba(124, 232, 255, 0.22)');
+        pedGrad.addColorStop(0.65, isSelected ? 'rgba(255, 213, 102, 0.10)' : 'rgba(124, 232, 255, 0.06)');
+        pedGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = pedGrad;
+        ctx.fillRect(Math.round(centerX - 72), pedY - 18, 144, 34);
+        ctx.fillStyle = 'rgba(4, 8, 22, 0.56)';
+        ctx.fillRect(Math.round(centerX - 52), pedY - 2, 104, 6);
+        ctx.fillStyle = isSelected ? 'rgba(255, 224, 130, 0.65)' : `${look.accent}88`;
+        ctx.fillRect(Math.round(centerX - 44), pedY + 3, 88, 2);
 
         // Trainer pixel sprite or portrait
         const trainerX = Math.round(centerX - 42);
@@ -454,8 +459,8 @@ export class LivingTitleRenderer {
         ctx.restore();
       };
 
-      drawPedestal(violetProfile, cw * 0.27, save.activeTrainerId === 'violet', 'left');
-      drawPedestal(oziasProfile, cw * 0.73, save.activeTrainerId === 'ozias', 'right');
+      drawPedestal(violetProfile, cw * 0.14, save.activeTrainerId === 'violet', 'left');
+      drawPedestal(oziasProfile, cw * 0.86, save.activeTrainerId === 'ozias', 'right');
     }, 'post-light');
   }
 }

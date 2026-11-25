@@ -33,6 +33,7 @@ export const SPECIES: Record<number, {
   ability?: string;
   baseStats: { hp: number; atk: number; def: number; spd: number };
   movePool: string[];
+  flavor?: string;
   description?: string;
 }>;
 export const EVOLUTIONS: Record<number, Array<{ to: number; minLevel?: number; item?: string }>>;

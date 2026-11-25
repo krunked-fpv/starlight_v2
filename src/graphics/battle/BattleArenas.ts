@@ -124,6 +124,42 @@ export function computeBattleStageLayout(width: number, height: number): BattleS
   const w = Math.max(320, width);
   const h = Math.max(200, height);
   const minDim = Math.min(w, h);
+  const isPortrait = h > w * 1.05;
+
+  if (isPortrait) {
+    // Frame both combatants cleanly inside the unobstructed upper-middle portrait window
+    // (below top enemy nameplate ~0..12% and above bottom player card + move deck ~54..100%)
+    const playerSize = minDim * 0.30;
+    const enemySize = minDim * 0.255;
+    const enemyPadY = h * 0.315;
+    const playerPadY = h * 0.475;
+
+    return {
+      width: w,
+      height: h,
+      horizonY: h * 0.25,
+      stageTopY: h * 0.28,
+      centerX: w * 0.5,
+      centerY: h * 0.40,
+      playerPad: {
+        x: w * 0.26,
+        y: playerPadY,
+        rx: Math.round(w * 0.16),
+        ry: Math.round(h * 0.022),
+        spriteCy: playerPadY - playerSize * 0.45,
+        size: playerSize,
+      },
+      enemyPad: {
+        x: w * 0.74,
+        y: enemyPadY,
+        rx: Math.round(w * 0.135),
+        ry: Math.round(h * 0.018),
+        spriteCy: enemyPadY - enemySize * 0.45,
+        size: enemySize,
+      },
+    };
+  }
+
   const playerSize = minDim * 0.285;
   const enemySize = minDim * 0.24;
   const playerPadY = h * 0.705;

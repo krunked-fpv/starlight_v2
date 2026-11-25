@@ -2,7 +2,6 @@ import {
   ELEMENTAL_TYPES,
   type AtlasManifest,
   type AtlasRegion,
-  type BodyArchetype,
   type DecodedSpriteFrames,
   type ElementalType,
   type IconId,
@@ -467,6 +466,66 @@ function mixHexSimple(hexA: string, hexB: string, ratio: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
+const STARTER_PIXELS_16: Record<number, readonly string[]> = {
+  // #0001 Bulbasaur — teal-mint quadruped with lush green bulb on back
+  1: [
+    '......OOOO......',
+    '.....OGGGGO.....',
+    '....OGLLGGGO....',
+    '...OGGLLGGGGO...',
+    '...OGGGGGGGGO...',
+    '..OOOOPPPPOOOO..',
+    '.OPPPPLLPPLPPPO.',
+    '.OPWEOPLLPOEWPO.',
+    '.OPPPPPPPPPPPPO.',
+    '.OPSPPPPPPPPSPO.',
+    '..OPPPSSSSPPPO..',
+    '..OPSOOOOOOSPO..',
+    '..OPPO....OPPO..',
+    '..OOO......OOO..',
+    '................',
+    '................',
+  ],
+  // #0004 Charmander — warm orange lizard with golden-red tail flame
+  4: [
+    '.....OOOO.......',
+    '....OPLPPO......',
+    '...OPLPPWEO.....',
+    '...OPPPPPPO..OO.',
+    '....OPPPPO..OFO.',
+    '....OCCCCO.OFYO.',
+    '...OPCCCCPOOFYO.',
+    '...OPCCCCPO.OO..',
+    '....OPCCCPO.O...',
+    '....OPPPPOO.....',
+    '....OPPSPO......',
+    '....OPPO.O......',
+    '...OPPO.OPPO....',
+    '...OOO...OOO....',
+    '................',
+    '................',
+  ],
+  // #0007 Squirtle — sky-blue turtle with brown shell, cream belly & curled tail
+  7: [
+    '.....OOOO.......',
+    '....OPLLPO......',
+    '...OPLPPWEO.....',
+    '...OPPPPPPO.....',
+    '....OPPPPO......',
+    '...OOBBBBOO.....',
+    '..OBBCCBPPPO....',
+    '..OBBCCBPPLPO...',
+    '..OBBCCBPPPO....',
+    '..OOBBBOOPO..OO.',
+    '...OPPPPO..OPLO.',
+    '...OPSO.O..OPLO.',
+    '...OPPO.OPPOOO..',
+    '...OOO...OOO....',
+    '................',
+    '................',
+  ],
+};
+
 export function drawPixelArchetypeSprite(
   ctx: CanvasRenderingContext2D,
   speciesId: number,
@@ -474,24 +533,47 @@ export function drawPixelArchetypeSprite(
   y: number,
   size: number,
   shiny = false,
+  silhouette = false,
 ): void {
   const sp = getSpeciesEntry(speciesId);
   const pal = TYPE_PALETTES[sp.type] ?? TYPE_PALETTES.normal;
-  const grid = ARCHETYPE_PIXELS_12[sp.archetype] ?? ARCHETYPE_PIXELS_12.biped;
-  const pxSize = Math.max(1, Math.floor(size / 12));
-  const ox = Math.round(x + (size - pxSize * 12) * 0.5);
-  const oy = Math.round(y + (size - pxSize * 12) * 0.5);
+  const starterGrid = STARTER_PIXELS_16[speciesId];
+  const grid = starterGrid ?? ARCHETYPE_PIXELS_12[sp.archetype] ?? ARCHETYPE_PIXELS_12.biped;
+  const gridDim = grid.length;
+  const pxSize = Math.max(1, Math.floor(size / gridDim));
+  const ox = Math.round(x + (size - pxSize * gridDim) * 0.5);
+  const oy = Math.round(y + (size - pxSize * gridDim) * 0.5);
 
   const base = shiny ? '#ffd566' : sp.color || pal.primary;
-  const colors: Record<string, string> = {
-    O: '#111633',
-    P: base,
-    L: mixHexSimple(base, '#ffffff', 0.42),
-    S: mixHexSimple(base, pal.dark, 0.52),
-    A: shiny ? '#7ce8ff' : pal.glow,
-    E: '#0d132b',
-    W: '#ffffff',
-  };
+  const colors: Record<string, string> = silhouette
+    ? {
+        O: '#0b1026',
+        P: '#1d2b53',
+        L: '#273b6e',
+        S: '#141d3c',
+        A: '#2c447c',
+        E: '#0f1733',
+        W: '#38528f',
+        G: '#1f335c',
+        C: '#1a274a',
+        B: '#182444',
+        F: '#263b6e',
+        Y: '#2e4782',
+      }
+    : {
+        O: '#111633',
+        P: speciesId === 1 && !shiny ? '#4fd1a5' : speciesId === 4 && !shiny ? '#fb7b2c' : speciesId === 7 && !shiny ? '#4bb4f8' : base,
+        L: speciesId === 1 && !shiny ? '#86efac' : speciesId === 4 && !shiny ? '#fdba74' : speciesId === 7 && !shiny ? '#93e1ff' : mixHexSimple(base, '#ffffff', 0.42),
+        S: speciesId === 1 && !shiny ? '#15803d' : speciesId === 4 && !shiny ? '#c2410c' : speciesId === 7 && !shiny ? '#1d6fb8' : mixHexSimple(base, pal.dark, 0.52),
+        A: shiny ? '#7ce8ff' : pal.glow,
+        E: '#0d132b',
+        W: '#ffffff',
+        G: shiny ? '#bef264' : '#22c55e',
+        C: '#fde68a',
+        B: '#a16207',
+        F: '#ef4444',
+        Y: '#fde047',
+      };
 
   for (let row = 0; row < grid.length; row++) {
     const line = grid[row];
@@ -504,10 +586,10 @@ export function drawPixelArchetypeSprite(
     }
   }
 
-  if (shiny) {
+  if (shiny && !silhouette) {
     ctx.fillStyle = '#fff9c4';
-    ctx.fillRect(ox + pxSize * 9, oy + pxSize, pxSize, pxSize * 2);
-    ctx.fillRect(ox + pxSize * 8, oy + pxSize * 2, pxSize * 3, pxSize);
+    ctx.fillRect(ox + pxSize * (gridDim - 3), oy + pxSize, pxSize, pxSize * 2);
+    ctx.fillRect(ox + pxSize * (gridDim - 4), oy + pxSize * 2, pxSize * 3, pxSize);
   }
 }
 
@@ -528,10 +610,11 @@ export function renderPokemonPreviewCanvas(
   canvas: HTMLCanvasElement,
   speciesId: number,
   frames: DecodedSpriteFrames | null,
-  fallbackSheet: CanvasImageSource | null,
-  manifest: AtlasManifest | null,
+  _fallbackSheet: CanvasImageSource | null,
+  _manifest: AtlasManifest | null,
   shiny = false,
   timeSec = 0,
+  silhouette = false,
 ): void {
   const ctx = getSafe2DContext(canvas);
   if (!ctx) return;
@@ -544,19 +627,28 @@ export function renderPokemonPreviewCanvas(
   ctx.clearRect(0, 0, w, h);
   ctx.imageSmoothingEnabled = false;
 
-  // Pixel-beveled twilight pedestal backdrop
-  const bg = ctx.createRadialGradient(w * 0.5, h * 0.48, 4, w * 0.5, h * 0.5, w * 0.62);
-  bg.addColorStop(0, shiny ? 'rgba(255, 213, 102, 0.28)' : `${pal.primary}38`);
-  bg.addColorStop(1, 'rgba(8, 13, 34, 0.92)');
+  // Soft elemental spotlight halo & grounded pedestal shadow (no boxy edges)
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.46, Math.max(4, w * 0.08), w * 0.5, h * 0.5, w * 0.66);
+  bg.addColorStop(0, silhouette ? 'rgba(99, 132, 224, 0.24)' : shiny ? 'rgba(255, 224, 130, 0.34)' : `${pal.primary}44`);
+  bg.addColorStop(0.55, silhouette ? 'rgba(18, 28, 64, 0.72)' : `${pal.dark}66`);
+  bg.addColorStop(1, 'rgba(7, 11, 28, 0.88)');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, w, h);
 
-  // Crisp pixel ground platform
-  ctx.fillStyle = 'rgba(124, 232, 255, 0.16)';
-  ctx.fillRect(Math.round(w * 0.2), Math.round(h * 0.8), Math.round(w * 0.6), Math.max(3, Math.round(h * 0.06)));
+  // Subtle grounded elliptical shadow disc under sprite
+  ctx.save();
+  ctx.fillStyle = 'rgba(4, 7, 20, 0.58)';
+  ctx.beginPath();
+  ctx.ellipse(w * 0.5, h * 0.83, w * 0.31, Math.max(3, h * 0.075), 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = silhouette ? 'rgba(108, 229, 255, 0.16)' : shiny ? 'rgba(255, 224, 130, 0.24)' : `${pal.glow}24`;
+  ctx.beginPath();
+  ctx.ellipse(w * 0.5, h * 0.82, w * 0.26, Math.max(2, h * 0.055), 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 
   const frameCanvas = SpriteAssetLoader.selectFrame(frames, timeSec);
-  if (frameCanvas && frameCanvas.width > 0 && frameCanvas.height > 0) {
+  if (frameCanvas && frameCanvas.width > 0 && frameCanvas.height > 0 && !silhouette) {
     const pad = Math.max(4, Math.round(Math.min(w, h) * 0.08));
     const availW = Math.max(8, w - pad * 2);
     const availH = Math.max(8, h - pad * 2);
@@ -577,38 +669,20 @@ export function renderPokemonPreviewCanvas(
     }
     ctx.restore();
   } else {
-    const arch: BodyArchetype = sp.archetype || 'biped';
-    const archCandidates = [
-      arch,
-      `fallback-${arch}`,
-      `${arch}.png`,
-      ...(arch === 'aquatic' ? ['amorphous', 'serpentine', 'biped'] : []),
-      'biped',
-    ];
-    const region = findRegion(manifest, ['fallbacks', 'fallbacks-atlas'], archCandidates);
-    if (fallbackSheet && region) {
-      const pad = Math.max(4, Math.round(Math.min(w, h) * 0.08));
-      const drawSize = Math.max(16, Math.min(w, h) - pad * 2);
-      const dx = Math.round((w - drawSize) * 0.5);
-      const dy = Math.round((h - drawSize) * 0.5);
-      ctx.save();
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(fallbackSheet, region.x, region.y, region.w, region.h, dx, dy, drawSize, drawSize);
-      ctx.restore();
-    } else {
-      const drawSize = Math.max(24, Math.min(w, h) - 8);
-      drawPixelArchetypeSprite(
-        ctx,
-        speciesId,
-        Math.round((w - drawSize) * 0.5),
-        Math.round((h - drawSize) * 0.5),
-        drawSize,
-        shiny,
-      );
-    }
+    // Always draw crisp species-colored pixel sprite (or mystery silhouette when unmet)
+    const drawSize = Math.max(28, Math.min(w, h) - 12);
+    drawPixelArchetypeSprite(
+      ctx,
+      speciesId,
+      Math.round((w - drawSize) * 0.5),
+      Math.round((h - drawSize) * 0.5),
+      drawSize,
+      shiny,
+      silhouette,
+    );
   }
 
-  if (shiny) {
+  if (shiny && !silhouette) {
     ctx.fillStyle = '#fff59d';
     ctx.fillRect(w - 14, 6, 6, 2);
     ctx.fillRect(w - 12, 4, 2, 6);
@@ -661,14 +735,15 @@ export function renderTrainerPortraitCanvas(
         ? '#f43f5e'
         : resolvedLook?.accent ?? '#c084fc';
 
-  const bg = ctx.createLinearGradient(0, 0, 0, h);
-  bg.addColorStop(0, '#131d47');
-  bg.addColorStop(1, '#090e26');
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.34, 3, w * 0.5, h * 0.5, w * 0.72);
+  bg.addColorStop(0, `${bgAccent}3a`);
+  bg.addColorStop(0.55, '#15204c');
+  bg.addColorStop(1, '#080c22');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, w, h);
 
-  ctx.fillStyle = `${bgAccent}2e`;
-  ctx.fillRect(0, h - Math.max(4, Math.round(h * 0.14)), w, Math.max(4, Math.round(h * 0.14)));
+  ctx.fillStyle = `${bgAccent}38`;
+  ctx.fillRect(0, h - Math.max(3, Math.round(h * 0.09)), w, Math.max(3, Math.round(h * 0.09)));
 
   const regionCandidates = [
     `${trainerId}_portrait`,
@@ -682,6 +757,13 @@ export function renderTrainerPortraitCanvas(
   const region = findRegion(manifest, ['characters', 'characters-atlas'], regionCandidates);
 
   if (charactersSheet && region) {
+    // Cape backdrop behind portrait shoulders when equipped
+    if (resolvedLook && appearance?.cape) {
+      ctx.fillStyle = resolvedLook.outfitSecondary;
+      ctx.fillRect(Math.round(w * 0.08), Math.round(h * 0.54), Math.round(w * 0.84), Math.round(h * 0.44));
+      ctx.fillStyle = resolvedLook.accent;
+      ctx.fillRect(Math.round(w * 0.08), Math.round(h * 0.54), Math.round(w * 0.84), Math.max(2, Math.round(h * 0.05)));
+    }
     const pad = Math.max(2, Math.round(Math.min(w, h) * 0.05));
     const availW = Math.max(8, w - pad * 2);
     const availH = Math.max(8, h - pad * 2);
@@ -691,56 +773,143 @@ export function renderTrainerPortraitCanvas(
     const dx = Math.round((w - dw) * 0.5);
     const dy = Math.round(h - pad - dh);
     ctx.drawImage(charactersSheet, region.x, region.y, region.w, region.h, dx, dy, dw, dh);
-    return;
+  } else {
+    // Crisp 12x12 pixel portrait bust fallback
+    const hair =
+      trainerId === 'willow'
+        ? '#cbd5e1'
+        : trainerId === 'rival'
+          ? '#e879f9'
+          : resolvedLook?.hair ?? '#3b0764';
+    const skin =
+      trainerId === 'willow'
+        ? '#f5d0b5'
+        : trainerId === 'rival'
+          ? '#f3d2c1'
+          : resolvedLook?.skin ?? '#fde2c8';
+    const primary =
+      trainerId === 'willow'
+        ? '#f8fafc'
+        : trainerId === 'rival'
+          ? '#be123c'
+          : resolvedLook?.outfitPrimary ?? '#a855f7';
+    const secondary =
+      trainerId === 'willow'
+        ? '#22c55e'
+        : trainerId === 'rival'
+          ? '#fbbf24'
+          : resolvedLook?.outfitSecondary ?? '#f472b6';
+
+    const palette: Record<string, string> = {
+      O: '#10152e',
+      H: hair,
+      S: skin,
+      P: primary,
+      C: secondary,
+      A: bgAccent,
+      E: '#141a38',
+      W: '#ffffff',
+    };
+
+    const px = Math.max(2, Math.floor((Math.min(w, h) - 6) / 12));
+    const ox = Math.round((w - px * 12) * 0.5);
+    const oy = Math.round((h - px * 12) * 0.5);
+    for (let row = 0; row < PORTRAIT_PIXELS_12.length; row++) {
+      const line = PORTRAIT_PIXELS_12[row];
+      for (let col = 0; col < line.length; col++) {
+        const fill = palette[line[col]];
+        if (!fill) continue;
+        ctx.fillStyle = fill;
+        ctx.fillRect(ox + col * px, oy + row * px, px, px);
+      }
+    }
   }
 
-  // Crisp 12x12 pixel portrait bust fallback
-  const hair =
-    trainerId === 'willow'
-      ? '#cbd5e1'
-      : trainerId === 'rival'
-        ? '#e879f9'
-        : resolvedLook?.hair ?? '#3b0764';
-  const skin =
-    trainerId === 'willow'
-      ? '#f5d0b5'
-      : trainerId === 'rival'
-        ? '#f3d2c1'
-        : resolvedLook?.skin ?? '#fde2c8';
-  const primary =
-    trainerId === 'willow'
-      ? '#f8fafc'
-      : trainerId === 'rival'
-        ? '#be123c'
-        : resolvedLook?.outfitPrimary ?? '#a855f7';
-  const secondary =
-    trainerId === 'willow'
-      ? '#22c55e'
-      : trainerId === 'rival'
-        ? '#fbbf24'
-        : resolvedLook?.outfitSecondary ?? '#f472b6';
+  // Live Cosmetic Overlays (Outfit trim, Accessory badge, Cape clasp, Aura sparkles — BUG-21)
+  if (resolvedLook && appearance) {
+    const u = Math.max(2, Math.round(w / 24));
+    // Outfit trim ribbon along bottom collar when customized
+    if (appearance.styleId && appearance.styleId !== 'default') {
+      ctx.fillStyle = resolvedLook.outfitPrimary;
+      ctx.fillRect(0, h - u * 2, w, u * 2);
+      ctx.fillStyle = resolvedLook.accent;
+      ctx.fillRect(Math.round(w * 0.2), h - u * 2, Math.round(w * 0.6), u);
+    }
 
-  const palette: Record<string, string> = {
-    O: '#10152e',
-    H: hair,
-    S: skin,
-    P: primary,
-    C: secondary,
-    A: bgAccent,
-    E: '#141a38',
-    W: '#ffffff',
-  };
+    // Cape gold clasp indicator
+    if (appearance.cape) {
+      ctx.fillStyle = '#fde047';
+      ctx.fillRect(Math.round(w * 0.16), Math.round(h * 0.74), u * 2, u * 2);
+      ctx.fillRect(Math.round(w * 0.84) - u * 2, Math.round(h * 0.74), u * 2, u * 2);
+    }
 
-  const px = Math.max(2, Math.floor((Math.min(w, h) - 6) / 12));
-  const ox = Math.round((w - px * 12) * 0.5);
-  const oy = Math.round((h - px * 12) * 0.5);
-  for (let row = 0; row < PORTRAIT_PIXELS_12.length; row++) {
-    const line = PORTRAIT_PIXELS_12[row];
-    for (let col = 0; col < line.length; col++) {
-      const fill = palette[line[col]];
-      if (!fill) continue;
-      ctx.fillStyle = fill;
-      ctx.fillRect(ox + col * px, oy + row * px, px, px);
+    // Equipped Headgear / Accessory pixel overlay
+    const acc = appearance.accessory;
+    if (acc === 'crown') {
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(Math.round(w * 0.3), u, Math.round(w * 0.4), u * 2);
+      ctx.fillRect(Math.round(w * 0.3), 0, u, u);
+      ctx.fillRect(Math.round(w * 0.48), 0, u, u);
+      ctx.fillRect(Math.round(w * 0.66), 0, u, u);
+    } else if (acc === 'halo') {
+      ctx.strokeStyle = '#fde68a';
+      ctx.lineWidth = Math.max(2, u * 0.7);
+      ctx.beginPath();
+      ctx.ellipse(w * 0.5, u * 1.8, w * 0.24, u * 1.1, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (acc === 'goggles') {
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillRect(Math.round(w * 0.28), Math.round(h * 0.26), u * 4, u * 2);
+      ctx.fillRect(Math.round(w * 0.54), Math.round(h * 0.26), u * 4, u * 2);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(Math.round(w * 0.46), Math.round(h * 0.28), u * 2, u);
+    } else if (acc === 'visor') {
+      ctx.fillStyle = '#22d3ee';
+      ctx.fillRect(Math.round(w * 0.24), Math.round(h * 0.28), Math.round(w * 0.52), u * 2);
+    } else if (acc === 'wizard') {
+      ctx.fillStyle = '#6d28d9';
+      ctx.fillRect(Math.round(w * 0.22), u * 2, Math.round(w * 0.56), u * 1.5);
+      ctx.fillRect(Math.round(w * 0.36), 0, Math.round(w * 0.28), u * 2);
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(Math.round(w * 0.46), u, u * 2, u);
+    } else if (acc === 'headband') {
+      ctx.fillStyle = '#facc15';
+      ctx.fillRect(Math.round(w * 0.22), Math.round(h * 0.2), Math.round(w * 0.56), u * 1.5);
+    } else if (acc === 'antlers') {
+      ctx.fillStyle = '#f472b6';
+      ctx.fillRect(Math.round(w * 0.24), u, u * 2, u * 3);
+      ctx.fillRect(Math.round(w * 0.76) - u * 2, u, u * 2, u * 3);
+      ctx.fillStyle = '#fef08a';
+      ctx.fillRect(Math.round(w * 0.24), u, u, u);
+      ctx.fillRect(Math.round(w * 0.76) - u, u, u, u);
+    }
+
+    // Equipped Aura particle sparkles around frame
+    const auraColors: Record<string, string> = {
+      stars: '#fde047',
+      hearts: '#f472b6',
+      lightning: '#38bdf8',
+      petals: '#fb7185',
+      cosmic: '#2dd4bf',
+    };
+    const auraColor = auraColors[appearance.aura ?? 'none'];
+    if (auraColor) {
+      ctx.fillStyle = auraColor;
+      const pts: Array<[number, number]> = [
+        [w * 0.12, h * 0.18],
+        [w * 0.86, h * 0.22],
+        [w * 0.14, h * 0.56],
+        [w * 0.86, h * 0.58],
+      ];
+      for (const [px, py] of pts) {
+        const ix = Math.round(px);
+        const iy = Math.round(py);
+        ctx.fillRect(ix - u, iy, u * 3, Math.max(2, Math.round(u * 0.7)));
+        ctx.fillRect(ix, iy - u, Math.max(2, Math.round(u * 0.7)), u * 3);
+      }
+      ctx.strokeStyle = `${auraColor}99`;
+      ctx.lineWidth = Math.max(2, u * 0.6);
+      ctx.strokeRect(1, 1, w - 2, h - 2);
     }
   }
 }

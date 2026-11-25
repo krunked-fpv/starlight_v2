@@ -99,7 +99,7 @@ export function resolveLandmarkPropRegion(lm: OverworldLandmarkNode): {
   return { regionId: 'landmark_obelisk', sizeTiles: 1.68 };
 }
 
-function isInBounds(x: number, y: number, bounds: ViewTileBounds, pad = 1): boolean {
+function isInBounds(x: number, y: number, bounds: ViewTileBounds, pad = 2): boolean {
   return (
     x >= bounds.minTx - pad &&
     x <= bounds.maxTx + pad &&
@@ -463,8 +463,10 @@ export class LandmarkRenderer {
     const sx = viewW * 0.5 + (wx - camX - viewW * 0.5) * camZoom;
     const sy = viewH * 0.5 + (wy - camY - viewH * 0.5) * camZoom;
 
-    const margin = 42;
-    if (sx >= margin && sx <= viewW - margin && sy >= margin && sy <= viewH - margin) {
+    const marginX = 46;
+    const marginTop = 74;
+    const marginBottom = 64;
+    if (sx >= marginX && sx <= viewW - marginX && sy >= marginTop && sy <= viewH - marginBottom) {
       return;
     }
 
@@ -473,8 +475,10 @@ export class LandmarkRenderer {
     const dx = sx - cx;
     const dy = sy - cy;
     const angle = Math.atan2(dy, dx);
-    const halfW = Math.max(40, cx - margin);
-    const halfH = Math.max(40, cy - margin);
+    const halfW = Math.max(40, cx - marginX);
+    const halfHTop = Math.max(40, cy - marginTop);
+    const halfHBottom = Math.max(40, viewH - marginBottom - cy);
+    const halfH = dy < 0 ? halfHTop : halfHBottom;
     const scaleX = Math.abs(dx) > 0.001 ? halfW / Math.abs(dx) : 1e6;
     const scaleY = Math.abs(dy) > 0.001 ? halfH / Math.abs(dy) : 1e6;
     const k = Math.min(scaleX, scaleY, 1);

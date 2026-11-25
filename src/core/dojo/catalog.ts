@@ -108,7 +108,7 @@ export function getSpeciesEntry(id: number): DojoSpeciesEntry {
     ability: raw.ability,
     baseStats: { ...raw.baseStats },
     movePool: [...(raw.movePool || ['tackle'])],
-    description: stripEmojis(raw.description || `${raw.name} of Starlight Island.`),
+    description: stripEmojis(raw.flavor || raw.description || `${raw.name} of Starlight Island.`),
     generation: getGenerationForSpeciesId(raw.id),
     archetype: (resolveSpeciesArchetype(raw.id) as BodyArchetype) || 'biped',
   };

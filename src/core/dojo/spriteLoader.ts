@@ -447,6 +447,10 @@ export class SpriteAssetLoader {
     return this.version;
   }
 
+  getInflightCount(): number {
+    return this.inflight.size;
+  }
+
   onUpdate(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

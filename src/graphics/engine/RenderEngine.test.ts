@@ -700,6 +700,7 @@ describe('Canvas2DBackend', () => {
     // Verify DPR cap <= 2
     backend.resize(800, 600, 3.5);
     expect(backend.capabilities.dpr).toBe(2);
+    expect(backend.getViewportSize()).toEqual({ width: 800, height: 600 });
     expect(initialCanvas.width).toBe(1600);
     expect(initialCanvas.height).toBe(1200);
 
@@ -893,6 +894,7 @@ describe('WebGL2Backend', () => {
     expect(backend.kind).toBe('webgl2');
     expect(backend.capabilities.webgl2Supported).toBe(true);
     expect(backend.capabilities.isSoftwareRasterizer).toBe(false);
+    expect(backend.getViewportSize()).toEqual({ width: 960, height: 540 });
 
     const fakeSheet = { width: 128, height: 128 } as unknown as HTMLCanvasElement;
     backend.registerAtlas('props', fakeSheet);

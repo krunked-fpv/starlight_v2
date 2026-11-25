@@ -31,11 +31,11 @@ export class BriefingModal {
     container.innerHTML = `
       <div class="sl-briefing-drawer sl-glass" data-testid="briefing-drawer" role="dialog" aria-modal="true" aria-label="Tactical Readiness Briefing">
         <div class="sl-briefing-head">
-          <h2 class="sl-modal-title" style="font-size:16px;">
+          <h2 class="sl-modal-title" style="font-size:17px;">
             ${createIconSvg('icon-briefing', 'sl-icon-md')}
             <span>Tactical Readiness Briefing</span>
           </h2>
-          <button type="button" class="sl-btn" data-testid="briefing-close">
+          <button type="button" class="sl-btn sl-btn-ghost" data-testid="briefing-close">
             ${createIconSvg('icon-close', 'sl-icon-sm')}
             <span>Close</span>
           </button>
@@ -73,11 +73,9 @@ export class BriefingModal {
     });
     this.healBtn?.addEventListener('click', () => {
       this.callbacks?.onWarpSafeZone();
-      this.callbacks?.onDismissBriefing();
     });
     this.farmBtn?.addEventListener('click', () => {
       this.callbacks?.onWarpFarmZone();
-      this.callbacks?.onDismissBriefing();
     });
   }
 
@@ -107,6 +105,7 @@ export class BriefingModal {
       const biomeVisual = getBiomeVisualProfile(b.biomeId);
       const hpPct = Math.round(Math.max(0, Math.min(1, b.avgHpRatio)) * 100);
       const deltaLabel = b.levelDelta >= 0 ? `+${b.levelDelta}` : `${b.levelDelta}`;
+      const showBiomeChip = b.title.trim().toLowerCase() !== biomeVisual.displayName.trim().toLowerCase();
 
       const enemyTypePills = b.enemyTypes
         .map(
@@ -151,7 +150,7 @@ export class BriefingModal {
             </div>
             <div class="sl-briefing-sub">${safeText(b.subtitle)}</div>
             <div class="sl-briefing-types">
-              <span class="sl-pill">${safeText(biomeVisual.displayName)}</span>
+              ${showBiomeChip ? `<span class="sl-pill">${safeText(biomeVisual.displayName)}</span>` : ''}
               ${enemyTypePills}
             </div>
           </div>
@@ -159,12 +158,18 @@ export class BriefingModal {
 
         <div class="sl-briefing-kpis sl-num">
           <div class="sl-vital-box">
-            ${createIconSvg('icon-team', 'sl-icon-sm')}
-            <span>Team Lv.${b.teamLevel} vs Lv.${b.targetLevel} (${deltaLabel})</span>
+            ${createIconSvg('icon-team', 'sl-icon-md')}
+            <div class="sl-vital-copy">
+              <span class="sl-vital-label">Level Matchup</span>
+              <span class="sl-vital-val">Team Lv.${b.teamLevel} vs Lv.${b.targetLevel} (${deltaLabel})</span>
+            </div>
           </div>
           <div class="sl-vital-box">
-            ${createIconSvg('icon-bond', 'sl-icon-sm')}
-            <span>Party HP: ${hpPct}% (${b.healthyCount} Ready / ${b.faintedCount} Fainted)</span>
+            ${createIconSvg('icon-bond', 'sl-icon-md')}
+            <div class="sl-vital-copy">
+              <span class="sl-vital-label">Party Readiness</span>
+              <span class="sl-vital-val">HP ${hpPct}% (${b.healthyCount} Ready / ${b.faintedCount} Fainted)</span>
+            </div>
           </div>
         </div>
 
@@ -173,7 +178,7 @@ export class BriefingModal {
           <div style="display:flex; flex-direction:column; gap:6px; min-width:0;">
             <strong>${safeText(matchupNote)} — Target: ${safeText(b.previewSpeciesName)}</strong>
             <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-              <span style="font-size:11px; color:var(--sl-text-secondary);">Suggested Counters:</span>
+              <span style="font-size:11.5px; color:var(--sl-text-secondary);">Suggested Counters:</span>
               ${counterPills}
             </div>
           </div>
@@ -196,7 +201,7 @@ export class BriefingModal {
       this.lastRenderStamp = '';
     }
 
-    const stamp = `${b.previewSpeciesId}|${Math.floor(timeSec * 12)}|${Boolean(assets.fallbacksSheet)}`;
+    const stamp = `${b.previewSpeciesId}|${Math.floor(timeSec * 12)}|${Boolean(assets.fallbacksSheet)}|${Boolean(assets.frames)}`;
     if (this.previewCanvas && stamp !== this.lastRenderStamp) {
       this.lastRenderStamp = stamp;
       renderPokemonPreviewCanvas(

@@ -1215,6 +1215,8 @@ export class StorageManager {
     const resolvedInput = resolveSpeciesId(speciesId) ?? speciesId;
     const starter = createStarterPokemon(resolvedInput);
     const numId = Number(starter.speciesId);
+    const prevCaughtCount = toNonNegInt(profile.pokedex?.caught?.[numId], 0);
+    const prevTotalCaught = toNonNegInt(profile.stats?.totalCaught, 0);
     profile.starterId = numId;
     profile.team = [starter];
     profile.box = [];
@@ -1223,9 +1225,9 @@ export class StorageManager {
       syncProfilePokedex(profile);
     }
     this.recordSeen(numId, false);
-    profile.pokedex.caught[numId] = toNonNegInt(profile.pokedex.caught[numId], 0) + 1;
+    profile.pokedex.caught[numId] = Math.max(1, prevCaughtCount + 1);
     if (!isPlainObject(profile.stats)) profile.stats = hydrateProfileStats(null);
-    profile.stats.totalCaught = toNonNegInt(profile.stats.totalCaught, 0) + 1;
+    profile.stats.totalCaught = Math.max(1, prevTotalCaught + 1);
     syncProfilePokedex(profile);
     syncProfilePlayerProgression(profile);
     this.evaluateBadges(false);

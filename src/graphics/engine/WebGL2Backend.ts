@@ -739,6 +739,13 @@ export class WebGL2Backend implements IRenderBackend {
     return null;
   }
 
+  getViewportSize(): { width: number; height: number } {
+    return {
+      width: Math.max(1, this.cssWidth),
+      height: Math.max(1, this.cssHeight),
+    };
+  }
+
   getStats(): FrameStats {
     return { ...this.lastStats };
   }

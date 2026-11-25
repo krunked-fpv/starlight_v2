@@ -14,8 +14,11 @@ import {
   getAllTrainerAuras,
   getAllTrainerStyles,
   getCleanTrainerName,
+  getPlayerLevel,
   getResolvedTrainerLook,
   getSpeciesEntry,
+  SpriteAssetLoader,
+  TOTAL_SPECIES_COUNT,
 } from '../core';
 import {
   createIconSvg,
@@ -97,7 +100,7 @@ export function drawPixelTrainerStageCharacter(
     ctx.fillRect(Math.round(-15 * s + sway * 0.4), Math.round(16 * s), Math.round(30 * s), Math.round(4 * s));
   }
 
-  // 3. Curated Pixel JRPG Character Sprite from characters-atlas (with live outfit accent badge & crisp accessory overlay)
+  // 3. Curated Pixel JRPG Character Sprite from characters-atlas
   const regionId = `${look.id}_down`;
   const charRegion = options.manifest?.sheets?.characters?.regions?.[regionId];
   const px = Math.max(2, Math.round(2.4 * s));
@@ -107,7 +110,6 @@ export function drawPixelTrainerStageCharacter(
     const dx = Math.round(-drawSize * 0.5);
     const dy = Math.round(-drawSize * 0.52);
 
-    // Draw crisp nearest-neighbor pixel trainer sprite
     ctx.drawImage(
       options.charactersSheet,
       charRegion.x,
@@ -120,7 +122,6 @@ export function drawPixelTrainerStageCharacter(
       drawSize,
     );
 
-    // Subtle outfit color sash / accent scarf when non-default outfit style is equipped
     if (look.styleId !== 'default') {
       ctx.fillStyle = look.outfitPrimary;
       ctx.fillRect(Math.round(-9 * s), Math.round(1 * s), Math.round(18 * s), Math.round(5 * s));
@@ -130,7 +131,6 @@ export function drawPixelTrainerStageCharacter(
       ctx.fillRect(Math.round(-9 * s), Math.round(1 * s), Math.round(18 * s), Math.round(2 * s));
     }
 
-    // Crisp pixel accessory overlay anchored accurately to the sprite's head
     switch (look.accessory) {
       case 'crown':
         ctx.fillStyle = '#ffd566';
@@ -235,6 +235,7 @@ export class StyleStudioStage {
   private auraButtons = new Map<TrainerAuraId, HTMLButtonElement>();
   private capeToggleBtn: HTMLButtonElement | null = null;
   private summaryLabel: HTMLElement | null = null;
+  private statsGridEl: HTMLElement | null = null;
   private lastMemo = '';
 
   setRigSynthesizer(synth: IOfflineSpriteRigSynthesizer | null): void {
@@ -255,10 +256,10 @@ export class StyleStudioStage {
     container.innerHTML = `
       <div class="sl-style-body">
         <div class="sl-style-stage-wrap">
-          <canvas class="sl-style-canvas" width="300" height="270" data-testid="style-stage-canvas" aria-label="Live Animated Trainer Preview"></canvas>
+          <canvas class="sl-style-canvas" width="280" height="248" data-testid="style-stage-canvas" aria-label="Live Animated Trainer Preview"></canvas>
           <div style="display:flex; align-items:center; gap:10px; width:100%;">
             <canvas class="sl-portrait-canvas-sm" width="52" height="52" data-testid="style-portrait-canvas" aria-hidden="true"></canvas>
-            <div class="sl-pill" style="flex:1; justify-content:center;" data-testid="style-loadout-summary">Violet</div>
+            <div class="sl-pill sl-pill-gold" style="flex:1; justify-content:center; overflow:hidden; text-overflow:ellipsis;" data-testid="style-loadout-summary">Violet</div>
           </div>
 
           <div class="sl-style-nickname-row">
@@ -270,12 +271,22 @@ export class StyleStudioStage {
               data-testid="style-nickname-input"
               aria-label="Custom Trainer Nickname"
             />
-            <button type="button" class="sl-btn sl-btn-cyan" data-testid="style-nickname-apply">
-              <span>Apply</span>
-            </button>
-            <button type="button" class="sl-btn" data-testid="style-nickname-reset">
-              <span>Reset</span>
-            </button>
+            <div class="sl-style-nickname-btns">
+              <button type="button" class="sl-btn sl-btn-cyan" data-testid="style-nickname-apply">
+                <span>Apply</span>
+              </button>
+              <button type="button" class="sl-btn" data-testid="style-nickname-reset">
+                <span>Reset</span>
+              </button>
+            </div>
+          </div>
+
+          <div style="width:100%; padding-top:6px; border-top:1px solid var(--sl-border-soft);">
+            <h4 class="sl-style-group-title" style="font-size:12.5px; margin-bottom:6px;">
+              ${createIconSvg('icon-trophy', 'sl-icon-sm')}
+              <span>Adventure Record</span>
+            </h4>
+            <div class="sl-num" data-testid="style-adventure-stats" style="display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px;"></div>
           </div>
         </div>
 
@@ -289,7 +300,7 @@ export class StyleStudioStage {
                   <button type="button" class="sl-style-option" data-testid="style-outfit-${o.id}" data-style-id="${o.id}">
                     <span class="sl-style-swatch" style="background: linear-gradient(135deg, ${o.outfitPrimary}, ${o.outfitSecondary});"></span>
                     ${createIconSvg(o.iconId, 'sl-icon-sm')}
-                    <span><strong>${safeText(o.name)}</strong></span>
+                    <span>${safeText(o.name)}</span>
                   </button>
                 `,
                 )
@@ -298,21 +309,21 @@ export class StyleStudioStage {
           </section>
 
           <section>
-            <h3 class="sl-style-group-title">${createIconSvg('icon-hat', 'sl-icon-sm')} 8 Accessories &amp; Cape</h3>
+            <h3 class="sl-style-group-title">${createIconSvg('icon-hat', 'sl-icon-sm')} 8 Accessories &amp; Starlight Cape</h3>
             <div class="sl-style-options" data-group="accessories">
               ${accessories
                 .map(
                   (a) => `
                   <button type="button" class="sl-style-option" data-testid="style-accessory-${a.id}" data-accessory-id="${a.id}">
                     ${createIconSvg(a.iconId, 'sl-icon-sm')}
-                    <span><strong>${safeText(a.name)}</strong></span>
+                    <span>${safeText(a.name)}</span>
                   </button>
                 `,
                 )
                 .join('')}
               <button type="button" class="sl-style-option" data-testid="style-cape-toggle" aria-pressed="false">
                 ${createIconSvg('icon-cape', 'sl-icon-sm')}
-                <span><strong>Starlight Cape</strong><br><small>Off</small></span>
+                <span data-cape-label>Cape: Off</span>
               </button>
             </div>
           </section>
@@ -326,7 +337,7 @@ export class StyleStudioStage {
                   <button type="button" class="sl-style-option" data-testid="style-aura-${au.id}" data-aura-id="${au.id}">
                     <span class="sl-style-swatch" style="background: ${au.color};"></span>
                     ${createIconSvg(au.iconId, 'sl-icon-sm')}
-                    <span><strong>${safeText(au.name)}</strong></span>
+                    <span>${safeText(au.name)}</span>
                   </button>
                 `,
                 )
@@ -342,6 +353,7 @@ export class StyleStudioStage {
     this.summaryLabel = container.querySelector('[data-testid="style-loadout-summary"]');
     this.nicknameInput = container.querySelector('[data-testid="style-nickname-input"]');
     this.capeToggleBtn = container.querySelector('[data-testid="style-cape-toggle"]');
+    this.statsGridEl = container.querySelector('[data-testid="style-adventure-stats"]');
 
     styles.forEach((o) => {
       const btn = container.querySelector(`[data-style-id="${o.id}"]`) as HTMLButtonElement | null;
@@ -424,6 +436,7 @@ export class StyleStudioStage {
 
   private syncControls(profile: DojoProfileState): void {
     const app = profile.appearance;
+    const caughtCount = Object.values(profile.pokedex.caught).filter((n) => Number(n) > 0).length;
     const key = [
       profile.trainerId,
       app.styleId,
@@ -431,6 +444,13 @@ export class StyleStudioStage {
       app.cape,
       app.aura,
       app.nickname ?? '',
+      caughtCount,
+      profile.badges.length,
+      profile.shrinesCleared.length,
+      profile.questsCompleted.length,
+      profile.chestsOpened.length,
+      profile.arcade.highScore,
+      profile.stats.battlesWon,
     ].join('|');
 
     if (key === this.lastMemo) return;
@@ -454,8 +474,8 @@ export class StyleStudioStage {
     if (this.capeToggleBtn) {
       this.capeToggleBtn.classList.toggle('is-equipped', Boolean(app.cape));
       this.capeToggleBtn.setAttribute('aria-pressed', String(Boolean(app.cape)));
-      const small = this.capeToggleBtn.querySelector('small');
-      if (small) small.textContent = app.cape ? 'Equipped' : 'Off';
+      const lbl = this.capeToggleBtn.querySelector('[data-cape-label]');
+      if (lbl) lbl.textContent = app.cape ? 'Cape: On' : 'Cape: Off';
     }
 
     if (this.nicknameInput && this.nicknameInput.ownerDocument?.activeElement !== this.nicknameInput) {
@@ -465,8 +485,33 @@ export class StyleStudioStage {
     if (this.summaryLabel) {
       const name = getCleanTrainerName(profile, profile.trainerId);
       const styleName = getAllTrainerStyles().find((s) => s.id === app.styleId)?.name ?? app.styleId;
-      const auraName = getAllTrainerAuras().find((a) => a.id === app.aura)?.name ?? app.aura;
-      this.summaryLabel.textContent = `${name} • ${styleName} • ${auraName}`;
+      this.summaryLabel.textContent = `${name} • ${styleName}`;
+    }
+
+    if (this.statsGridEl) {
+      const trainerLv = getPlayerLevel(profile);
+      const items = [
+        { label: 'Trainer Lv', val: String(trainerLv) },
+        { label: 'Pokédex', val: `${caughtCount}/${TOTAL_SPECIES_COUNT}` },
+        { label: 'Badges', val: `${profile.badges.length}/28` },
+        { label: 'Shrines', val: `${profile.shrinesCleared.length}/20` },
+        { label: 'Quests', val: `${profile.questsCompleted.length}/23` },
+        { label: 'Chests', val: `${profile.chestsOpened.length}/36` },
+        { label: 'Rivals', val: `${profile.rivalsDefeated.length}/17` },
+        { label: 'Battles Won', val: String(profile.stats.battlesWon) },
+        { label: 'Shinies', val: String(profile.stats.shiniesFound) },
+        { label: 'Sky-Hop Best', val: String(profile.arcade.highScore) },
+      ];
+      this.statsGridEl.innerHTML = items
+        .map(
+          (it) => `
+          <div class="sl-pill" style="justify-content:space-between; border-radius:var(--sl-radius-xs); padding:4px 8px;">
+            <span style="color:var(--sl-text-dim); font-size:10.5px;">${safeText(it.label)}</span>
+            <strong style="color:var(--sl-gold-bright); font-size:11.5px;">${safeText(it.val)}</strong>
+          </div>
+        `,
+        )
+        .join('');
     }
 
     if (this.portraitCanvas) {
@@ -490,8 +535,8 @@ export class StyleStudioStage {
     }
     if (!ctx) return;
 
-    const w = this.canvas.width || 300;
-    const h = this.canvas.height || 270;
+    const w = this.canvas.width || 280;
+    const h = this.canvas.height || 248;
     const t = this.reducedMotion ? 0 : this.timeSec;
     const profile = this.currentProfile;
     const look = getResolvedTrainerLook(profile.trainerId, profile.appearance);
@@ -501,52 +546,74 @@ export class StyleStudioStage {
 
     const bg = ctx.createLinearGradient(0, 0, 0, h);
     bg.addColorStop(0, '#0a102b');
-    bg.addColorStop(0.62, '#1a2a60');
-    bg.addColorStop(1, '#090e24');
+    bg.addColorStop(0.58, '#1a285c');
+    bg.addColorStop(1, '#080c20');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, w, h);
 
-    // Spotlight cone
-    const beam = ctx.createLinearGradient(w * 0.5, 10, w * 0.5, h * 0.85);
-    beam.addColorStop(0, 'rgba(124, 232, 255, 0.05)');
-    beam.addColorStop(0.7, `${look.accent}38`);
-    beam.addColorStop(1, 'rgba(255, 213, 102, 0.22)');
+    // Warm boutique spotlight cone
+    const beam = ctx.createLinearGradient(w * 0.5, 6, w * 0.5, h * 0.85);
+    beam.addColorStop(0, 'rgba(255, 240, 189, 0.06)');
+    beam.addColorStop(0.65, `${look.accent}32`);
+    beam.addColorStop(1, 'rgba(245, 205, 109, 0.22)');
     ctx.fillStyle = beam;
     ctx.beginPath();
-    ctx.moveTo(w * 0.32, 8);
-    ctx.lineTo(w * 0.68, 8);
+    ctx.moveTo(w * 0.3, 6);
+    ctx.lineTo(w * 0.7, 6);
     ctx.lineTo(w * 0.88, h * 0.82);
     ctx.lineTo(w * 0.12, h * 0.82);
     ctx.closePath();
     ctx.fill();
 
-    // Pixel-beveled celestial stage pedestal
+    // Soft glowing circular showcase stage pedestal
     const pedX = Math.round(w * 0.5);
-    const pedY = Math.round(h * 0.78);
-    ctx.fillStyle = 'rgba(38, 62, 130, 0.65)';
-    ctx.fillRect(pedX - 96, pedY - 12, 192, 24);
-    ctx.strokeStyle = '#ffd566';
+    const pedY = Math.round(h * 0.79);
+    ctx.save();
+    ctx.fillStyle = 'rgba(30, 48, 108, 0.72)';
+    ctx.beginPath();
+    ctx.ellipse(pedX, pedY, w * 0.38, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(245, 205, 109, 0.78)';
     ctx.lineWidth = 2;
-    ctx.strokeRect(pedX - 96, pedY - 12, 192, 24);
+    ctx.stroke();
+    ctx.restore();
 
     // Animated Trainer wearing Outfit + Accessory + Cape + Aura
     drawPixelTrainerStageCharacter(ctx, look, {
-      cx: w * 0.36,
+      cx: w * 0.35,
       cy: h * 0.61,
-      scale: 1.6,
+      scale: 1.55,
       time: t,
       reducedMotion: this.reducedMotion,
       charactersSheet: this.currentAssets?.charactersSheet,
       manifest: this.currentAssets?.manifest,
     });
 
-    // Lead Partner standing beside trainer
+    // Lead Partner standing beside trainer — ALWAYS prefer live animated leadFrames FIRST!
     const lead = profile.team[0];
     if (lead) {
       const sp = getSpeciesEntry(lead.speciesId);
-      const px = Math.round(w * 0.68);
+      const px = Math.round(w * 0.67);
       const py = Math.round(h * 0.62);
-      if (this.rigSynthesizer) {
+      const liveFrame = SpriteAssetLoader.selectFrame(this.currentAssets?.leadFrames ?? null, t);
+
+      if (liveFrame && liveFrame.width > 0 && liveFrame.height > 0) {
+        const maxDraw = 82;
+        const scale = Math.min(maxDraw / liveFrame.width, maxDraw / liveFrame.height);
+        const dw = Math.max(16, Math.round(liveFrame.width * scale));
+        const dh = Math.max(16, Math.round(liveFrame.height * scale));
+        const bob = this.reducedMotion ? 0 : Math.round(Math.sin(t * 3.1 + 0.8) * 2);
+        const dx = Math.round(px - dw * 0.5);
+        const dy = Math.round(pedY - 6 - dh + bob);
+        ctx.save();
+        ctx.fillStyle = 'rgba(4, 8, 22, 0.52)';
+        ctx.beginPath();
+        ctx.ellipse(px, pedY - 3, dw * 0.36, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(liveFrame, dx, dy, dw, dh);
+        ctx.restore();
+      } else if (this.rigSynthesizer) {
         this.rigSynthesizer.renderRig(
           ctx,
           {
@@ -560,7 +627,7 @@ export class StyleStudioStage {
           {
             cx: px,
             cy: py,
-            size: 82,
+            size: 80,
             time: t,
             facing: 'left',
             reducedMotion: this.reducedMotion,
@@ -577,7 +644,7 @@ export class StyleStudioStage {
           renderPokemonPreviewCanvas(
             tempCanvas,
             sp.id,
-            this.currentAssets?.leadFrames ?? null,
+            null,
             this.currentAssets?.fallbacksSheet ?? null,
             this.currentAssets?.manifest ?? null,
             lead.isShiny,
@@ -601,6 +668,7 @@ export class StyleStudioStage {
     this.nicknameInput = null;
     this.capeToggleBtn = null;
     this.summaryLabel = null;
+    this.statsGridEl = null;
     this.callbacks = null;
   }
 }

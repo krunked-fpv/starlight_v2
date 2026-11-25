@@ -5,7 +5,10 @@ import type {
   CanopyShadowConfig,
   IOverworldRenderer,
   IRenderBackend,
+  OverworldCameraSnapshot,
   OverworldSceneState,
+  OverworldScreenProjection,
+  OverworldTileProjection,
   SpriteDrawCmd,
   WaterConfig,
 } from '../../contracts';
@@ -23,6 +26,57 @@ import { CharacterRigRenderer } from './CharacterRigRenderer';
 import { LandmarkRenderer } from './LandmarkRenderer';
 
 export const MAX_RENDER_LIGHTS = 24;
+export const MIN_CAMERA_ZOOM = 1;
+export const MAX_CAMERA_ZOOM = 4.5;
+
+const CAMERA_SNAP_DISTANCE_TILES = 5;
+
+/**
+ * Computes a responsive, pixel-crisp overhead camera zoom multiplier for the given
+ * canvas viewport dimensions.
+ *
+ * - Desktop / landscape (1280–2560px): targets ~14–18 visible tiles horizontally and
+ *   >= 9 tiles vertically, snapped to crisp 0.5x steps (2.0, 2.5, 3.0, 3.5, 4.0, 4.5)
+ *   so 32x32 pixel-art tiles render cleanly at 64–144 CSS px with exact integer spans.
+ * - Portrait mobile (360–430px): targets ~9–12 visible tiles horizontally, snapped to
+ *   crisp 0.25x steps (1.25 -> 40 CSS px/tile) so sprites stay large and legible.
+ */
+export function computeOverworldZoom(
+  viewportWidth: number,
+  viewportHeight: number,
+  tileSize = 32,
+): number {
+  const safeW = Math.max(1, Number.isFinite(viewportWidth) ? viewportWidth : 960);
+  const safeH = Math.max(1, Number.isFinite(viewportHeight) ? viewportHeight : 540);
+  const safeTile = Math.max(1, Number.isFinite(tileSize) ? tileSize : 32);
+
+  const isPortrait = safeH > safeW;
+  const targetCols = isPortrait ? (safeW <= 500 ? 10.0 : 12.0) : 16.5;
+  const minVisibleRows = isPortrait ? 11.0 : 9.2;
+
+  const zoomByWidth = safeW / (targetCols * safeTile);
+  const zoomByHeight = safeH / (minVisibleRows * safeTile);
+  const rawZoom = Math.min(zoomByWidth, zoomByHeight);
+
+  const snapped =
+    rawZoom < 2.0 ? Math.round(rawZoom * 4) / 4 : Math.round(rawZoom * 2) / 2;
+
+  return clamp(snapped, MIN_CAMERA_ZOOM, MAX_CAMERA_ZOOM);
+}
+
+/**
+ * Returns a gentle vertical focus bias (in CSS px) on narrow portrait mobile screens so
+ * the player sits slightly above screen center, clear of bottom touch controls.
+ */
+export function computeViewportFocusOffsetY(
+  viewportWidth: number,
+  viewportHeight: number,
+): number {
+  if (viewportHeight > viewportWidth && viewportWidth <= 640) {
+    return Math.round(viewportHeight * 0.06);
+  }
+  return 0;
+}
 
 interface AmbientMote {
   nx: number; // normalized 0..1 inside visible frustum
@@ -40,6 +94,8 @@ const PETAL_BIOMES = new Set<BiomeId>(['grove', 'faeveldt']);
 const EMBER_BIOMES = new Set<BiomeId>(['volcano', 'canyon']);
 const FROST_BIOMES = new Set<BiomeId>(['peak', 'highlands']);
 
+type CameraProjectionState = Pick<OverworldSceneState, 'cols' | 'rows' | 'tileSize' | 'player'>;
+
 export class OverworldRenderer implements IOverworldRenderer {
   private readonly autotile = new AutotileRenderer();
   private readonly landmarks = new LandmarkRenderer();
@@ -47,13 +103,32 @@ export class OverworldRenderer implements IOverworldRenderer {
 
   private manifest: AtlasManifest | null = null;
   private cameraInitialized = false;
+  private hasRenderedFrame = false;
   private camCenterX = 0;
   private camCenterY = 0;
-  private cameraZoom = 1;
   private lastViewportWidth = 960;
   private lastViewportHeight = 540;
+  private lastCols = 100;
+  private lastRows = 84;
+  private lastTileSize = 32;
   private viewportKnownFromBackend = false;
   private lastBiomeId: BiomeId | null = null;
+  private lastCameraSnapshot: OverworldCameraSnapshot = {
+    centerX: 272,
+    centerY: 496,
+    camX: 0,
+    camY: 0,
+    zoom: 1.75,
+    tileScreenPx: 56,
+    viewportWidth: 960,
+    viewportHeight: 540,
+    visibleTilesX: 960 / 56,
+    visibleTilesY: 540 / 56,
+    minVisibleTileX: 0,
+    maxVisibleTileX: 17,
+    minVisibleTileY: 10,
+    maxVisibleTileY: 20,
+  };
 
   private ambientMotes: AmbientMote[] = [];
   private moteSeedCounter = 1;
@@ -72,21 +147,77 @@ export class OverworldRenderer implements IOverworldRenderer {
     return this.autotile.getDisplacementCount();
   }
 
+  getCameraState(): OverworldCameraSnapshot {
+    return { ...this.lastCameraSnapshot };
+  }
+
+  /**
+   * Projects a canvas-relative CSS pixel point into exact world & tile coordinates
+   * matching the active zoomed HD-2D overhead camera transform.
+   */
+  screenToTile(
+    canvasX: number,
+    canvasY: number,
+    canvasW?: number,
+    canvasH?: number,
+    state?: CameraProjectionState,
+  ): OverworldTileProjection {
+    const resolved = this.resolveProjectionCamera(canvasW, canvasH, state);
+    const { snapshot, cols, rows, tileSize } = resolved;
+    const safeX = Number.isFinite(canvasX) ? canvasX : snapshot.viewportWidth * 0.5;
+    const safeY = Number.isFinite(canvasY) ? canvasY : snapshot.viewportHeight * 0.5;
+    const safeZoom = Math.max(0.05, snapshot.zoom);
+
+    const worldX = snapshot.centerX + (safeX - snapshot.viewportWidth * 0.5) / safeZoom;
+    const worldY = snapshot.centerY + (safeY - snapshot.viewportHeight * 0.5) / safeZoom;
+    const tileX = clamp(Math.floor(worldX / tileSize), 0, Math.max(0, cols - 1));
+    const tileY = clamp(Math.floor(worldY / tileSize), 0, Math.max(0, rows - 1));
+
+    return { tileX, tileY, worldX, worldY };
+  }
+
+  /**
+   * Projects the center of tile `(tx, ty)` (`(tx + 0.5) * tileSize, (ty + 0.5) * tileSize`)
+   * into canvas-relative CSS pixel coordinates matching the active zoomed overhead camera.
+   */
+  tileToScreen(
+    tx: number,
+    ty: number,
+    canvasW?: number,
+    canvasH?: number,
+    state?: CameraProjectionState,
+  ): OverworldScreenProjection {
+    const resolved = this.resolveProjectionCamera(canvasW, canvasH, state);
+    const { snapshot, tileSize } = resolved;
+    const worldX = (tx + 0.5) * tileSize;
+    const worldY = (ty + 0.5) * tileSize;
+
+    return {
+      x: snapshot.viewportWidth * 0.5 + (worldX - snapshot.centerX) * snapshot.zoom,
+      y: snapshot.viewportHeight * 0.5 + (worldY - snapshot.centerY) * snapshot.zoom,
+    };
+  }
+
   resetEffects(): void {
     this.autotile.resetEffects();
     this.characters.resetEffects();
     this.ambientMotes.length = 0;
     this.cameraInitialized = false;
+    this.hasRenderedFrame = false;
     this.lastBiomeId = null;
   }
 
   /**
    * Advances spring-physics tall grass displacement, terrain-aware footsteps,
-   * damped camera tracking, and biome atmospheric motes.
+   * damped overhead camera tracking, and biome atmospheric motes.
    */
   update(state: OverworldSceneState, dtSeconds: number): void {
     const dt = clamp(Number.isFinite(dtSeconds) ? dtSeconds : 0, 0, 0.05);
-    const { tileSize, currentBiomeId, player, reducedMotion } = state;
+    const { cols, rows, tileSize, currentBiomeId, player, reducedMotion } = state;
+
+    this.lastCols = cols;
+    this.lastRows = rows;
+    this.lastTileSize = tileSize;
 
     const biomeChanged = this.lastBiomeId !== currentBiomeId;
     if (biomeChanged) {
@@ -99,12 +230,13 @@ export class OverworldRenderer implements IOverworldRenderer {
 
     const targetX = (player.x + 0.5) * tileSize;
     const targetY = (player.y + 0.5) * tileSize;
-    if (!this.cameraInitialized || biomeChanged) {
+    const jumpDist = Math.hypot(targetX - this.camCenterX, targetY - this.camCenterY);
+    if (!this.cameraInitialized || jumpDist > tileSize * CAMERA_SNAP_DISTANCE_TILES) {
       this.camCenterX = targetX;
       this.camCenterY = targetY;
       this.cameraInitialized = true;
     } else {
-      const followRate = reducedMotion ? 1.0 : 1 - Math.exp(-9.0 * dt);
+      const followRate = reducedMotion ? 1.0 : 1 - Math.exp(-10.5 * dt);
       this.camCenterX = lerp(this.camCenterX, targetX, followRate);
       this.camCenterY = lerp(this.camCenterY, targetY, followRate);
     }
@@ -113,33 +245,54 @@ export class OverworldRenderer implements IOverworldRenderer {
   }
 
   /**
-   * Renders the complete 100x84 frustum-culled HD-2D pixel overworld frame onto IRenderBackend.
+   * Renders the complete 100x84 frustum-culled HD-2D pixel overworld frame onto IRenderBackend
+   * using a zoomed-in overhead RPG camera with pixel-snapped alignment across WebGL2 & Canvas2D.
    */
   render(backend: IRenderBackend, state: OverworldSceneState): void {
     const { cols, rows, tileSize, currentBiomeId } = state;
 
+    this.lastCols = cols;
+    this.lastRows = rows;
+    this.lastTileSize = tileSize;
+
     const viewport = this.resolveViewportSize(backend);
     const vw = viewport.width;
     const vh = viewport.height;
-    const zoom = this.cameraZoom;
 
-    const mapPxW = cols * tileSize;
-    const mapPxH = rows * tileSize;
-
-    if (!this.cameraInitialized || this.lastBiomeId !== currentBiomeId) {
-      this.camCenterX = (state.player.x + 0.5) * tileSize;
-      this.camCenterY = (state.player.y + 0.5) * tileSize;
+    const playerCenterX = (state.player.x + 0.5) * tileSize;
+    const playerCenterY = (state.player.y + 0.5) * tileSize;
+    const jumpDist = Math.hypot(playerCenterX - this.camCenterX, playerCenterY - this.camCenterY);
+    if (!this.cameraInitialized || jumpDist > tileSize * CAMERA_SNAP_DISTANCE_TILES) {
+      this.camCenterX = playerCenterX;
+      this.camCenterY = playerCenterY;
       this.cameraInitialized = true;
+    }
+    if (this.lastBiomeId !== currentBiomeId) {
       this.lastBiomeId = currentBiomeId;
     }
 
-    const clampedCenterX = this.clampCenterCoord(this.camCenterX, mapPxW, vw / zoom);
-    const clampedCenterY = this.clampCenterCoord(this.camCenterY, mapPxH, vh / zoom);
-    this.camCenterX = clampedCenterX;
-    this.camCenterY = clampedCenterY;
+    const frame = this.computeCameraFrame(
+      vw,
+      vh,
+      cols,
+      rows,
+      tileSize,
+      this.camCenterX,
+      this.camCenterY,
+    );
+    const {
+      clampedCenterX,
+      clampedCenterY,
+      renderCenterX,
+      renderCenterY,
+      camX,
+      camY,
+      zoom,
+      snapshot,
+    } = frame;
 
-    const camX = clampedCenterX - vw * 0.5;
-    const camY = clampedCenterY - vh * 0.5;
+    this.lastCameraSnapshot = snapshot;
+    this.hasRenderedFrame = true;
 
     backend.setCamera({
       x: camX,
@@ -158,14 +311,14 @@ export class OverworldRenderer implements IOverworldRenderer {
     backend.setWaterConfig(this.buildWaterConfig(profile.waterConfig, state));
     backend.setCanopyConfig(this.buildCanopyConfig(profile.canopyConfig, state));
 
-    // Frustum culling: visible viewport + 2 tile margin on each edge
+    // Frustum culling: visible zoomed viewport + 2 tile margin on each edge
     const halfViewW = (vw / zoom) * 0.5;
     const halfViewH = (vh / zoom) * 0.5;
     const marginPx = tileSize * 2;
-    const minPxX = clampedCenterX - halfViewW - marginPx;
-    const maxPxX = clampedCenterX + halfViewW + marginPx;
-    const minPxY = clampedCenterY - halfViewH - marginPx;
-    const maxPxY = clampedCenterY + halfViewH + marginPx;
+    const minPxX = renderCenterX - halfViewW - marginPx;
+    const maxPxX = renderCenterX + halfViewW + marginPx;
+    const minPxY = renderCenterY - halfViewH - marginPx;
+    const maxPxY = renderCenterY + halfViewH + marginPx;
 
     const bounds: ViewTileBounds = {
       minTx: clamp(Math.floor(minPxX / tileSize), 0, Math.max(0, cols - 1)),
@@ -225,7 +378,7 @@ export class OverworldRenderer implements IOverworldRenderer {
       ctx.imageSmoothingEnabled = false;
       ctx.translate(viewW * 0.5, viewH * 0.5);
       if (zoom !== 1) ctx.scale(zoom, zoom);
-      ctx.translate(-viewW * 0.5 - camX, -viewH * 0.5 - camY);
+      ctx.translate(-renderCenterX, -renderCenterY);
 
       this.autotile.renderTerrainDetailOverlays(ctx, state, bounds);
       this.landmarks.renderGroundOverlays(ctx, state, bounds, hasPropsAtlas);
@@ -252,7 +405,7 @@ export class OverworldRenderer implements IOverworldRenderer {
       ctx.imageSmoothingEnabled = false;
       ctx.translate(viewW * 0.5, viewH * 0.5);
       if (zoom !== 1) ctx.scale(zoom, zoom);
-      ctx.translate(-viewW * 0.5 - camX, -viewH * 0.5 - camY);
+      ctx.translate(-renderCenterX, -renderCenterY);
 
       this.autotile.renderPartingTallGrass(ctx, state, bounds);
       this.autotile.renderPropShadowsAndEffects(ctx, state, bounds, landmarkTileKeys, 'post');
@@ -275,7 +428,166 @@ export class OverworldRenderer implements IOverworldRenderer {
     }
   }
 
+  private resolveProjectionCamera(
+    canvasW?: number,
+    canvasH?: number,
+    state?: CameraProjectionState,
+  ): {
+    snapshot: OverworldCameraSnapshot;
+    cols: number;
+    rows: number;
+    tileSize: number;
+  } {
+    const cols = state?.cols ?? this.lastCols;
+    const rows = state?.rows ?? this.lastRows;
+    const tileSize = state?.tileSize ?? this.lastTileSize;
+    const vw =
+      canvasW !== undefined && Number.isFinite(canvasW) && canvasW > 0
+        ? canvasW
+        : this.lastCameraSnapshot.viewportWidth || this.lastViewportWidth;
+    const vh =
+      canvasH !== undefined && Number.isFinite(canvasH) && canvasH > 0
+        ? canvasH
+        : this.lastCameraSnapshot.viewportHeight || this.lastViewportHeight;
+
+    const dimsMatchLast =
+      this.hasRenderedFrame &&
+      Math.abs(vw - this.lastCameraSnapshot.viewportWidth) <= 0.5 &&
+      Math.abs(vh - this.lastCameraSnapshot.viewportHeight) <= 0.5 &&
+      cols === this.lastCols &&
+      rows === this.lastRows &&
+      tileSize === this.lastTileSize;
+
+    if (dimsMatchLast) {
+      if (!state) {
+        return { snapshot: this.lastCameraSnapshot, cols, rows, tileSize };
+      }
+      const playerCenterX = (state.player.x + 0.5) * tileSize;
+      const playerCenterY = (state.player.y + 0.5) * tileSize;
+      const dist = Math.hypot(playerCenterX - this.camCenterX, playerCenterY - this.camCenterY);
+      if (dist <= tileSize * CAMERA_SNAP_DISTANCE_TILES) {
+        return { snapshot: this.lastCameraSnapshot, cols, rows, tileSize };
+      }
+    }
+
+    const baseX = state
+      ? (state.player.x + 0.5) * tileSize
+      : this.cameraInitialized
+        ? this.camCenterX
+        : this.lastCameraSnapshot.centerX;
+    const baseY = state
+      ? (state.player.y + 0.5) * tileSize
+      : this.cameraInitialized
+        ? this.camCenterY
+        : this.lastCameraSnapshot.centerY;
+
+    const frame = this.computeCameraFrame(vw, vh, cols, rows, tileSize, baseX, baseY);
+    return { snapshot: frame.snapshot, cols, rows, tileSize };
+  }
+
+  private computeCameraFrame(
+    vw: number,
+    vh: number,
+    cols: number,
+    rows: number,
+    tileSize: number,
+    rawCenterX: number,
+    rawCenterY: number,
+  ): {
+    clampedCenterX: number;
+    clampedCenterY: number;
+    renderCenterX: number;
+    renderCenterY: number;
+    camX: number;
+    camY: number;
+    zoom: number;
+    snapshot: OverworldCameraSnapshot;
+  } {
+    const safeW = Math.max(1, vw);
+    const safeH = Math.max(1, vh);
+    const safeTile = Math.max(1, tileSize);
+    const zoom = computeOverworldZoom(safeW, safeH, safeTile);
+
+    const mapPxW = Math.max(safeTile, cols * safeTile);
+    const mapPxH = Math.max(safeTile, rows * safeTile);
+    const viewWorldW = safeW / zoom;
+    const viewWorldH = safeH / zoom;
+
+    const focusOffsetCssY = computeViewportFocusOffsetY(safeW, safeH);
+    const biasedCenterY = rawCenterY + focusOffsetCssY / zoom;
+
+    const clampedCenterX = this.clampCenterCoord(rawCenterX, mapPxW, viewWorldW);
+    const clampedCenterY = this.clampCenterCoord(biasedCenterY, mapPxH, viewWorldH);
+
+    // Snap world origin (0,0) in CSS pixels to an exact integer so every tile boundary
+    // and 16x16 terrain chunk aligns cleanly to screen pixels with zero hairline seams.
+    const mapScreenW = mapPxW * zoom;
+    const mapScreenH = mapPxH * zoom;
+    const rawOriginX = safeW * 0.5 - clampedCenterX * zoom;
+    const rawOriginY = safeH * 0.5 - clampedCenterY * zoom;
+
+    const snappedOriginX =
+      mapScreenW >= safeW
+        ? clamp(Math.round(rawOriginX), Math.floor(safeW - mapScreenW), 0)
+        : Math.round(rawOriginX);
+    const snappedOriginY =
+      mapScreenH >= safeH
+        ? clamp(Math.round(rawOriginY), Math.floor(safeH - mapScreenH), 0)
+        : Math.round(rawOriginY);
+
+    const renderCenterX = (safeW * 0.5 - snappedOriginX) / zoom;
+    const renderCenterY = (safeH * 0.5 - snappedOriginY) / zoom;
+    const camX = renderCenterX - safeW * 0.5;
+    const camY = renderCenterY - safeH * 0.5;
+
+    const tileScreenPx = safeTile * zoom;
+    const visibleTilesX = safeW / tileScreenPx;
+    const visibleTilesY = safeH / tileScreenPx;
+
+    const visMinPxX = renderCenterX - viewWorldW * 0.5;
+    const visMaxPxX = renderCenterX + viewWorldW * 0.5;
+    const visMinPxY = renderCenterY - viewWorldH * 0.5;
+    const visMaxPxY = renderCenterY + viewWorldH * 0.5;
+
+    const snapshot: OverworldCameraSnapshot = {
+      centerX: renderCenterX,
+      centerY: renderCenterY,
+      camX,
+      camY,
+      zoom,
+      tileScreenPx,
+      viewportWidth: safeW,
+      viewportHeight: safeH,
+      visibleTilesX,
+      visibleTilesY,
+      minVisibleTileX: clamp(Math.floor(visMinPxX / safeTile), 0, Math.max(0, cols - 1)),
+      maxVisibleTileX: clamp(Math.ceil(visMaxPxX / safeTile) - 1, 0, Math.max(0, cols - 1)),
+      minVisibleTileY: clamp(Math.floor(visMinPxY / safeTile), 0, Math.max(0, rows - 1)),
+      maxVisibleTileY: clamp(Math.ceil(visMaxPxY / safeTile) - 1, 0, Math.max(0, rows - 1)),
+    };
+
+    return {
+      clampedCenterX,
+      clampedCenterY,
+      renderCenterX,
+      renderCenterY,
+      camX,
+      camY,
+      zoom,
+      snapshot,
+    };
+  }
+
   private resolveViewportSize(backend: IRenderBackend): { width: number; height: number } {
+    if (typeof backend.getViewportSize === 'function') {
+      const vp = backend.getViewportSize();
+      if (vp && vp.width > 0 && vp.height > 0) {
+        this.lastViewportWidth = vp.width;
+        this.lastViewportHeight = vp.height;
+        this.viewportKnownFromBackend = true;
+        return { width: vp.width, height: vp.height };
+      }
+    }
     const ctx = backend.getCanvas2DContext();
     if (ctx && ctx.canvas) {
       const dpr = Math.max(1, backend.capabilities.dpr || 1);
@@ -362,20 +674,20 @@ export class OverworldRenderer implements IOverworldRenderer {
 
       let vx = (r3 - 0.5) * 0.035;
       let vy = (r1 - 0.5) * 0.025;
-      let radius = 2.8 + r2 * 3.2;
+      let radius = 2.0 + r2 * 2.2;
 
       if (EMBER_BIOMES.has(currentBiomeId)) {
         vx = (r3 - 0.4) * 0.04;
         vy = -0.035 - r1 * 0.04;
-        radius = 2.4 + r2 * 2.2;
+        radius = 1.8 + r2 * 1.8;
       } else if (FROST_BIOMES.has(currentBiomeId)) {
         vx = -0.02 + r3 * 0.04;
         vy = 0.025 + r1 * 0.035;
-        radius = 2.4 + r2 * 2.8;
+        radius = 1.8 + r2 * 2.0;
       } else if (PETAL_BIOMES.has(currentBiomeId)) {
         vx = 0.028 + r3 * 0.035;
         vy = 0.015 + r1 * 0.02;
-        radius = 2.8 + r2 * 2.4;
+        radius = 2.0 + r2 * 1.8;
       }
 
       this.ambientMotes.push({

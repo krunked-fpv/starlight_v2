@@ -147,14 +147,17 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       const owStats = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().frameStats);
       expect(owStats.drawCalls, `Expected live drawCalls > 0 on ${renderer}`).toBeGreaterThan(0);
 
-      // 3a. Tap-to-Walk BFS canvas click from spawn (8, 15) -> tile (10, 15)
-      const canvasBox = await page.locator('#starlight-canvas').boundingBox();
-      expect(canvasBox).not.toBeNull();
-      if (canvasBox) {
-        // tileSize = 32; at (8,15) on 1366x768, camX = 0, so tile 10 center is x = 10.5 * 32 = 336, y = center
-        const tapX = canvasBox.x + 10.5 * 32;
-        const tapY = canvasBox.y + canvasBox.height * 0.5;
-        await page.mouse.click(tapX, tapY);
+      // 3a. Tap-to-Walk BFS canvas click from spawn (8, 15) -> tile (10, 15) via zoomed overhead projection
+      const tapPoint = await page.evaluate(() => {
+        const canvas = document.getElementById('starlight-canvas');
+        const rect = canvas?.getBoundingClientRect();
+        if (!rect || !window.__STARLIGHT_DEBUG__) return null;
+        const pt = window.__STARLIGHT_DEBUG__.tileToScreen(10, 15);
+        return { x: rect.left + pt.x, y: rect.top + pt.y };
+      });
+      expect(tapPoint).not.toBeNull();
+      if (tapPoint) {
+        await page.mouse.click(tapPoint.x, tapPoint.y);
       }
       await page.waitForFunction(
         () => (window.__STARLIGHT_DEBUG__?.getState().playerPos.x ?? 0) >= 10,
@@ -337,8 +340,9 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       await expect(page.getByTestId('overworld-screen')).toBeVisible();
       await expect(page.getByTestId('hud-biome-name')).toHaveText('Sapphire Lagoon');
 
-      // 7. Sky-Hop Arcade: Start, flight input, Star Dash, score rises, Exit
-      await page.getByTestId('nav-skyhop').click();
+      // 7. Sky-Hop Arcade: gated until unlocked (BUG-11), then open, fly, Star Dash, score rises, Exit
+      await expect(page.getByTestId('nav-skyhop')).toBeHidden();
+      await page.evaluate(() => window.__STARLIGHT_DEBUG__!.openSkyHop());
       await expect(page.getByTestId('skyhop-screen')).toBeVisible();
 
       await page.getByTestId('skyhop-start').click();

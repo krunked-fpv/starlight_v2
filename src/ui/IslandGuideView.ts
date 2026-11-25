@@ -13,11 +13,11 @@ import {
   SECRET_ARCADE_SPOT,
   SHRINES,
   stripEmojis,
+  TYPE_PALETTES,
   typeToIconId,
 } from '../core';
 import { createIconSvg, safeText } from './iconHelper';
 
-// Pre-index Shrines and Chests per biome
 const SHRINES_PER_BIOME = (() => {
   const map = new Map<string, string[]>();
   for (const sh of Object.values(SHRINES)) {
@@ -51,6 +51,7 @@ export class IslandGuideView {
   private callbacks: UIBridgeCallbacks | null = null;
   private biomesGridEl: HTMLElement | null = null;
   private questsListEl: HTMLElement | null = null;
+  private questsCountEl: HTMLElement | null = null;
   private arcadeHintEl: HTMLElement | null = null;
   private lastMemo = '';
 
@@ -72,9 +73,9 @@ export class IslandGuideView {
           <div class="sl-guide-hint sl-glass-soft" data-testid="guide-controls-card">
             <h3 class="sl-style-group-title">${createIconSvg('icon-compass', 'sl-icon-sm')} Controls &amp; Secret Arcade</h3>
             <ul class="sl-guide-controls-list">
-              <li><strong>Move:</strong> WASD / Arrow Keys, Tap-to-Walk on map, Drag, or Touch D-Pad</li>
+              <li><strong>Move:</strong> WASD / Arrow Keys, Tap-to-Walk on map, or Touch D-Pad</li>
               <li><strong>Interact:</strong> Space / Enter or tap the bottom Context Interact Pill</li>
-              <li><strong>Routines:</strong> Safe Zone recalls to Healing Fountain; Farm Zone picks optimal training biome</li>
+              <li><strong>Warps:</strong> Safe Zone heals at Village; Farm Zone picks ideal training biome</li>
             </ul>
             <div class="sl-alert-item" data-severity="info" data-testid="guide-secret-arcade-hint">
               ${createIconSvg('icon-skyhop', 'sl-icon-sm')}
@@ -82,8 +83,11 @@ export class IslandGuideView {
             </div>
           </div>
 
-          <div class="sl-guide-quests-wrap">
-            <h3 class="sl-style-group-title">${createIconSvg('icon-quest', 'sl-icon-sm')} 23 Island Field Quests</h3>
+          <div class="sl-guide-quests-wrap sl-glass-soft">
+            <div class="sl-team-section-head">
+              <h3 class="sl-style-group-title" style="margin:0;">${createIconSvg('icon-quest', 'sl-icon-sm')} Field Quests</h3>
+              <span class="sl-pill sl-pill-gold sl-num" data-testid="guide-quests-count">0 / ${FIELD_QUESTS.length}</span>
+            </div>
             <div class="sl-guide-quests-list" data-testid="guide-quests-list"></div>
           </div>
         </div>
@@ -92,6 +96,7 @@ export class IslandGuideView {
 
     this.biomesGridEl = container.querySelector('[data-testid="guide-biomes-grid"]');
     this.questsListEl = container.querySelector('[data-testid="guide-quests-list"]');
+    this.questsCountEl = container.querySelector('[data-testid="guide-quests-count"]');
     this.arcadeHintEl = container.querySelector('[data-testid="guide-secret-arcade-hint"]');
 
     this.biomesGridEl?.addEventListener('click', (evt) => {
@@ -100,7 +105,6 @@ export class IslandGuideView {
       const biomeId = btn.getAttribute('data-warp-biome') as BiomeId | null;
       if (biomeId) {
         this.callbacks?.onWarpBiome(biomeId);
-        this.callbacks?.onNavigateScreen('overworld');
       }
     });
   }
@@ -117,6 +121,7 @@ export class IslandGuideView {
       profile.biomesVisited.join(','),
       profile.arcade.unlocked,
       profile.arcade.secretKnocks,
+      Object.keys(profile.pokedex.caught).length,
     ].join('|');
 
     if (memo === this.lastMemo) return;
@@ -130,6 +135,7 @@ export class IslandGuideView {
     if (this.biomesGridEl) {
       this.biomesGridEl.innerHTML = BIOME_IDS.map((bId) => {
         const vp = getBiomeVisualProfile(bId);
+        const pal = TYPE_PALETTES[vp.elementalType] ?? TYPE_PALETTES.normal;
         const scaled = getBiomeScaledRange(bId, profile);
         const shrines = SHRINES_PER_BIOME.get(bId) ?? [];
         const shrinesDone = shrines.filter((id) => clearedSet.has(id)).length;
@@ -139,7 +145,11 @@ export class IslandGuideView {
         const isVisited = isCurrent || visitedSet.has(bId);
 
         return `
-          <article class="sl-guide-biome-card sl-glass-soft ${isCurrent ? 'is-current' : ''}" data-testid="guide-biome-${bId}">
+          <article
+            class="sl-guide-biome-card sl-glass-soft ${isCurrent ? 'is-current' : ''}"
+            style="border-top-color:${isCurrent ? 'var(--sl-gold-bright)' : pal.primary};"
+            data-testid="guide-biome-${bId}"
+          >
             <div class="sl-guide-biome-head">
               <div style="display:flex; align-items:center; gap:8px; min-width:0;">
                 ${createIconSvg(typeToIconId(vp.elementalType), 'sl-icon-md')}
@@ -148,21 +158,21 @@ export class IslandGuideView {
                   <div class="sl-biome-sub">${safeText(vp.subtitle)}</div>
                 </div>
               </div>
-              <span class="sl-pill sl-num">Lv.${scaled.minLv}-${scaled.maxLv}</span>
+              <span class="sl-pill sl-pill-gold sl-num">Lv.${scaled.minLv}-${scaled.maxLv}</span>
             </div>
             <div class="sl-guide-biome-meta sl-num">
-              <span class="sl-pill">${createIconSvg('icon-shrine', 'sl-icon-sm')} Shrines ${shrinesDone}/${shrines.length}</span>
-              <span class="sl-pill">${createIconSvg('icon-chest', 'sl-icon-sm')} Chests ${chestsDone}/${chests.length}</span>
+              <span class="sl-pill">${createIconSvg('icon-shrine', 'sl-icon-sm')} ${shrinesDone}/${shrines.length}</span>
+              <span class="sl-pill">${createIconSvg('icon-chest', 'sl-icon-sm')} ${chestsDone}/${chests.length}</span>
               <span class="sl-pill">${safeText(scaled.threatLabel)}${isVisited ? ' • Explored' : ''}</span>
             </div>
             <button
               type="button"
-              class="sl-btn ${isCurrent ? 'is-active' : 'sl-btn-cyan'}"
+              class="sl-btn ${isCurrent ? 'is-active' : ''}"
               data-warp-biome="${bId}"
               data-testid="guide-warp-${bId}"
             >
               ${createIconSvg('icon-waypoint', 'sl-icon-sm')}
-              <span>${isCurrent ? 'Here (Warp Center)' : `Warp to ${safeText(vp.displayName)}`}</span>
+              <span>${isCurrent ? 'Current Zone (Warp Center)' : `Warp to ${safeText(vp.displayName)}`}</span>
             </button>
           </article>
         `;
@@ -177,9 +187,13 @@ export class IslandGuideView {
         <span>${
           unlocked
             ? `Sky-Hop Arcade Unlocked! High Score: ${profile.arcade.highScore} (Best Wave ${profile.arcade.bestWave})`
-            : `Secret Arcade Wall at (${SECRET_ARCADE_SPOT.x}, ${SECRET_ARCADE_SPOT.y}) in Starlight Village: Knock 3 times to unlock (${knocks}/3).`
+            : `Secret Arcade Wall at (${SECRET_ARCADE_SPOT.x}, ${SECRET_ARCADE_SPOT.y}) in Starlight Village: Earn 1 Badge or catch 5 species, then knock 3 times (${knocks}/3).`
         }</span>
       `;
+    }
+
+    if (this.questsCountEl) {
+      this.questsCountEl.textContent = `${questsDoneSet.size} / ${FIELD_QUESTS.length} Done`;
     }
 
     if (this.questsListEl) {
@@ -188,25 +202,31 @@ export class IslandGuideView {
         const npcName = NPC_NAME_BY_ID.get(q.npcId) ?? q.npcId;
         let prog = '';
         try {
-          if (typeof q.progress === 'function') {
-            prog = stripEmojis(q.progress(profile));
+          const rawQuest = q as unknown as {
+            progressText?: (p: DojoProfileState) => string;
+            progress?: (p: DojoProfileState) => string;
+          };
+          if (typeof rawQuest.progressText === 'function') {
+            prog = stripEmojis(rawQuest.progressText(profile));
+          } else if (typeof rawQuest.progress === 'function') {
+            prog = stripEmojis(rawQuest.progress(profile));
           }
         } catch {
           prog = '';
         }
         return `
-          <div class="sl-quest-row sl-glass-soft" data-done="${done}" data-testid="guide-quest-${safeText(q.id)}">
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-              <strong>${safeText(stripEmojis(q.title))}</strong>
-              <span class="sl-pill">
+          <div class="sl-quest-row" data-done="${done}" data-testid="guide-quest-${safeText(q.id)}">
+            <div class="sl-quest-head">
+              <strong class="sl-quest-title">${safeText(stripEmojis(q.title))}</strong>
+              <span class="sl-pill ${done ? 'sl-pill-emerald' : ''}">
                 ${createIconSvg(done ? 'icon-check' : 'icon-quest', 'sl-icon-sm')}
                 <span>${done ? 'Completed' : safeText(npcName)}</span>
               </span>
             </div>
-            <div style="font-size:12px; color:var(--sl-text-secondary);">
+            <div class="sl-quest-desc">
               ${safeText(stripEmojis(q.description))}
             </div>
-            ${prog ? `<div class="sl-num" style="font-size:11px; color:var(--sl-cyan);">${safeText(prog)}</div>` : ''}
+            ${prog ? `<div class="sl-num" style="font-size:11px; font-weight:700; color:var(--sl-cyan);">${safeText(prog)}</div>` : ''}
           </div>
         `;
       }).join('');
@@ -216,6 +236,7 @@ export class IslandGuideView {
   dispose(): void {
     this.biomesGridEl = null;
     this.questsListEl = null;
+    this.questsCountEl = null;
     this.arcadeHintEl = null;
     this.callbacks = null;
   }

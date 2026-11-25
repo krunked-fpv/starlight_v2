@@ -1374,6 +1374,14 @@ export class AutotileRenderer {
 
     if (phase === 'ground') {
       for (const cluster of buildingCache.clusters) {
+        if (
+          cluster.tx + cluster.widthTiles < bounds.minTx - 1 ||
+          cluster.tx > bounds.maxTx + 1 ||
+          cluster.ty + cluster.heightTiles < bounds.minTy - 1 ||
+          cluster.ty > bounds.maxTy + 2
+        ) {
+          continue;
+        }
         const cx = (cluster.tx + cluster.widthTiles * 0.5) * tileSize;
         const baseY = (cluster.ty + cluster.heightTiles) * tileSize - 2;
         drawContactShadow(ctx, cx, baseY, cluster.widthTiles * tileSize * 0.52, 8, 0.36);
@@ -1420,6 +1428,14 @@ export class AutotileRenderer {
 
     // Post-sprite effects: cottage chimney smoke, fountain water shimmer, & Secret Arcade star glimmer
     for (const cluster of buildingCache.clusters) {
+      if (
+        cluster.tx + cluster.widthTiles < bounds.minTx - 1 ||
+        cluster.tx > bounds.maxTx + 1 ||
+        cluster.ty + cluster.heightTiles < bounds.minTy - 2 ||
+        cluster.ty > bounds.maxTy + 2
+      ) {
+        continue;
+      }
       const chimX = (cluster.tx + cluster.widthTiles * 0.72) * tileSize;
       const chimY = (cluster.ty - 0.55) * tileSize;
       const puffCount = reducedMotion ? 1 : 3;

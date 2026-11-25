@@ -27,7 +27,11 @@ import {
 } from '../../core/dojo';
 import { StarlightStorageBridge, createDefaultSaveState } from '../../core/save/saveHydrator';
 import { Canvas2DBackend } from '../engine/Canvas2DBackend';
-import { MAX_RENDER_LIGHTS, OverworldRenderer } from './index';
+import {
+  MAX_RENDER_LIGHTS,
+  OverworldRenderer,
+  computeOverworldZoom,
+} from './index';
 
 function createMock2DContext(): CanvasRenderingContext2D {
   const makeGrad = () => ({ addColorStop: vi.fn() });
@@ -263,10 +267,17 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
 
     const cmds = spriteSpy.mock.calls.map((c) => c[0]);
     const terrainCmds = cmds.filter((c) => c.sheetId === 'terrain');
-    // 960x540 at 32px = ~30x17 (+2 margin -> max ~35x22 = ~770), strictly << 8400 total map tiles
-    expect(terrainCmds.length).toBeGreaterThan(300);
-    expect(terrainCmds.length).toBeLessThan(1200);
+    // 960x540 zoomed overhead (1.75x -> 56px/tile -> ~17.1x9.6 visible tiles, +2 margin -> ~21x16 = ~336 tiles), strictly << 8400 total map tiles
+    expect(terrainCmds.length).toBeGreaterThan(220);
+    expect(terrainCmds.length).toBeLessThan(600);
     expect(terrainCmds.every((c) => c.pixelCrisp === true && c.useNormalMap === true)).toBe(true);
+
+    const camState = renderer.getCameraState();
+    expect(camState.zoom).toBe(1.75);
+    expect(camState.visibleTilesX).toBeGreaterThanOrEqual(14);
+    expect(camState.visibleTilesX).toBeLessThanOrEqual(18);
+    expect(camState.visibleTilesY).toBeGreaterThanOrEqual(8.5);
+    expect(camState.visibleTilesY).toBeLessThanOrEqual(12);
 
     // Cohesive hero pixel cottages instead of raw flat blocks
     const propRegions = new Set(cmds.filter((c) => c.sheetId === 'props').map((c) => c.regionId));
@@ -843,6 +854,236 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
     renderer.render(backend, state);
     const fallbackStats = backend.endFrame();
     expect(fallbackStats.drawCalls).toBeGreaterThan(0);
+
+    backend.dispose();
+  });
+
+  it('frames an authentic zoomed-in HD-2D overhead view across desktop (14-18 tiles wide) and mobile portrait (9-12 tiles wide) with crisp pixel-snapped edges', async () => {
+    const manifest = loadV2ManifestFixture();
+    const cases: Array<{
+      label: string;
+      w: number;
+      h: number;
+      minCols: number;
+      maxCols: number;
+      minTilePx: number;
+      maxTilePx: number;
+    }> = [
+      { label: 'desktop-1366x768', w: 1366, h: 768, minCols: 14, maxCols: 18, minTilePx: 64, maxTilePx: 96 },
+      { label: 'desktop-1280x720', w: 1280, h: 720, minCols: 14, maxCols: 18, minTilePx: 64, maxTilePx: 96 },
+      { label: 'desktop-1920x1080', w: 1920, h: 1080, minCols: 14, maxCols: 18, minTilePx: 96, maxTilePx: 128 },
+      { label: 'tablet-768x1024', w: 768, h: 1024, minCols: 9, maxCols: 13, minTilePx: 56, maxTilePx: 80 },
+      { label: 'mobile-360x640', w: 360, h: 640, minCols: 9, maxCols: 12, minTilePx: 36, maxTilePx: 48 },
+      { label: 'mobile-390x844', w: 390, h: 844, minCols: 9, maxCols: 12, minTilePx: 36, maxTilePx: 48 },
+      { label: 'mobile-430x932', w: 430, h: 932, minCols: 9, maxCols: 12, minTilePx: 36, maxTilePx: 48 },
+    ];
+
+    for (const c of cases) {
+      const { canvas } = createMockCanvas(c.w, c.h);
+      const backend = new Canvas2DBackend();
+      await backend.init(canvas, { dprCap: 1, reducedMotion: false, crtMode: false });
+      registerFixtureAtlases(backend, manifest);
+
+      const camSpy = vi.spyOn(backend, 'setCamera');
+      const renderer = new OverworldRenderer();
+      renderer.attachAtlas(manifest);
+      const { state } = createSimScene('violet', 25);
+
+      renderer.update(state, 0.016);
+      backend.beginFrame(1.0, 0.016);
+      renderer.render(backend, state);
+      backend.endFrame();
+
+      const cam = renderer.getCameraState();
+      expect(cam.zoom, `${c.label} zoom`).toBe(computeOverworldZoom(c.w, c.h, state.tileSize));
+      expect(cam.zoom, `${c.label} must zoom in > 1x`).toBeGreaterThan(1);
+      expect(cam.tileScreenPx, `${c.label} integer CSS px tile width`).toBe(Math.round(cam.tileScreenPx));
+      expect(cam.tileScreenPx % 8, `${c.label} crisp 8px tile step`).toBe(0);
+      expect(cam.tileScreenPx, `${c.label} minTilePx`).toBeGreaterThanOrEqual(c.minTilePx);
+      expect(cam.tileScreenPx, `${c.label} maxTilePx`).toBeLessThanOrEqual(c.maxTilePx);
+      expect(cam.visibleTilesX, `${c.label} minCols`).toBeGreaterThanOrEqual(c.minCols);
+      expect(cam.visibleTilesX, `${c.label} maxCols`).toBeLessThanOrEqual(c.maxCols);
+      // Strictly prevent regressing back to showing the whole 100x84 island map
+      expect(cam.maxVisibleTileX - cam.minVisibleTileX + 1, `${c.label} visible span << 100`).toBeLessThan(24);
+      expect(cam.maxVisibleTileY - cam.minVisibleTileY + 1, `${c.label} visible rows << 84`).toBeLessThan(30);
+
+      // Verify tile boundaries project to exact integer CSS pixels (zero subpixel seams)
+      const originX = cam.viewportWidth * 0.5 - cam.centerX * cam.zoom;
+      const originY = cam.viewportHeight * 0.5 - cam.centerY * cam.zoom;
+      expect(Math.abs(originX - Math.round(originX)), `${c.label} snapped originX`).toBeLessThan(1e-6);
+      expect(Math.abs(originY - Math.round(originY)), `${c.label} snapped originY`).toBeLessThan(1e-6);
+
+      // Verify backend received exact matching camera parameters
+      expect(camSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          x: cam.camX,
+          y: cam.camY,
+          zoom: cam.zoom,
+          viewportWidth: c.w,
+          viewportHeight: c.h,
+        }),
+      );
+
+      backend.dispose();
+    }
+  });
+
+  it('maintains 100% accurate screenToTile <-> tileToScreen round-trip across desktop, mobile, corners, and resized viewports', async () => {
+    const manifest = loadV2ManifestFixture();
+    const viewports: Array<[number, number]> = [
+      [1366, 768],
+      [1920, 1080],
+      [390, 844],
+      [360, 640],
+    ];
+    const positions: Array<{ px: number; py: number; probeTiles: Array<[number, number]> }> = [
+      // Village spawn near west edge (clamped X)
+      {
+        px: 8,
+        py: 15,
+        probeTiles: [
+          [2, 12],
+          [7, 13],
+          [8, 15],
+          [10, 15],
+          [11, 12],
+          [15, 14],
+        ],
+      },
+      // Open map interior (unclamped both axes)
+      {
+        px: 50,
+        py: 42,
+        probeTiles: [
+          [46, 39],
+          [50, 42],
+          [53, 44],
+          [48, 45],
+        ],
+      },
+      // Deep southeast corner (clamped max X and max Y)
+      {
+        px: 97,
+        py: 81,
+        probeTiles: [
+          [92, 78],
+          [97, 81],
+          [99, 83],
+        ],
+      },
+    ];
+
+    for (const [w, h] of viewports) {
+      const { canvas } = createMockCanvas(w, h);
+      const backend = new Canvas2DBackend();
+      await backend.init(canvas, { dprCap: 1, reducedMotion: false, crtMode: false });
+      registerFixtureAtlases(backend, manifest);
+
+      const renderer = new OverworldRenderer();
+      renderer.attachAtlas(manifest);
+      const { state } = createSimScene('violet', 25);
+
+      for (const pos of positions) {
+        state.player.x = pos.px;
+        state.player.y = pos.py;
+        state.player.tileX = pos.px;
+        state.player.tileY = pos.py;
+
+        renderer.update(state, 0.016);
+        backend.beginFrame(1.0, 0.016);
+        renderer.render(backend, state);
+        backend.endFrame();
+
+        for (const [tx, ty] of pos.probeTiles) {
+          const screen = renderer.tileToScreen(tx, ty, w, h, state);
+          const roundTrip = renderer.screenToTile(screen.x, screen.y, w, h, state);
+          expect(roundTrip.tileX, `${w}x${h} tileX (${tx},${ty})`).toBe(tx);
+          expect(roundTrip.tileY, `${w}x${h} tileY (${tx},${ty})`).toBe(ty);
+          expect(roundTrip.worldX).toBeCloseTo((tx + 0.5) * state.tileSize, 4);
+          expect(roundTrip.worldY).toBeCloseTo((ty + 0.5) * state.tileSize, 4);
+        }
+
+        // Also verify direct pre-render stateless projection matches rendered projection identically
+        const freshRenderer = new OverworldRenderer();
+        for (const [tx, ty] of pos.probeTiles) {
+          const screenRendered = renderer.tileToScreen(tx, ty, w, h, state);
+          const screenDirect = freshRenderer.tileToScreen(tx, ty, w, h, state);
+          expect(screenDirect.x).toBeCloseTo(screenRendered.x, 4);
+          expect(screenDirect.y).toBeCloseTo(screenRendered.y, 4);
+          const rtDirect = freshRenderer.screenToTile(screenDirect.x, screenDirect.y, w, h, state);
+          expect(rtDirect.tileX).toBe(tx);
+          expect(rtDirect.tileY).toBe(ty);
+        }
+      }
+
+      // Verify clamping at far out-of-bounds pointer coords
+      const negCorner = renderer.screenToTile(-50000, -50000, w, h, state);
+      expect(negCorner.tileX).toBe(0);
+      expect(negCorner.tileY).toBe(0);
+      const farCorner = renderer.screenToTile(50000, 50000, w, h, state);
+      expect(farCorner.tileX).toBe(state.cols - 1);
+      expect(farCorner.tileY).toBe(state.rows - 1);
+
+      backend.dispose();
+    }
+  });
+
+  it('smoothly pans across walking biome transitions, snaps immediately on warps, and stays synced after backend resize (WebGL2/Canvas2D parity)', async () => {
+    const manifest = loadV2ManifestFixture();
+    const { canvas } = createMockCanvas(1366, 768);
+    const backend = new Canvas2DBackend();
+    await backend.init(canvas, { dprCap: 1, reducedMotion: false, crtMode: false });
+    registerFixtureAtlases(backend, manifest);
+
+    const renderer = new OverworldRenderer();
+    renderer.attachAtlas(manifest);
+    const { state } = createSimScene('violet', 25);
+
+    // Start at village north gate (6, 10)
+    state.player.x = 6;
+    state.player.y = 10;
+    state.currentBiomeId = 'village';
+    renderer.update(state, 0.016);
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const beforeStepY = renderer.getCameraState().centerY;
+
+    // Walk 1 tile north across the biome border into Whispering Forest (6, 9) -> must smoothly pan, NOT hard-snap
+    state.player.y = 9;
+    state.currentBiomeId = 'forest';
+    renderer.update(state, 0.016);
+    backend.beginFrame(1.016, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const midStepY = renderer.getCameraState().centerY;
+    const targetY = 9.5 * state.tileSize;
+    expect(midStepY).toBeLessThan(beforeStepY);
+    expect(midStepY).toBeGreaterThan(targetY + 4);
+
+    // Cross-island warp (> 5 tiles) -> must snap immediately without gliding across the map
+    state.player.x = 70;
+    state.player.y = 40;
+    state.currentBiomeId = 'rift';
+    renderer.update(state, 0.016);
+    backend.beginFrame(1.032, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const afterWarp = renderer.getCameraState();
+    expect(Math.abs(afterWarp.centerX - 70.5 * state.tileSize)).toBeLessThan(1);
+    expect(Math.abs(afterWarp.centerY - 40.5 * state.tileSize)).toBeLessThan(1);
+
+    // Simulate backend resize (1366x768 -> 390x844) via getViewportSize() (critical for WebGL2 parity where getCanvas2DContext() is null)
+    backend.resize(390, 844, 2);
+    vi.spyOn(backend, 'getCanvas2DContext').mockReturnValue(null);
+    backend.beginFrame(1.05, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const resizedCam = renderer.getCameraState();
+    expect(resizedCam.viewportWidth).toBe(390);
+    expect(resizedCam.viewportHeight).toBe(844);
+    expect(resizedCam.zoom).toBe(1.25);
+    expect(resizedCam.visibleTilesX).toBeCloseTo(390 / 40, 3);
 
     backend.dispose();
   });

@@ -1,4 +1,11 @@
-export { OverworldRenderer, MAX_RENDER_LIGHTS } from './OverworldRenderer';
+export {
+  OverworldRenderer,
+  MAX_RENDER_LIGHTS,
+  MIN_CAMERA_ZOOM,
+  MAX_CAMERA_ZOOM,
+  computeOverworldZoom,
+  computeViewportFocusOffsetY,
+} from './OverworldRenderer';
 export {
   AutotileRenderer,
   CANONICAL_47_MASKS,

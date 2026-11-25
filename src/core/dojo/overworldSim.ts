@@ -28,11 +28,13 @@ import {
   SECRET_ARCADE_SPOT,
   SHRINES,
   SIGNPOSTS,
+  SPECIES,
   TILE,
   TYPE_CHART,
   WORLD_COLS,
   WORLD_MAP,
   WORLD_ROWS,
+  findNearestSafePosition,
   getBiomeAt,
   getBiomeWarpPoint,
   getCompassGuidance,
@@ -48,24 +50,25 @@ import { getCleanTrainerName, getResolvedTrainerLook, getSpeciesEntry } from './
 import { getBiomeVisualProfile } from './biomeVisuals';
 import { readinessTierToIconId, stripEmojis } from './emojiSanitizer';
 
-const ENCOUNTER_GRASS_TILES = new Set<number>([
-  TILE.TALL_GRASS,
-  TILE.SNOW_GRASS,
-  TILE.GROVE_GRASS,
-  TILE.MARSH_GRASS,
-  TILE.CANYON_GRASS,
-  TILE.FAE_GRASS,
-  TILE.CROWN_GRASS,
-  TILE.CAVE_FLOOR,
-  TILE.VOLCANO_FLOOR,
-  TILE.SANCTUM_FLOOR,
-  TILE.RUINS_FLOOR,
-  TILE.RIFT_FLOOR,
-  TILE.TERA_FLOOR,
-  TILE.DUNE_SAND,
-  TILE.ATOLL_SAND,
-  TILE.REEF_WATER,
-]);
+const ENCOUNTER_TILE_BIOME: Record<number, BiomeId> = {
+  [TILE.TALL_GRASS]: 'forest',
+  [TILE.CAVE_FLOOR]: 'cave',
+  [TILE.SHALLOW_WATER]: 'water',
+  [TILE.VOLCANO_FLOOR]: 'volcano',
+  [TILE.SNOW_GRASS]: 'peak',
+  [TILE.GROVE_GRASS]: 'grove',
+  [TILE.DUNE_SAND]: 'desert',
+  [TILE.MARSH_GRASS]: 'marsh',
+  [TILE.SANCTUM_FLOOR]: 'sanctum',
+  [TILE.CANYON_GRASS]: 'canyon',
+  [TILE.REEF_WATER]: 'reef',
+  [TILE.RUINS_FLOOR]: 'ruins',
+  [TILE.RIFT_FLOOR]: 'rift',
+  [TILE.FAE_GRASS]: 'faeveldt',
+  [TILE.ATOLL_SAND]: 'atoll',
+  [TILE.CROWN_GRASS]: 'highlands',
+  [TILE.TERA_FLOOR]: 'crater',
+};
 
 export interface OverworldStepEvent {
   moved: boolean;
@@ -73,6 +76,9 @@ export interface OverworldStepEvent {
   biomeChanged?: BiomeId;
   wildEncounterTriggered?: { biomeId: BiomeId; depthTier: number; isRarePatch: boolean };
   discoveryPicked?: OverworldDiscoveryNode;
+  steppedHealSpot?: boolean;
+  arrivedInteractTarget?: { x: number; y: number };
+  newBadgeIds?: string[];
   stepCheerEarned?: boolean;
   stepArcadeChargeEarned?: boolean;
 }
@@ -178,13 +184,19 @@ export class DojoOverworldSim {
   private floatY = GAME_META.spawn.y;
   private followerX = GAME_META.spawn.x;
   private followerY = GAME_META.spawn.y + 0.85;
+  private followerTargetX = GAME_META.spawn.x;
+  private followerTargetY = GAME_META.spawn.y + 0.85;
+  private followerFacing: Direction = 'down';
   private facing: Direction = 'down';
   private moveCooldown = 0;
-  private stepsSinceWild = 0;
+  private stepsSinceWild = BALANCE.overworld.minStepsBetweenWilds;
   private wildStreak = 0;
   private graceSteps = 0;
   private bfsPath: Array<{ x: number; y: number }> = [];
+  private autoInteractTarget: { x: number; y: number } | null = null;
   private discoveryNodes: OverworldDiscoveryNode[] = [];
+  private discoveryRespawnTimer = 0;
+  private discoverySeq = 100;
   private healTiles: Array<{ x: number; y: number }> = [];
   private shrineCoords: Map<string, { x: number; y: number }> = new Map();
   private chestCoords: Map<string, { x: number; y: number }> = new Map();
@@ -236,18 +248,50 @@ export class DojoOverworldSim {
       }));
   }
 
+  private placeFollowerBehind(px: number, py: number, dir: Direction): void {
+    const candidates: Array<[number, number]> =
+      dir === 'up'
+        ? [[px, py + 1], [px - 1, py], [px + 1, py], [px, py - 1]]
+        : dir === 'down'
+          ? [[px, py - 1], [px - 1, py], [px + 1, py], [px, py + 1]]
+          : dir === 'left'
+            ? [[px + 1, py], [px, py + 1], [px, py - 1], [px - 1, py]]
+            : [[px - 1, py], [px, py + 1], [px, py - 1], [px + 1, py]];
+
+    for (const [cx, cy] of candidates) {
+      if (isTileWalkableAt(cx, cy)) {
+        this.followerX = cx;
+        this.followerY = cy;
+        this.followerTargetX = cx;
+        this.followerTargetY = cy;
+        this.followerFacing = dir;
+        return;
+      }
+    }
+    this.followerX = px;
+    this.followerY = py;
+    this.followerTargetX = px;
+    this.followerTargetY = py;
+    this.followerFacing = dir;
+  }
+
   syncFromProfile(): void {
     const profile = this.storage.getActiveProfileJSON();
     if (profile?.pos) {
-      this.tileX = profile.pos.x;
-      this.tileY = profile.pos.y;
-      this.floatX = profile.pos.x;
-      this.floatY = profile.pos.y;
-      this.facing = profile.pos.dir || 'down';
-      this.followerX = this.tileX;
-      this.followerY = Math.min(WORLD_ROWS - 1, this.tileY + 0.85);
+      const safe = isTileWalkableAt(profile.pos.x, profile.pos.y)
+        ? { x: profile.pos.x, y: profile.pos.y, dir: profile.pos.dir || 'down' }
+        : findNearestSafePosition(profile.pos.x, profile.pos.y, profile.pos.dir || 'down');
+      this.tileX = safe.x;
+      this.tileY = safe.y;
+      this.floatX = safe.x;
+      this.floatY = safe.y;
+      this.facing = (safe.dir as Direction) || 'down';
+      this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     }
+    this.stepsSinceWild = BALANCE.overworld.minStepsBetweenWilds;
+    this.wildStreak = 0;
     this.bfsPath = [];
+    this.autoInteractTarget = null;
     this.refreshState();
   }
 
@@ -255,14 +299,150 @@ export class DojoOverworldSim {
     return this.state;
   }
 
-  setBfsTarget(goalX: number, goalY: number): Array<{ x: number; y: number }> {
+  canStepNow(): boolean {
+    return this.moveCooldown <= 0;
+  }
+
+  faceTile(tx: number, ty: number): void {
+    const dx = tx - this.tileX;
+    const dy = ty - this.tileY;
+    if (dx === 0 && dy === 0) return;
+    const nextFacing: Direction =
+      Math.abs(dx) >= Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    if (this.facing !== nextFacing) {
+      this.facing = nextFacing;
+      this.storage.manager.updatePosition(this.tileX, this.tileY, this.facing, false);
+      this.state.player.facing = this.facing;
+      this.state.nearbyInteraction = this.resolveNearbyInteractable();
+    }
+  }
+
+  getInteractableAtTile(tx: number, ty: number): OverworldInteractable | null {
+    if (!Number.isInteger(tx) || !Number.isInteger(ty)) return null;
+    if (tx < 0 || ty < 0 || tx >= WORLD_COLS || ty >= WORLD_ROWS) return null;
+    const key = `${tx},${ty}`;
+
+    if (SECRET_ARCADE_SPOT && SECRET_ARCADE_SPOT.x === tx && SECRET_ARCADE_SPOT.y === ty) {
+      const unlocked = this.storage.manager.isArcadeUnlocked();
+      return {
+        kind: 'secret-arcade',
+        id: 'secret-arcade',
+        x: tx,
+        y: ty,
+        label: unlocked ? 'Starlight Sky-Hop Arcade' : 'Mysterious Star Emblem',
+        actionVerb: unlocked ? 'Play Arcade' : 'Inspect Star',
+      };
+    }
+
+    if (WORLD_MAP[ty]?.[tx] === TILE.HEAL) {
+      return {
+        kind: 'fountain',
+        id: `fountain-${tx}-${ty}`,
+        x: tx,
+        y: ty,
+        label: 'Starlight Healing Fountain',
+        actionVerb: 'Heal Team',
+      };
+    }
+
+    if (SHRINES[key]) {
+      const sh = this.state.shrines.find((s) => s.x === tx && s.y === ty);
+      if (sh) {
+        return {
+          kind: 'shrine',
+          id: sh.id,
+          x: tx,
+          y: ty,
+          label: sh.name,
+          actionVerb: sh.cleared ? 'Astral Trial' : 'Challenge Shrine',
+        };
+      }
+    }
+
+    if (RIVAL_TRAINERS[key]) {
+      const rv = this.state.rivals.find((r) => r.x === tx && r.y === ty);
+      if (rv) {
+        return {
+          kind: 'rival',
+          id: rv.id,
+          x: tx,
+          y: ty,
+          label: rv.name,
+          actionVerb: rv.defeated ? 'Rematch Duel' : 'Challenge Rival',
+        };
+      }
+    }
+
+    if (CHESTS[key]) {
+      const ch = this.state.chests.find((c) => c.x === tx && c.y === ty);
+      if (ch) {
+        return {
+          kind: 'chest',
+          id: ch.id,
+          x: tx,
+          y: ty,
+          label: ch.opened ? 'Opened Treasure Chest' : ch.label,
+          actionVerb: ch.opened ? 'Inspect Chest' : 'Open Chest',
+        };
+      }
+    }
+
+    if (NPCS[key]) {
+      const npc = this.state.npcs.find((n) => n.x === tx && n.y === ty);
+      if (npc) {
+        return {
+          kind: 'npc',
+          id: npc.id,
+          x: tx,
+          y: ty,
+          label: npc.name,
+          actionVerb: npc.hasAvailableQuest ? 'Talk (Quest)' : 'Talk',
+        };
+      }
+    }
+
+    if (SIGNPOSTS[key]) {
+      const sign = this.state.signposts.find((s) => s.x === tx && s.y === ty);
+      if (sign) {
+        return {
+          kind: 'signpost',
+          id: sign.id,
+          x: tx,
+          y: ty,
+          label: sign.title,
+          actionVerb: 'Read Sign',
+        };
+      }
+    }
+
+    if (LANDMARKS[key]) {
+      const lm = this.state.landmarks.find((l) => l.x === tx && l.y === ty);
+      if (lm) {
+        return {
+          kind: 'landmark',
+          id: lm.id,
+          x: tx,
+          y: ty,
+          label: lm.name,
+          actionVerb: 'Inspect',
+        };
+      }
+    }
+
+    return null;
+  }
+
+  setBfsTarget(goalX: number, goalY: number, options?: { autoInteract?: boolean }): Array<{ x: number; y: number }> {
+    const interactive = options?.autoInteract ? this.getInteractableAtTile(goalX, goalY) : null;
     this.bfsPath = findBfsPath(this.tileX, this.tileY, goalX, goalY);
+    this.autoInteractTarget = interactive ? { x: goalX, y: goalY } : null;
     this.state.bfsPath = this.bfsPath;
     return this.bfsPath;
   }
 
   clearBfsPath(): void {
     this.bfsPath = [];
+    this.autoInteractTarget = null;
     this.state.bfsPath = [];
   }
 
@@ -270,56 +450,122 @@ export class DojoOverworldSim {
     this.graceSteps = Math.max(this.graceSteps, BALANCE.overworld.postEscapeGraceSteps);
   }
 
-  warpToSafeZone(): { biomeId: BiomeId; x: number; y: number } {
+  applyPostWarpGrace(): void {
+    this.graceSteps = Math.max(this.graceSteps, BALANCE.overworld.postWarpGraceSteps);
+  }
+
+  warpToSafeZone(): { biomeId: BiomeId; x: number; y: number; newBadgeIds: string[] } {
     const res = this.storage.manager.warpToSafeZone();
     this.tileX = res.pos.x;
     this.tileY = res.pos.y;
     this.floatX = res.pos.x;
     this.floatY = res.pos.y;
     this.facing = (res.pos.dir as Direction) || 'down';
-    this.followerX = this.tileX;
-    this.followerY = this.tileY + 0.85;
+    this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     this.bfsPath = [];
+    this.autoInteractTarget = null;
     this.graceSteps = BALANCE.overworld.postWarpGraceSteps;
     this.state.biomeBannerTimer = 2.6;
     this.refreshState();
-    return { biomeId: 'village', x: this.tileX, y: this.tileY };
+    const newBadgeIds = Array.isArray(res?.newBadges) ? res.newBadges.map((b: { id: string }) => b.id) : [];
+    return { biomeId: 'village', x: this.tileX, y: this.tileY, newBadgeIds };
   }
 
-  warpToFarmZone(): { biomeId: BiomeId; biomeName: string; x: number; y: number } {
+  warpToFarmZone(): { biomeId: BiomeId; biomeName: string; x: number; y: number; newBadgeIds: string[] } {
     const profile = this.storage.manager.getActiveProfile();
     const rec = resolveFarmingBiomeForLevel(profile);
     const biomeId = (rec.biomeId as BiomeId) || 'forest';
-    this.storage.manager.warpToZone(rec.x, rec.y, rec.dir || 'down', biomeId);
-    this.tileX = rec.x;
-    this.tileY = rec.y;
-    this.floatX = rec.x;
-    this.floatY = rec.y;
-    this.facing = (rec.dir as Direction) || 'down';
-    this.followerX = this.tileX;
-    this.followerY = this.tileY + 0.85;
+    const warpRes = this.storage.manager.warpToZone(rec.x, rec.y, rec.dir || 'down', biomeId);
+    this.tileX = warpRes?.pos?.x ?? rec.x;
+    this.tileY = warpRes?.pos?.y ?? rec.y;
+    this.floatX = this.tileX;
+    this.floatY = this.tileY;
+    this.facing = ((warpRes?.pos?.dir ?? rec.dir) as Direction) || 'down';
+    this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     this.bfsPath = [];
+    this.autoInteractTarget = null;
     this.graceSteps = BALANCE.overworld.postWarpGraceSteps;
     this.state.biomeBannerTimer = 2.6;
     this.refreshState();
-    return { biomeId, biomeName: stripEmojis(rec.biome?.name || biomeId), x: this.tileX, y: this.tileY };
+    const newBadgeIds = Array.isArray(warpRes?.newBadges) ? warpRes.newBadges.map((b: { id: string }) => b.id) : [];
+    return { biomeId, biomeName: stripEmojis(rec.biome?.name || biomeId), x: this.tileX, y: this.tileY, newBadgeIds };
   }
 
-  warpToBiome(biomeId: BiomeId): { biomeId: BiomeId; x: number; y: number } {
+  warpToBiome(biomeId: BiomeId): { biomeId: BiomeId; x: number; y: number; newBadgeIds: string[] } {
     const wp = getBiomeWarpPoint(biomeId);
-    this.storage.manager.warpToZone(wp.x, wp.y, wp.dir || 'down', biomeId);
-    this.tileX = wp.x;
-    this.tileY = wp.y;
-    this.floatX = wp.x;
-    this.floatY = wp.y;
-    this.facing = (wp.dir as Direction) || 'down';
-    this.followerX = this.tileX;
-    this.followerY = this.tileY + 0.85;
+    const warpRes = this.storage.manager.warpToZone(wp.x, wp.y, wp.dir || 'down', biomeId);
+    this.tileX = warpRes?.pos?.x ?? wp.x;
+    this.tileY = warpRes?.pos?.y ?? wp.y;
+    this.floatX = this.tileX;
+    this.floatY = this.tileY;
+    this.facing = ((warpRes?.pos?.dir ?? wp.dir) as Direction) || 'down';
+    this.placeFollowerBehind(this.tileX, this.tileY, this.facing);
     this.bfsPath = [];
+    this.autoInteractTarget = null;
     this.graceSteps = BALANCE.overworld.postWarpGraceSteps;
     this.state.biomeBannerTimer = 2.6;
     this.refreshState();
-    return { biomeId, x: this.tileX, y: this.tileY };
+    const newBadgeIds = Array.isArray(warpRes?.newBadges) ? warpRes.newBadges.map((b: { id: string }) => b.id) : [];
+    return { biomeId, x: this.tileX, y: this.tileY, newBadgeIds };
+  }
+
+  private needsAutoHeal(): boolean {
+    const profile = this.storage.manager.getActiveProfile();
+    if (!profile) return false;
+    const team = Array.isArray(profile.team) ? profile.team : [];
+    const anyInjured = team.some((m: { hp: number; maxHp: number }) => m && m.hp < m.maxHp);
+    if (anyInjured) return true;
+    const anyLowPp = team.some((m: { getMoveObjects?: () => Array<{ id: string }>; getMovePp?: (id: string) => { current: number; max: number } }) => {
+      const moves = typeof m?.getMoveObjects === 'function' ? m.getMoveObjects() : [];
+      return moves.some((mv) => {
+        const pp = m.getMovePp?.(mv.id);
+        return Boolean(pp && pp.current < pp.max);
+      });
+    });
+    if (anyLowPp) return true;
+    return (profile.bag?.potions ?? 0) < 5;
+  }
+
+  private maybeRespawnNearbyDiscoveryNodes(dt: number): void {
+    this.discoveryRespawnTimer += dt;
+    if (this.discoveryRespawnTimer < 14) return;
+    this.discoveryRespawnTimer = 0;
+    if (this.discoveryNodes.length >= 10) return;
+
+    const occupied = new Set(this.discoveryNodes.map((n) => `${n.x},${n.y}`));
+    const candidates: Array<{ x: number; y: number; biomeId: BiomeId }> = [];
+    for (let dy = -7; dy <= 7; dy++) {
+      for (let dx = -8; dx <= 8; dx++) {
+        const dist = Math.abs(dx) + Math.abs(dy);
+        if (dist < 3 || dist > 11) continue;
+        const cx = this.tileX + dx;
+        const cy = this.tileY + dy;
+        if (occupied.has(`${cx},${cy}`) || !isTileWalkableAt(cx, cy)) continue;
+        const tile = WORLD_MAP[cy]?.[cx];
+        const biomeId = ENCOUNTER_TILE_BIOME[tile];
+        if (biomeId) {
+          candidates.push({ x: cx, y: cy, biomeId });
+        }
+      }
+    }
+    if (candidates.length === 0) return;
+    const pick = candidates[Math.floor(Math.random() * candidates.length)];
+    const kinds: Array<{ kind: OverworldDiscoveryNode['kind']; accent: string }> = [
+      { kind: 'starShard', accent: '#fde047' },
+      { kind: 'potion', accent: '#fb7185' },
+      { kind: 'greatBall', accent: '#38bdf8' },
+      { kind: 'berry', accent: '#4ade80' },
+    ];
+    const spec = kinds[this.discoverySeq % kinds.length];
+    this.discoveryNodes.push({
+      id: `disc-${this.discoverySeq++}`,
+      x: pick.x,
+      y: pick.y,
+      kind: spec.kind,
+      biomeId: pick.biomeId,
+      accentHex: spec.accent,
+      spawnedAt: Math.round(this.state.elapsedSeconds),
+    });
   }
 
   stepDirection(dx: number, dy: number): OverworldStepEvent {
@@ -334,14 +580,17 @@ export class DojoOverworldSim {
     }
 
     const prevBiome = this.state.currentBiomeId;
-    const nextX = this.tileX + (Math.abs(dx) >= Math.abs(dy) ? adx : 0);
-    const nextY = this.tileY + (Math.abs(dy) > Math.abs(dx) ? ady : 0);
+    const prevX = this.tileX;
+    const prevY = this.tileY;
+    const nextX = prevX + (Math.abs(dx) >= Math.abs(dy) ? adx : 0);
+    const nextY = prevY + (Math.abs(dy) > Math.abs(dx) ? ady : 0);
 
     // Check NPC/Rival collision too
     const coordKey = `${nextX},${nextY}`;
     const blockedByActor = Boolean(NPCS[coordKey] || RIVAL_TRAINERS[coordKey]);
 
     if (!isTileWalkableAt(nextX, nextY) || blockedByActor) {
+      this.storage.manager.updatePosition(prevX, prevY, this.facing, false);
       this.state.player.facing = this.facing;
       this.state.nearbyInteraction = this.resolveNearbyInteractable();
       return { moved: false, onGrass: false };
@@ -349,13 +598,31 @@ export class DojoOverworldSim {
 
     this.tileX = nextX;
     this.tileY = nextY;
+    this.moveCooldown = 0.145;
+
+    // Trail follower cleanly onto the player's previous walkable tile
+    const fdx = prevX - this.followerTargetX;
+    const fdy = prevY - this.followerTargetY;
+    if (fdx !== 0 || fdy !== 0) {
+      this.followerFacing = Math.abs(fdx) >= Math.abs(fdy) ? (fdx > 0 ? 'right' : 'left') : (fdy > 0 ? 'down' : 'up');
+    } else {
+      this.followerFacing = this.facing;
+    }
+    this.followerTargetX = prevX;
+    this.followerTargetY = prevY;
+
     const stepMeta = this.storage.manager.updatePosition(this.tileX, this.tileY, this.facing, true);
 
     const newBiome = ((getBiomeAt(this.tileX, this.tileY)?.id) as BiomeId) || 'forest';
     let biomeChanged: BiomeId | undefined;
+    const newBadgeIds: string[] = [];
     if (newBiome !== prevBiome) {
       biomeChanged = newBiome;
       this.storage.manager.recordBiomeVisited(newBiome, true);
+      const visitedBadges = this.storage.manager.evaluateBadges(true) || [];
+      for (const b of visitedBadges) {
+        if (b?.id) newBadgeIds.push(b.id);
+      }
       this.state.biomeBannerTimer = 2.6;
     }
 
@@ -371,29 +638,46 @@ export class DojoOverworldSim {
     }
 
     const tile = WORLD_MAP[this.tileY]?.[this.tileX] ?? 0;
-    const onGrass = ENCOUNTER_GRASS_TILES.has(tile);
 
-    // Wild encounter pacing (exact BALANCE.overworld rules!)
+    // Auto-heal when stepping onto Starlight Healing Fountain tile (v1 parity)
+    let steppedHealSpot = false;
+    if (tile === TILE.HEAL && this.needsAutoHeal()) {
+      steppedHealSpot = true;
+    }
+
+    const encounterBiome = ENCOUNTER_TILE_BIOME[tile];
+    const onGrass = Boolean(encounterBiome);
+
+    // Wild encounter pacing (exact BALANCE.overworld + v1 overworld.js:2643 rules!)
     let wildEncounterTriggered: OverworldStepEvent['wildEncounterTriggered'];
     if (this.graceSteps > 0) {
       this.graceSteps -= 1;
-    } else if (onGrass && newBiome !== 'village') {
-      this.stepsSinceWild += 1;
-      if (this.stepsSinceWild >= BALANCE.overworld.minStepsBetweenWilds) {
-        this.wildStreak += 1;
-        const triggered =
-          this.wildStreak >= BALANCE.overworld.maxEncounterStreak
-          || Math.random() < BALANCE.overworld.wildEncounterChance;
-        if (triggered) {
-          this.stepsSinceWild = 0;
-          this.wildStreak = 0;
-          this.bfsPath = [];
-          const depthInfo = getTileDepthInfo(this.tileX, this.tileY);
-          wildEncounterTriggered = {
-            biomeId: newBiome,
-            depthTier: depthInfo?.depthTier ?? 0,
-            isRarePatch: Boolean(depthInfo?.isRarePatch),
-          };
+      this.wildStreak = 0;
+    } else {
+      if (newBiome !== 'village') {
+        this.stepsSinceWild += 1;
+      }
+      if (encounterBiome && newBiome !== 'village') {
+        if (this.stepsSinceWild >= BALANCE.overworld.minStepsBetweenWilds) {
+          this.wildStreak += 1;
+          const triggered =
+            this.wildStreak >= BALANCE.overworld.maxEncounterStreak
+            || Math.random() < BALANCE.overworld.wildEncounterChance;
+          if (triggered) {
+            this.stepsSinceWild = 0;
+            this.wildStreak = 0;
+            this.bfsPath = [];
+            this.autoInteractTarget = null;
+            const depthInfo = getTileDepthInfo(this.tileX, this.tileY);
+            const depthTier = depthInfo?.depthTier ?? 0;
+            const rareChance = depthTier >= 2 ? 0.28 : depthTier === 1 ? 0.12 : 0.05;
+            const isRarePatch = Boolean(depthInfo?.isRarePatch) || Math.random() < rareChance;
+            wildEncounterTriggered = {
+              biomeId: encounterBiome,
+              depthTier,
+              isRarePatch,
+            };
+          }
         }
       }
     }
@@ -405,6 +689,8 @@ export class DojoOverworldSim {
       biomeChanged,
       wildEncounterTriggered,
       discoveryPicked,
+      steppedHealSpot: steppedHealSpot || undefined,
+      newBadgeIds: newBadgeIds.length > 0 ? newBadgeIds : undefined,
       stepCheerEarned: Boolean(stepMeta?.stepCheerEarned),
       stepArcadeChargeEarned: Boolean(stepMeta?.stepArcadeChargeEarned),
     };
@@ -416,12 +702,15 @@ export class DojoOverworldSim {
     if (this.state.biomeBannerTimer > 0) {
       this.state.biomeBannerTimer = Math.max(0, this.state.biomeBannerTimer - dt);
     }
+    this.maybeRespawnNearbyDiscoveryNodes(dt);
 
     let stepEvent: OverworldStepEvent | null = null;
     this.moveCooldown = Math.max(0, this.moveCooldown - dt);
 
     if (heldInput.dx !== 0 || heldInput.dy !== 0) {
       this.bfsPath = [];
+      this.autoInteractTarget = null;
+      this.state.bfsPath = [];
       if (this.moveCooldown <= 0) {
         stepEvent = this.stepDirection(heldInput.dx, heldInput.dy);
         this.moveCooldown = 0.145;
@@ -430,6 +719,19 @@ export class DojoOverworldSim {
       const next = this.bfsPath.shift()!;
       stepEvent = this.stepDirection(next.x - this.tileX, next.y - this.tileY);
       this.moveCooldown = 0.135;
+      if (!stepEvent.moved) {
+        this.bfsPath = [];
+        this.autoInteractTarget = null;
+        this.state.bfsPath = [];
+      } else if (this.bfsPath.length === 0 && this.autoInteractTarget && !stepEvent.wildEncounterTriggered) {
+        const target = this.autoInteractTarget;
+        this.autoInteractTarget = null;
+        const dist = Math.abs(target.x - this.tileX) + Math.abs(target.y - this.tileY);
+        if (dist <= 1) {
+          this.faceTile(target.x, target.y);
+          stepEvent.arrivedInteractTarget = target;
+        }
+      }
     }
 
     // Smooth visual interpolation toward logical tile
@@ -440,12 +742,10 @@ export class DojoOverworldSim {
     const moving = Math.hypot(this.tileX - this.floatX, this.tileY - this.floatY) > 0.03
       || heldInput.dx !== 0 || heldInput.dy !== 0 || this.bfsPath.length > 0;
 
-    // Follower smoothly trails behind player
-    const fTargetX = this.floatX - (this.facing === 'right' ? 0.9 : this.facing === 'left' ? -0.9 : 0);
-    const fTargetY = this.floatY - (this.facing === 'down' ? 0.85 : this.facing === 'up' ? -0.85 : 0);
-    const fRate = 1 - Math.pow(0.012, dt);
-    this.followerX += (fTargetX - this.followerX) * fRate;
-    this.followerY += (fTargetY - this.followerY) * fRate;
+    // Follower smoothly trails onto player's previous walkable tile (never clips into walls)
+    const fRate = 1 - Math.pow(0.004, dt);
+    this.followerX += (this.followerTargetX - this.followerX) * fRate;
+    this.followerY += (this.followerTargetY - this.followerY) * fRate;
 
     this.state.player.x = this.floatX;
     this.state.player.y = this.floatY;
@@ -458,9 +758,9 @@ export class DojoOverworldSim {
     if (this.state.follower) {
       this.state.follower.x = this.followerX;
       this.state.follower.y = this.followerY;
-      this.state.follower.facing = this.facing;
-      this.state.follower.moving = moving;
-      this.state.follower.walkCycle = moving ? this.state.follower.walkCycle + dt * 7.5 : 0;
+      this.state.follower.facing = this.followerFacing;
+      this.state.follower.moving = moving || Math.hypot(this.followerTargetX - this.followerX, this.followerTargetY - this.followerY) > 0.04;
+      this.state.follower.walkCycle = this.state.follower.moving ? this.state.follower.walkCycle + dt * 7.5 : 0;
     }
 
     return stepEvent;
@@ -474,106 +774,133 @@ export class DojoOverworldSim {
             : [1, 0];
     const fx = this.tileX + dirVec[0];
     const fy = this.tileY + dirVec[1];
-    const isNear = (x: number, y: number, radius = 1.45) =>
-      (x === fx && y === fy) || Math.hypot(x - this.tileX, y - this.tileY) <= radius;
 
-    // Secret Arcade Star Wall (11, 12)
-    if (isNear(SECRET_ARCADE_SPOT.x, SECRET_ARCADE_SPOT.y, 1.5)) {
-      const unlocked = this.storage.manager.isArcadeUnlocked();
+    // 1. Strictly prioritize the exact tile the player is facing (v1 parity!)
+    const faced = this.getInteractableAtTile(fx, fy);
+    if (faced && faced.kind !== 'fountain') {
+      return faced;
+    }
+
+    // 2. Standing directly on a Healing Fountain tile
+    if (WORLD_MAP[this.tileY]?.[this.tileX] === TILE.HEAL) {
       return {
+        kind: 'fountain',
+        id: `fountain-${this.tileX}-${this.tileY}`,
+        x: this.tileX,
+        y: this.tileY,
+        label: 'Starlight Healing Fountain',
+        actionVerb: 'Heal Team',
+      };
+    }
+
+    // 3. Facing a Healing Fountain directly
+    if (faced) {
+      return faced;
+    }
+
+    // 4. Forgiving adjacent fallback (closest interactable within 1.45 tiles so sideways stand-next-to works seamlessly)
+    const candidates: Array<{ item: OverworldInteractable; dist: number; priority: number }> = [];
+    const consider = (item: OverworldInteractable, priority: number, maxDist = 1.45) => {
+      const d = Math.hypot(item.x - this.tileX, item.y - this.tileY);
+      if (d <= maxDist) {
+        candidates.push({ item, dist: d, priority });
+      }
+    };
+
+    if (SECRET_ARCADE_SPOT) {
+      const unlocked = this.storage.manager.isArcadeUnlocked();
+      consider({
         kind: 'secret-arcade',
         id: 'secret-arcade',
         x: SECRET_ARCADE_SPOT.x,
         y: SECRET_ARCADE_SPOT.y,
         label: unlocked ? 'Starlight Sky-Hop Arcade' : 'Mysterious Star Emblem',
         actionVerb: unlocked ? 'Play Arcade' : 'Inspect Star',
-      };
+      }, 1, 1.45);
     }
 
-    // Healing Fountain tile
-    const heal = this.healTiles.find((h) => isNear(h.x, h.y, 1.5));
-    if (heal) {
-      return {
+    for (const h of this.healTiles) {
+      consider({
         kind: 'fountain',
-        id: `fountain-${heal.x}-${heal.y}`,
-        x: heal.x,
-        y: heal.y,
+        id: `fountain-${h.x}-${h.y}`,
+        x: h.x,
+        y: h.y,
         label: 'Starlight Healing Fountain',
         actionVerb: 'Heal Team',
-      };
+      }, 2, 1.45);
     }
 
-    // Shrines
     for (const sh of this.state.shrines) {
-      if (isNear(sh.x, sh.y, 1.6)) {
-        return {
-          kind: 'shrine',
-          id: sh.id,
-          x: sh.x,
-          y: sh.y,
-          label: sh.name,
-          actionVerb: sh.cleared ? 'Astral Trial' : 'Challenge Shrine',
-        };
-      }
+      consider({
+        kind: 'shrine',
+        id: sh.id,
+        x: sh.x,
+        y: sh.y,
+        label: sh.name,
+        actionVerb: sh.cleared ? 'Astral Trial' : 'Challenge Shrine',
+      }, 3, 1.5);
     }
 
-    // Rivals
     for (const rv of this.state.rivals) {
-      if (isNear(rv.x, rv.y, 1.6)) {
-        return {
-          kind: 'rival',
-          id: rv.id,
-          x: rv.x,
-          y: rv.y,
-          label: rv.name,
-          actionVerb: rv.defeated ? 'Rematch Duel' : 'Challenge Rival',
-        };
-      }
+      consider({
+        kind: 'rival',
+        id: rv.id,
+        x: rv.x,
+        y: rv.y,
+        label: rv.name,
+        actionVerb: rv.defeated ? 'Rematch Duel' : 'Challenge Rival',
+      }, 4, 1.5);
     }
 
-    // Chests
     for (const ch of this.state.chests) {
-      if (!ch.opened && isNear(ch.x, ch.y, 1.5)) {
-        return {
+      if (!ch.opened) {
+        consider({
           kind: 'chest',
           id: ch.id,
           x: ch.x,
           y: ch.y,
           label: ch.label,
           actionVerb: 'Open Chest',
-        };
+        }, 5, 1.45);
       }
     }
 
-    // NPCs
     for (const npc of this.state.npcs) {
-      if (isNear(npc.x, npc.y, 1.6)) {
-        return {
-          kind: 'npc',
-          id: npc.id,
-          x: npc.x,
-          y: npc.y,
-          label: npc.name,
-          actionVerb: npc.hasAvailableQuest ? 'Talk (Quest)' : 'Talk',
-        };
-      }
+      consider({
+        kind: 'npc',
+        id: npc.id,
+        x: npc.x,
+        y: npc.y,
+        label: npc.name,
+        actionVerb: npc.hasAvailableQuest ? 'Talk (Quest)' : 'Talk',
+      }, 6, 1.5);
     }
 
-    // Signposts
     for (const sign of this.state.signposts) {
-      if (isNear(sign.x, sign.y, 1.5)) {
-        return {
-          kind: 'signpost',
-          id: sign.id,
-          x: sign.x,
-          y: sign.y,
-          label: sign.title,
-          actionVerb: 'Read Sign',
-        };
-      }
+      consider({
+        kind: 'signpost',
+        id: sign.id,
+        x: sign.x,
+        y: sign.y,
+        label: sign.title,
+        actionVerb: 'Read Sign',
+      }, 7, 1.45);
     }
 
-    return null;
+    for (const lm of this.state.landmarks) {
+      consider({
+        kind: 'landmark',
+        id: lm.id,
+        x: lm.x,
+        y: lm.y,
+        label: lm.name,
+        actionVerb: 'Inspect',
+      }, 8, 1.45);
+    }
+
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => a.dist - b.dist || a.priority - b.priority);
+    return candidates[0].item;
   }
 
   buildTacticalBriefing(
@@ -725,9 +1052,10 @@ export class DojoOverworldSim {
     });
 
     const questByNpcId = new Map(FIELD_QUESTS.map((q) => [q.npcId, q]));
+    const questById = new Map(FIELD_QUESTS.map((q) => [q.id, q]));
     const npcs: OverworldNpcNode[] = Object.entries(NPCS).map(([key, n]) => {
       const { x, y } = parseCoordKey(key);
-      const quest = questByNpcId.get(n.id) ?? null;
+      const quest = (n.questId ? questById.get(n.questId) : null) ?? questByNpcId.get(n.id) ?? null;
       const done = Boolean(quest && questsDone.has(quest.id));
       return {
         id: n.id,
@@ -830,20 +1158,30 @@ export class DojoOverworldSim {
     // Compass Guidance
     let compassTarget: CompassTarget | null = null;
     try {
-      const rawGuide = getCompassGuidance(profileLive, this.tileX, this.tileY);
-      if (rawGuide && typeof rawGuide.x === 'number' && typeof rawGuide.y === 'number') {
-        const dx = rawGuide.x - this.tileX;
-        const dy = rawGuide.y - this.tileY;
+      const rawGuide = getCompassGuidance(profileLive, SPECIES);
+      const tx = typeof rawGuide?.targetX === 'number' ? rawGuide.targetX : rawGuide?.x;
+      const ty = typeof rawGuide?.targetY === 'number' ? rawGuide.targetY : rawGuide?.y;
+      if (rawGuide && typeof tx === 'number' && typeof ty === 'number') {
+        const dx = tx - this.tileX;
+        const dy = ty - this.tileY;
+        const titleStr = stripEmojis(rawGuide.title || rawGuide.label || 'Next Destination');
+        const lowerTitle = titleStr.toLowerCase();
+        const inferredKind: CompassTarget['kind'] =
+          rawGuide.kind === 'shrine' || lowerTitle.includes('shrine') || lowerTitle.includes('sanctum')
+            ? 'shrine'
+            : rawGuide.kind === 'quest' || lowerTitle.includes('talk') || lowerTitle.includes('meet')
+              ? 'quest'
+              : rawGuide.kind === 'rival'
+                ? 'rival'
+                : rawGuide.kind === 'chest' || lowerTitle.includes('claim') || lowerTitle.includes('supplies')
+                  ? 'chest'
+                  : 'explore';
         compassTarget = {
-          x: rawGuide.x,
-          y: rawGuide.y,
-          label: stripEmojis(rawGuide.label || rawGuide.title || 'Next Destination'),
-          biomeId: ((rawGuide.biome || getBiomeAt(rawGuide.x, rawGuide.y)?.id) as BiomeId) || 'forest',
-          kind: rawGuide.kind === 'shrine' ? 'shrine'
-            : rawGuide.kind === 'quest' ? 'quest'
-              : rawGuide.kind === 'rival' ? 'rival'
-                : rawGuide.kind === 'chest' ? 'chest'
-                  : 'explore',
+          x: tx,
+          y: ty,
+          label: titleStr,
+          biomeId: ((rawGuide.targetBiomeId || rawGuide.biome || getBiomeAt(tx, ty)?.id) as BiomeId) || 'forest',
+          kind: inferredKind,
           distanceTiles: Math.round(Math.hypot(dx, dy)),
           angleRad: Math.atan2(dy, dx),
         };

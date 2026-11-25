@@ -95,7 +95,7 @@ export const AURA_VISUALS: Record<
   },
 };
 
-function isInBounds(x: number, y: number, bounds: ViewTileBounds, pad = 1): boolean {
+function isInBounds(x: number, y: number, bounds: ViewTileBounds, pad = 2): boolean {
   return (
     x >= bounds.minTx - pad &&
     x <= bounds.maxTx + pad &&

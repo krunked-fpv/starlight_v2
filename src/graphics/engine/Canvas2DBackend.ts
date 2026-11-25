@@ -774,6 +774,13 @@ export class Canvas2DBackend implements IRenderBackend {
     return this.ctx;
   }
 
+  getViewportSize(): { width: number; height: number } {
+    return {
+      width: Math.max(1, this.cssWidth),
+      height: Math.max(1, this.cssHeight),
+    };
+  }
+
   getStats(): FrameStats {
     return { ...this.lastStats };
   }

@@ -419,10 +419,10 @@ test.describe('Red-Team: schemaVersion 3 Save Continuity, Precedence & Fuzzing',
 
     // Verify Title UI renders hydrated Violet & Ozias cards and enters Overworld at Ember Caldera
     await expect(page.getByTestId('profile-violet-meta')).toContainText('Violet');
-    await expect(page.getByTestId('profile-violet-meta')).toContainText('Splashy Lv.36');
-    await expect(page.getByTestId('profile-violet-meta')).toContainText('4/28 Badges');
+    await expect(page.getByTestId('profile-violet')).toContainText('Splashy Lv.36');
+    await expect(page.getByTestId('profile-violet')).toContainText('4/28 Badges');
     await expect(page.getByTestId('profile-ozias-meta')).toContainText('Ozias');
-    await expect(page.getByTestId('profile-ozias-meta')).toContainText('Cinder Lv.34');
+    await expect(page.getByTestId('profile-ozias')).toContainText('Cinder Lv.34');
 
     await page.getByTestId('title-play-violet').click();
     await expect(page.getByTestId('overworld-screen')).toBeVisible();

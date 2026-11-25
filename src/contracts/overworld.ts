@@ -174,10 +174,71 @@ export interface OverworldSceneState {
   stepsTotal: number;
 }
 
+export interface OverworldCameraSnapshot {
+  /** World-space X coordinate (in world px) mapped to the horizontal viewport center */
+  centerX: number;
+  /** World-space Y coordinate (in world px) mapped to the vertical viewport center */
+  centerY: number;
+  /** Render backend camera X offset (centerX - viewportWidth * 0.5) */
+  camX: number;
+  /** Render backend camera Y offset (centerY - viewportHeight * 0.5) */
+  camY: number;
+  /** Active crisp pixel-snapped camera zoom multiplier (CSS px per world px) */
+  zoom: number;
+  /** Rendered tile span in CSS pixels (tileSize * zoom) */
+  tileScreenPx: number;
+  /** Active canvas viewport width in CSS pixels */
+  viewportWidth: number;
+  /** Active canvas viewport height in CSS pixels */
+  viewportHeight: number;
+  /** Number of tiles visible horizontally across the viewport */
+  visibleTilesX: number;
+  /** Number of tiles visible vertically across the viewport */
+  visibleTilesY: number;
+  /** Visible world tile bounds (excluding off-screen frustum padding) */
+  minVisibleTileX: number;
+  maxVisibleTileX: number;
+  minVisibleTileY: number;
+  maxVisibleTileY: number;
+}
+
+export interface OverworldTileProjection {
+  /** Clamped integer tile X coordinate (0..cols-1) */
+  tileX: number;
+  /** Clamped integer tile Y coordinate (0..rows-1) */
+  tileY: number;
+  /** Unclamped floating-point world X coordinate in world pixels */
+  worldX: number;
+  /** Unclamped floating-point world Y coordinate in world pixels */
+  worldY: number;
+}
+
+export interface OverworldScreenProjection {
+  /** Canvas-relative X coordinate in CSS pixels */
+  x: number;
+  /** Canvas-relative Y coordinate in CSS pixels */
+  y: number;
+}
+
 export interface IOverworldRenderer {
   attachAtlas(manifest: AtlasManifest | null): void;
   update(state: OverworldSceneState, dtSeconds: number): void;
   render(backend: IRenderBackend, state: OverworldSceneState): void;
   getDisplacementCount(): number;
   resetEffects(): void;
+  getCameraState(): OverworldCameraSnapshot;
+  screenToTile(
+    canvasX: number,
+    canvasY: number,
+    canvasW?: number,
+    canvasH?: number,
+    state?: Pick<OverworldSceneState, 'cols' | 'rows' | 'tileSize' | 'player'>,
+  ): OverworldTileProjection;
+  tileToScreen(
+    tx: number,
+    ty: number,
+    canvasW?: number,
+    canvasH?: number,
+    state?: Pick<OverworldSceneState, 'cols' | 'rows' | 'tileSize' | 'player'>,
+  ): OverworldScreenProjection;
 }

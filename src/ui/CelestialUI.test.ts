@@ -1262,6 +1262,168 @@ describe('Task 7: CelestialUIController Full-Screen Integration', () => {
 
     ui.dispose();
   });
+
+  it('verifies UI overhaul & Sprint 2 UI parity behaviors (Sky-Hop gate, Compass->Guide, Switch Trainer, Struggle, Badges grid, Pokedex filters)', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(4); // Charmander (Fire)
+    const loader = new SpriteAssetLoader({ forceOffline: true });
+    const overworld = new DojoOverworldSim(bridge, loader);
+    const battleCtrl = new DojoBattleController(bridge, loader);
+    const skyCtrl = new DojoSkyHopController(bridge, loader);
+
+    const doc = new MockDocument();
+    const root = doc.createElement('div');
+    doc.body.appendChild(root);
+
+    const callbacks = makeMockCallbacks();
+    const ui = new CelestialUIController();
+    ui.mount(root as unknown as HTMLElement, callbacks);
+
+    // 1. Overworld: Lead HP HUD, Compass -> Island Guide (BUG-02), Sky-Hop hidden until unlocked (BUG-11)
+    const lockedSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'overworld' });
+    ui.sync(lockedSnap);
+    expect(root.querySelector('[data-testid="hud-lead-label"]')?.textContent).toContain('Charmander');
+    expect(root.querySelector('[data-testid="hud-lead-hp-bar"]')).not.toBeNull();
+    expect(root.querySelector('[data-testid="nav-skyhop"]')?.hidden).toBe(true);
+
+    root.querySelector('[data-testid="hud-compass"]')?.click();
+    expect(callbacks.calls.onNavigateScreen?.at(-1)).toEqual(['pokedex', 'guide']);
+
+    // Unlock Secret Arcade -> Sky-Hop dock button reveals with charge count
+    const unlockedSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'overworld' });
+    unlockedSnap.profile!.arcade.unlocked = true;
+    unlockedSnap.profile!.arcade.charges = 3;
+    ui.sync(unlockedSnap);
+    expect(root.querySelector('[data-testid="nav-skyhop"]')?.hidden).toBe(false);
+    expect(root.querySelector('[data-testid="nav-skyhop"]')?.textContent).toContain('3');
+
+    // 2. Settings: Switch Trainer button (BUG-08) & Close returns to previous screen (Title)
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'title' }));
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'settings' }));
+    root.querySelector('[data-testid="setting-switch-trainer"]')?.click();
+    expect(callbacks.calls.onNavigateScreen?.at(-1)).toEqual(['title']);
+    root.querySelector('[data-testid="settings-close"]')?.click();
+    expect(callbacks.calls.onNavigateScreen?.at(-1)).toEqual(['title']);
+
+    // 3. Battle: IN DEX badge, effectiveness pill, PHY/SPC tag, and 0-PP Struggle fallback (BUG-07, BUG-18)
+    battleCtrl.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 1 }); // Bulbasaur (Grass)
+    for (let i = 0; i < 20; i += 1) battleCtrl.update(0.05);
+    const bState = battleCtrl.getState();
+    const bSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+      screen: 'battle',
+      battle: bState,
+    });
+    bSnap.profile!.pokedex.caught[1] = 1;
+    ui.sync(bSnap);
+    expect(root.querySelector('[data-testid="battle-enemy-caught"]')?.textContent).toContain('IN DEX');
+
+    // Drain all move PP -> slot 0 becomes Struggle and fires onBattleMove('struggle')
+    for (const m of bState.player.mon.moves) m.currentPp = 0;
+    ui.sync(bSnap);
+    const move0 = root.querySelector('[data-testid="battle-move-0"]');
+    expect(move0?.disabled).toBe(false);
+    expect(move0?.textContent).toContain('Struggle');
+    move0?.click();
+    expect(callbacks.calls.onBattleMove?.at(-1)).toEqual(['struggle']);
+
+    // 4. Badges Showcase: detail pedestal lives inside .sl-badge-case (BUG-21)
+    ui.sync(
+      buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+        screen: 'badges',
+        activeDrawerTab: 'badges',
+      }),
+    );
+    expect(root.querySelector('.sl-badge-case .sl-badge-detail')).not.toBeNull();
+
+    // 5. Pokedex: abilityFilter & needToCatchOnly filters work cleanly (BUG-19)
+    const dexAll = filterAndPaginatePokedex({
+      query: '',
+      genFilter: 'all',
+      typeFilter: 'all',
+      biomeFilter: 'all',
+      caughtOnly: false,
+      needToCatchOnly: true,
+      abilityFilter: 'all',
+      page: 1,
+      pageSize: 36,
+      pokedex: { seen: [1, 4], caught: { 4: 1 } },
+    });
+    expect(dexAll.totalMatches).toBe(TOTAL_SPECIES_COUNT - 1);
+    expect(dexAll.items.some((s) => s.id === 4)).toBe(false);
+
+    const sampleAbility = getAllSpecies().find((s) => s.ability)?.ability ?? '';
+    expect(sampleAbility.length).toBeGreaterThan(0);
+    const abilityFiltered = filterAndPaginatePokedex({
+      query: '',
+      genFilter: 'all',
+      typeFilter: 'all',
+      biomeFilter: 'all',
+      caughtOnly: false,
+      abilityFilter: sampleAbility,
+      page: 1,
+      pageSize: 36,
+      pokedex: { seen: [], caught: {} },
+    });
+    expect(abilityFiltered.totalMatches).toBeGreaterThan(0);
+    expect(abilityFiltered.items.every((s) => s.ability === sampleAbility)).toBe(true);
+
+    // 6. Forced-switch auto-opens Switch drawer & victory banner renders trailDrop chip (GAP-1 / BUG-16)
+    const forcedState: BattleSceneState = {
+      ...bState,
+      phase: 'forced-switch',
+    };
+    ui.sync(
+      buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+        screen: 'battle',
+        battle: forcedState,
+      }),
+    );
+    expect(root.querySelector('[data-testid="battle-switch-drawer"]')?.hidden).toBe(false);
+    expect(root.querySelector('[data-testid="battle-forced-switch-prompt"]')).not.toBeNull();
+
+    const victoryState: BattleSceneState = {
+      ...bState,
+      phase: 'victory',
+      rewardSummary: {
+        xpGained: 40,
+        shardsGained: 15,
+        newBadges: [],
+        caught: false,
+        leveledUp: false,
+        trailDrop: '+1 Fire Gem',
+      },
+    };
+    ui.sync(
+      buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+        screen: 'battle',
+        battle: victoryState,
+      }),
+    );
+    expect(root.querySelector('[data-testid="battle-trail-drop"]')?.textContent).toContain('+1 Fire Gem');
+
+    // 7. Starter Lab displays equipped Aura in style label (GAP-2) & Stale toast suppressed on Drawer entry
+    const auraSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+      screen: 'starter',
+      toastMessage: 'Escaped safely.',
+    });
+    auraSnap.profile!.appearance.aura = 'stars';
+    ui.sync(auraSnap);
+    expect(root.querySelector('[data-testid="starter-style-label"]')?.textContent).toContain('Starlight Sparks');
+
+    ui.sync(
+      buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, {
+        screen: 'pokedex',
+        activeDrawerTab: 'pokedex',
+        selectedPokedexId: 1025,
+        toastMessage: 'Escaped safely.',
+      }),
+    );
+    expect(root.querySelector('[data-testid="toast-banner"]')?.hidden).toBe(true);
+    expect(root.querySelector('[data-testid="pokedex-card-lore"]')?.textContent).toContain('Unmet species');
+
+    ui.dispose();
+  });
 });
 
 describe('Task 7: LivingTitleRenderer & SkyHopRenderer Frame Output', () => {

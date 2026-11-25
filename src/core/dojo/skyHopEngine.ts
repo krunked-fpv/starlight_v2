@@ -60,6 +60,7 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
       { delay: 1.22, kind: 'storm_orb', yFrac: 0.46 },
       { delay: 1.4, kind: 'star', yFrac: 0.74 },
       { delay: 1.75, kind: 'star', yFrac: 0.82 },
+      { delay: 1.82, kind: 'cloud', yFrac: 0.56 },
     ],
   },
   {
@@ -70,10 +71,13 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
       { delay: 0.32, kind: 'star', yFrac: 0.34 },
       { delay: 0.42, kind: 'cloud', yFrac: 0.54 },
       { delay: 0.64, kind: 'star', yFrac: 0.24 },
+      { delay: 0.85, kind: 'cloud', yFrac: 0.78 },
       { delay: 0.96, kind: 'star', yFrac: 0.36 },
       { delay: 1.15, kind: 'storm_orb', yFrac: 0.5 },
       { delay: 1.28, kind: 'star', yFrac: 0.56 },
       { delay: 1.6, kind: 'bigstar', yFrac: 0.72 },
+      { delay: 1.85, kind: 'cloud', yFrac: 0.22 },
+      { delay: 1.92, kind: 'star', yFrac: 0.56 },
     ],
   },
   {
@@ -86,9 +90,12 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
       { delay: 0.45, kind: 'star', yFrac: 0.25 },
       { delay: 0.45, kind: 'star', yFrac: 0.75 },
       { delay: 0.9, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.9, kind: 'cloud', yFrac: 0.26 },
       { delay: 1.3, kind: 'bigstar', yFrac: 0.25 },
       { delay: 1.3, kind: 'storm_orb', yFrac: 0.5 },
       { delay: 1.3, kind: 'bigstar', yFrac: 0.75 },
+      { delay: 1.85, kind: 'cloud', yFrac: 0.5 },
+      { delay: 1.85, kind: 'cloud', yFrac: 0.74 },
     ],
   },
   {
@@ -99,9 +106,15 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
       { delay: 0.35, kind: 'star', yFrac: 0.34 },
       { delay: 0.35, kind: 'cloud', yFrac: 0.5 },
       { delay: 0.35, kind: 'star', yFrac: 0.66 },
+      { delay: 0.7, kind: 'star', yFrac: 0.22 },
       { delay: 0.7, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 0.7, kind: 'star', yFrac: 0.78 },
+      { delay: 1.05, kind: 'star', yFrac: 0.34 },
       { delay: 1.05, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.05, kind: 'star', yFrac: 0.66 },
       { delay: 1.4, kind: 'star', yFrac: 0.5 },
+      { delay: 1.85, kind: 'cloud', yFrac: 0.22 },
+      { delay: 1.85, kind: 'cloud', yFrac: 0.78 },
     ],
   },
   {
@@ -109,12 +122,48 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
     name: 'Rainbow Comet Chase',
     items: [
       { delay: 0.0, kind: 'star', yFrac: 0.48 },
+      { delay: 0.28, kind: 'star', yFrac: 0.48 },
       { delay: 0.45, kind: 'cloud', yFrac: 0.3 },
       { delay: 0.58, kind: 'comet', yFrac: 0.48, speedMult: 1.25 },
       { delay: 0.92, kind: 'storm_orb', yFrac: 0.52 },
       { delay: 1.05, kind: 'cloud', yFrac: 0.24 },
       { delay: 1.05, kind: 'cloud', yFrac: 0.74 },
+      { delay: 1.5, kind: 'star', yFrac: 0.48 },
       { delay: 1.8, kind: 'comet', yFrac: 0.35, speedMult: 1.25 },
+      { delay: 1.82, kind: 'cloud', yFrac: 0.64 },
+    ],
+  },
+  {
+    id: 'zigzag_sky',
+    name: 'Skyline Zigzag',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.24 },
+      { delay: 0.22, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.4, kind: 'star', yFrac: 0.5 },
+      { delay: 0.55, kind: 'cloud', yFrac: 0.82 },
+      { delay: 0.8, kind: 'star', yFrac: 0.76 },
+      { delay: 1.05, kind: 'storm_orb', yFrac: 0.48 },
+      { delay: 1.2, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 1.45, kind: 'cloud', yFrac: 0.18 },
+      { delay: 1.6, kind: 'star', yFrac: 0.24 },
+      { delay: 1.78, kind: 'cloud', yFrac: 0.58 },
+      { delay: 2.0, kind: 'star', yFrac: 0.5 },
+    ],
+  },
+  {
+    id: 'sky_ladder',
+    name: 'Starlight Ladder',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.8 },
+      { delay: 0.35, kind: 'star', yFrac: 0.65 },
+      { delay: 0.4, kind: 'cloud', yFrac: 0.44 },
+      { delay: 0.7, kind: 'star', yFrac: 0.5 },
+      { delay: 0.75, kind: 'cloud', yFrac: 0.22 },
+      { delay: 1.05, kind: 'star', yFrac: 0.35 },
+      { delay: 1.15, kind: 'storm_orb', yFrac: 0.62 },
+      { delay: 1.4, kind: 'bigstar', yFrac: 0.2 },
+      { delay: 1.65, kind: 'cloud', yFrac: 0.72 },
+      { delay: 1.75, kind: 'cloud', yFrac: 0.42 },
     ],
   },
   {
@@ -124,10 +173,260 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
       { delay: 0.1, kind: 'star', yFrac: 0.35 },
       { delay: 0.1, kind: 'cloud', yFrac: 0.5 },
       { delay: 0.1, kind: 'star', yFrac: 0.65 },
+      { delay: 0.45, kind: 'star', yFrac: 0.22 },
       { delay: 0.45, kind: 'comet', yFrac: 0.5 },
+      { delay: 0.45, kind: 'star', yFrac: 0.78 },
+      { delay: 0.8, kind: 'star', yFrac: 0.35 },
       { delay: 0.8, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 0.8, kind: 'star', yFrac: 0.65 },
       { delay: 1.3, kind: 'void_meteor', yFrac: 0.3 },
       { delay: 1.45, kind: 'cloud', yFrac: 0.48 },
+    ],
+  },
+  {
+    id: 'meteor_shower',
+    name: 'Prism Meteor Shower',
+    items: [
+      { delay: 0.0, kind: 'comet', yFrac: 0.24, speedMult: 1.2 },
+      { delay: 0.2, kind: 'void_meteor', yFrac: 0.56 },
+      { delay: 0.4, kind: 'star', yFrac: 0.42 },
+      { delay: 0.75, kind: 'comet', yFrac: 0.6, speedMult: 1.2 },
+      { delay: 0.9, kind: 'cloud', yFrac: 0.22 },
+      { delay: 1.15, kind: 'star', yFrac: 0.78 },
+      { delay: 1.25, kind: 'storm_orb', yFrac: 0.48 },
+      { delay: 1.5, kind: 'bigstar', yFrac: 0.46 },
+      { delay: 1.75, kind: 'cloud', yFrac: 0.76 },
+    ],
+  },
+  {
+    id: 'aurora_bridge',
+    name: 'Aurora Sky Bridge',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.5 },
+      { delay: 0.25, kind: 'cloud', yFrac: 0.32 },
+      { delay: 0.3, kind: 'star', yFrac: 0.5 },
+      { delay: 0.45, kind: 'cloud', yFrac: 0.22 },
+      { delay: 0.45, kind: 'cloud', yFrac: 0.78 },
+      { delay: 0.6, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 0.9, kind: 'star', yFrac: 0.5 },
+      { delay: 0.95, kind: 'storm_orb', yFrac: 0.66 },
+      { delay: 1.2, kind: 'star', yFrac: 0.5 },
+      { delay: 1.45, kind: 'cloud', yFrac: 0.24 },
+      { delay: 1.45, kind: 'void_meteor', yFrac: 0.52 },
+      { delay: 1.45, kind: 'cloud', yFrac: 0.76 },
+    ],
+  },
+  {
+    id: 'double_helix',
+    name: 'Cosmic Double Helix',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.3 },
+      { delay: 0.0, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.0, kind: 'star', yFrac: 0.7 },
+      { delay: 0.45, kind: 'star', yFrac: 0.46 },
+      { delay: 0.45, kind: 'star', yFrac: 0.54 },
+      { delay: 0.9, kind: 'star', yFrac: 0.7 },
+      { delay: 0.9, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 0.9, kind: 'star', yFrac: 0.3 },
+      { delay: 1.35, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 1.65, kind: 'void_meteor', yFrac: 0.42 },
+      { delay: 1.8, kind: 'cloud', yFrac: 0.22 },
+      { delay: 1.8, kind: 'cloud', yFrac: 0.78 },
+    ],
+  },
+  {
+    id: 'nebula_sprint',
+    name: 'Nebula Star Trio',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.26 },
+      { delay: 0.25, kind: 'star', yFrac: 0.26 },
+      { delay: 0.35, kind: 'cloud', yFrac: 0.48 },
+      { delay: 0.5, kind: 'bigstar', yFrac: 0.26 },
+      { delay: 0.65, kind: 'cloud', yFrac: 0.62 },
+      { delay: 1.0, kind: 'storm_orb', yFrac: 0.38 },
+      { delay: 1.1, kind: 'star', yFrac: 0.74 },
+      { delay: 1.35, kind: 'star', yFrac: 0.74 },
+      { delay: 1.6, kind: 'comet', yFrac: 0.74 },
+      { delay: 1.7, kind: 'cloud', yFrac: 0.34 },
+      { delay: 1.75, kind: 'void_meteor', yFrac: 0.56 },
+    ],
+  },
+  {
+    id: 'starlight_crown',
+    name: 'Starlight Crown',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.68 },
+      { delay: 0.25, kind: 'cloud', yFrac: 0.42 },
+      { delay: 0.35, kind: 'star', yFrac: 0.44 },
+      { delay: 0.7, kind: 'star', yFrac: 0.6 },
+      { delay: 0.85, kind: 'storm_orb', yFrac: 0.48 },
+      { delay: 1.05, kind: 'bigstar', yFrac: 0.25 },
+      { delay: 1.05, kind: 'cloud', yFrac: 0.78 },
+      { delay: 1.4, kind: 'star', yFrac: 0.6 },
+      { delay: 1.55, kind: 'void_meteor', yFrac: 0.36 },
+      { delay: 1.75, kind: 'star', yFrac: 0.44 },
+      { delay: 2.1, kind: 'star', yFrac: 0.68 },
+    ],
+  },
+  {
+    id: 'starlight_spiral',
+    name: 'Starlight Spiral',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.5 },
+      { delay: 0.28, kind: 'star', yFrac: 0.34 },
+      { delay: 0.32, kind: 'cloud', yFrac: 0.64 },
+      { delay: 0.56, kind: 'star', yFrac: 0.22 },
+      { delay: 0.84, kind: 'bigstar', yFrac: 0.36 },
+      { delay: 0.92, kind: 'cloud', yFrac: 0.18 },
+      { delay: 1.12, kind: 'star', yFrac: 0.54 },
+      { delay: 1.24, kind: 'storm_orb', yFrac: 0.42 },
+      { delay: 1.4, kind: 'star', yFrac: 0.72 },
+      { delay: 1.68, kind: 'comet', yFrac: 0.8, speedMult: 1.2 },
+      { delay: 1.8, kind: 'cloud', yFrac: 0.48 },
+    ],
+  },
+  {
+    id: 'prism_slalom',
+    name: 'Prism Slalom',
+    items: [
+      { delay: 0.0, kind: 'cloud', yFrac: 0.24 },
+      { delay: 0.05, kind: 'star', yFrac: 0.46 },
+      { delay: 0.35, kind: 'star', yFrac: 0.62 },
+      { delay: 0.5, kind: 'cloud', yFrac: 0.8 },
+      { delay: 0.7, kind: 'bigstar', yFrac: 0.52 },
+      { delay: 0.9, kind: 'cloud', yFrac: 0.24 },
+      { delay: 1.05, kind: 'star', yFrac: 0.44 },
+      { delay: 1.28, kind: 'storm_orb', yFrac: 0.68 },
+      { delay: 1.4, kind: 'star', yFrac: 0.3 },
+      { delay: 1.65, kind: 'comet', yFrac: 0.24, speedMult: 1.22 },
+      { delay: 1.85, kind: 'cloud', yFrac: 0.58 },
+    ],
+  },
+  {
+    id: 'meteor_weave',
+    name: 'Starlight Weave',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.32 },
+      { delay: 0.0, kind: 'star', yFrac: 0.68 },
+      { delay: 0.35, kind: 'cloud', yFrac: 0.5 },
+      { delay: 0.5, kind: 'comet', yFrac: 0.26, speedMult: 1.2 },
+      { delay: 0.82, kind: 'star', yFrac: 0.72 },
+      { delay: 1.05, kind: 'void_meteor', yFrac: 0.46 },
+      { delay: 1.15, kind: 'bigstar', yFrac: 0.24 },
+      { delay: 1.45, kind: 'cloud', yFrac: 0.78 },
+      { delay: 1.6, kind: 'star', yFrac: 0.56 },
+      { delay: 1.88, kind: 'star', yFrac: 0.38 },
+    ],
+  },
+  {
+    id: 'eclipse_gate',
+    name: 'Eclipse Twin Gate',
+    items: [
+      { delay: 0.0, kind: 'cloud', yFrac: 0.22 },
+      { delay: 0.0, kind: 'star', yFrac: 0.5 },
+      { delay: 0.0, kind: 'cloud', yFrac: 0.78 },
+      { delay: 0.42, kind: 'star', yFrac: 0.36 },
+      { delay: 0.42, kind: 'star', yFrac: 0.64 },
+      { delay: 0.85, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 0.9, kind: 'storm_orb', yFrac: 0.24 },
+      { delay: 1.25, kind: 'cloud', yFrac: 0.5 },
+      { delay: 1.55, kind: 'comet', yFrac: 0.28, speedMult: 1.25 },
+      { delay: 1.55, kind: 'star', yFrac: 0.72 },
+    ],
+  },
+  {
+    id: 'shooting_gallery',
+    name: 'Shooting Star Cascade',
+    items: [
+      { delay: 0.0, kind: 'comet', yFrac: 0.22, speedMult: 1.26 },
+      { delay: 0.32, kind: 'comet', yFrac: 0.44, speedMult: 1.26 },
+      { delay: 0.4, kind: 'cloud', yFrac: 0.72 },
+      { delay: 0.68, kind: 'comet', yFrac: 0.66, speedMult: 1.26 },
+      { delay: 0.95, kind: 'cloud', yFrac: 0.26 },
+      { delay: 1.12, kind: 'bigstar', yFrac: 0.48 },
+      { delay: 1.35, kind: 'storm_orb', yFrac: 0.74 },
+      { delay: 1.55, kind: 'star', yFrac: 0.32 },
+      { delay: 1.85, kind: 'star', yFrac: 0.52 },
+    ],
+  },
+  {
+    id: 'crescent_moon',
+    name: 'Crescent Moon Arc',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.2 },
+      { delay: 0.28, kind: 'star', yFrac: 0.34 },
+      { delay: 0.32, kind: 'cloud', yFrac: 0.62 },
+      { delay: 0.56, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 0.84, kind: 'star', yFrac: 0.66 },
+      { delay: 0.96, kind: 'cloud', yFrac: 0.3 },
+      { delay: 1.12, kind: 'star', yFrac: 0.8 },
+      { delay: 1.38, kind: 'storm_orb', yFrac: 0.52 },
+      { delay: 1.55, kind: 'star', yFrac: 0.36 },
+      { delay: 1.85, kind: 'comet', yFrac: 0.22, speedMult: 1.22 },
+    ],
+  },
+  {
+    id: 'thunder_steppe',
+    name: 'Thundersteppe Hop',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.72 },
+      { delay: 0.25, kind: 'storm_orb', yFrac: 0.38 },
+      { delay: 0.42, kind: 'star', yFrac: 0.72 },
+      { delay: 0.72, kind: 'cloud', yFrac: 0.76 },
+      { delay: 0.84, kind: 'bigstar', yFrac: 0.3 },
+      { delay: 1.12, kind: 'star', yFrac: 0.24 },
+      { delay: 1.25, kind: 'cloud', yFrac: 0.54 },
+      { delay: 1.5, kind: 'comet', yFrac: 0.34, speedMult: 1.24 },
+      { delay: 1.78, kind: 'void_meteor', yFrac: 0.66 },
+      { delay: 1.9, kind: 'star', yFrac: 0.26 },
+    ],
+  },
+  {
+    id: 'nebula_tunnel',
+    name: 'Nebula Sky Tunnel',
+    items: [
+      { delay: 0.0, kind: 'cloud', yFrac: 0.2 },
+      { delay: 0.0, kind: 'cloud', yFrac: 0.8 },
+      { delay: 0.15, kind: 'star', yFrac: 0.5 },
+      { delay: 0.48, kind: 'star', yFrac: 0.5 },
+      { delay: 0.78, kind: 'cloud', yFrac: 0.24 },
+      { delay: 0.78, kind: 'cloud', yFrac: 0.76 },
+      { delay: 0.84, kind: 'bigstar', yFrac: 0.5 },
+      { delay: 1.22, kind: 'storm_orb', yFrac: 0.54 },
+      { delay: 1.45, kind: 'star', yFrac: 0.3 },
+      { delay: 1.75, kind: 'comet', yFrac: 0.68, speedMult: 1.22 },
+    ],
+  },
+  {
+    id: 'zenith_stair',
+    name: 'Zenith Sky Stairs',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.78 },
+      { delay: 0.26, kind: 'star', yFrac: 0.64 },
+      { delay: 0.36, kind: 'cloud', yFrac: 0.34 },
+      { delay: 0.54, kind: 'star', yFrac: 0.5 },
+      { delay: 0.82, kind: 'star', yFrac: 0.36 },
+      { delay: 0.92, kind: 'cloud', yFrac: 0.74 },
+      { delay: 1.1, kind: 'bigstar', yFrac: 0.24 },
+      { delay: 1.38, kind: 'storm_orb', yFrac: 0.48 },
+      { delay: 1.56, kind: 'star', yFrac: 0.62 },
+      { delay: 1.85, kind: 'comet', yFrac: 0.76, speedMult: 1.2 },
+    ],
+  },
+  {
+    id: 'aurora_zigzag',
+    name: 'Aurora Sky Pulse',
+    items: [
+      { delay: 0.0, kind: 'star', yFrac: 0.26 },
+      { delay: 0.26, kind: 'cloud', yFrac: 0.48 },
+      { delay: 0.42, kind: 'star', yFrac: 0.74 },
+      { delay: 0.68, kind: 'void_meteor', yFrac: 0.32 },
+      { delay: 0.82, kind: 'bigstar', yFrac: 0.7 },
+      { delay: 1.08, kind: 'cloud', yFrac: 0.52 },
+      { delay: 1.22, kind: 'star', yFrac: 0.26 },
+      { delay: 1.48, kind: 'storm_orb', yFrac: 0.68 },
+      { delay: 1.65, kind: 'comet', yFrac: 0.28, speedMult: 1.24 },
+      { delay: 1.9, kind: 'star', yFrac: 0.48 },
     ],
   },
   {
@@ -141,8 +440,26 @@ export const SKYHOP_WAVE_TEMPLATES: SkyHopWaveSpec[] = [
       { delay: 0.65, kind: 'bigstar', yFrac: 0.22 },
       { delay: 0.65, kind: 'bigstar', yFrac: 0.78 },
       { delay: 1.0, kind: 'storm_orb', yFrac: 0.5 },
+      { delay: 1.32, kind: 'star', yFrac: 0.34 },
+      { delay: 1.32, kind: 'star', yFrac: 0.66 },
       { delay: 1.68, kind: 'cloud', yFrac: 0.24 },
       { delay: 1.68, kind: 'cloud', yFrac: 0.76 },
+    ],
+  },
+  {
+    id: 'astral_crosswind',
+    name: 'Astral Jetstream',
+    items: [
+      { delay: 0.0, kind: 'comet', yFrac: 0.5, speedMult: 1.28 },
+      { delay: 0.3, kind: 'cloud', yFrac: 0.28 },
+      { delay: 0.42, kind: 'star', yFrac: 0.64 },
+      { delay: 0.7, kind: 'star', yFrac: 0.76 },
+      { delay: 0.88, kind: 'void_meteor', yFrac: 0.44 },
+      { delay: 1.05, kind: 'bigstar', yFrac: 0.24 },
+      { delay: 1.32, kind: 'cloud', yFrac: 0.72 },
+      { delay: 1.48, kind: 'storm_orb', yFrac: 0.48 },
+      { delay: 1.72, kind: 'comet', yFrac: 0.28, speedMult: 1.24 },
+      { delay: 1.95, kind: 'star', yFrac: 0.62 },
     ],
   },
 ];
@@ -156,7 +473,16 @@ export const SKYHOP_PALETTES = [
   { name: 'Starfall Aurora', top: '#1e1b4b', mid: '#0f766e', bottom: '#3b0764', accent: '#67e8f9' },
   { name: 'Celestial Blossom', top: '#500724', mid: '#9d174d', bottom: '#312e81', accent: '#f9a8d4' },
   { name: 'Sunstone Mirage', top: '#451a03', mid: '#b45309', bottom: '#1e293b', accent: '#fde047' },
+  { name: 'Glowspore Twilight', top: '#022c22', mid: '#115e59', bottom: '#312e81', accent: '#2dd4bf' },
+  { name: 'Astral Citadel', top: '#090d1a', mid: '#4338ca', bottom: '#0f172a', accent: '#a78bfa' },
+  { name: 'Thundersteppe Storm', top: '#1e293b', mid: '#854d0e', bottom: '#0f172a', accent: '#facc15' },
+  { name: 'Abyssal Pearl Sky', top: '#082f49', mid: '#0e7490', bottom: '#1e1b4b', accent: '#7dd3fc' },
+  { name: 'Chrono Relic Sunset', top: '#2e1065', mid: '#b45309', bottom: '#172554', accent: '#fbbf24' },
   { name: 'Mythic Rift Nebula', top: '#3b0764', mid: '#a21caf', bottom: '#0f172a', accent: '#f0abfc' },
+  { name: 'Faeveldt Rose Dawn', top: '#4c0519', mid: '#db2777', bottom: '#312e81', accent: '#fbcfe8' },
+  { name: 'Sunburst Alola Horizon', top: '#7c2d12', mid: '#ea580c', bottom: '#0e7490', accent: '#fed7aa' },
+  { name: 'Iron Crown Summit', top: '#0f172a', mid: '#334155', bottom: '#1e3a8a', accent: '#93c5fd' },
+  { name: 'Terastal Prism', top: '#1e1b4b', mid: '#0369a1', bottom: '#831843', accent: '#f472b6' },
 ];
 
 export interface SkyHopTickEvents {
@@ -165,6 +491,7 @@ export interface SkyHopTickEvents {
   healedHeart?: boolean;
   dashActivated?: boolean;
   runEnded?: boolean;
+  newBadgeIds?: string[];
 }
 
 export class DojoSkyHopController {
@@ -238,9 +565,8 @@ export class DojoSkyHopController {
     return this.state;
   }
 
-  open(): SkyHopState {
-    // Ensure arcade unlocked if invoked from observatory/arcade menu or already unlocked
-    if (!this.storage.manager.isArcadeUnlocked()) {
+  open(options?: { forceUnlock?: boolean }): SkyHopState {
+    if (options?.forceUnlock && !this.storage.manager.isArcadeUnlocked()) {
       this.storage.manager.unlockArcade(true);
     }
     this.syncPartnerAndArcade();
@@ -248,6 +574,7 @@ export class DojoSkyHopController {
     this.state.running = false;
     this.state.gameOver = false;
     this.state.paused = false;
+    this.state.outOfCharges = this.state.charges <= 0;
     return this.state;
   }
 
@@ -484,7 +811,7 @@ export class DojoSkyHopController {
       if (gemCooldown <= 0) {
         const pool = getUnlockedArcadeGemPool(badgeCount);
         if (pool.length > 0) {
-          const picked = pool[safeScore % pool.length];
+          const picked = pool[Math.floor(Math.random() * pool.length)];
           gems[picked] = 1;
         }
       } else {
@@ -504,7 +831,7 @@ export class DojoSkyHopController {
     };
   }
 
-  private finishRun(): void {
+  private finishRun(): string[] {
     this.state.running = false;
     this.state.gameOver = true;
     const profile = this.storage.getActiveProfileJSON();
@@ -518,10 +845,12 @@ export class DojoSkyHopController {
       rewards,
     });
     this.syncPartnerAndArcade();
+    this.state.outOfCharges = this.state.charges <= 0;
     this.state.lastRunRewards = {
       ...rewards,
       isNewBest: Boolean(rec?.isNewBest),
     };
+    return Array.isArray(rec?.newBadges) ? rec.newBadges.map((b: { id: string }) => b.id) : [];
   }
 
   update(dtSeconds: number): SkyHopTickEvents {
@@ -550,6 +879,12 @@ export class DojoSkyHopController {
       this.state.playerY += this.state.playerVy * dt;
     } else {
       this.state.playerVy *= Math.pow(0.02, dt);
+    }
+
+    // Wave 5+ gentle rhythmic sky crosswind (v1 parity)
+    if (this.state.wave >= 5) {
+      const windVy = Math.sin(this.waveElapsed * 1.9) * Math.min(54, (this.state.wave - 4) * 10);
+      this.state.playerY += windVy * (this.pointerTargetY !== null ? 0.3 : 1) * dt;
     }
 
     this.state.playerY = Math.max(40, Math.min(SKYHOP_LOGICAL_H - 40, this.state.playerY));
@@ -596,11 +931,16 @@ export class DojoSkyHopController {
           if (this.state.dashTimer > 0) {
             if (ent.kind === 'void_meteor') {
               this.state.dashTimer = 0;
+              this.state.magnetTimer = 0;
+              this.state.combo = 1;
+              this.state.comboStreak = 0;
               this.state.hitInvulnTimer = 0.55;
+              this.state.shakeTimer = 0.22;
+              events.hitHazard = true;
             } else {
               this.state.score += ent.kind === 'storm_orb' ? 8 : 5;
+              events.collectedStar = true;
             }
-            events.collectedStar = true;
             this.state.entities.splice(i, 1);
             continue;
           }
@@ -613,8 +953,9 @@ export class DojoSkyHopController {
             events.hitHazard = true;
             this.state.entities.splice(i, 1);
             if (this.state.hearts <= 0) {
-              this.finishRun();
+              const newBadgeIds = this.finishRun();
               events.runEnded = true;
+              if (newBadgeIds.length > 0) events.newBadgeIds = newBadgeIds;
               return events;
             }
             continue;
@@ -639,6 +980,10 @@ export class DojoSkyHopController {
       }
 
       if (ent.x < -40) {
+        if (ent.kind === 'star' || ent.kind === 'bigstar' || ent.kind === 'comet') {
+          this.state.comboStreak = Math.max(0, this.state.comboStreak - 4);
+          this.state.combo = Math.min(5, 1 + Math.floor(this.state.comboStreak / 5));
+        }
         this.state.entities.splice(i, 1);
       }
     }

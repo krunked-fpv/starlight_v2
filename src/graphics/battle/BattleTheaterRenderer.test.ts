@@ -26,6 +26,7 @@ import {
   BattleTheaterRenderer,
   BattleVfxDirector,
   OfflineSpriteRigSynthesizer,
+  computeBattleStageLayout,
 } from './index';
 
 function createGradientStub() {
@@ -759,5 +760,33 @@ describe('BattleTheaterRenderer shutters, camera cues, hit-stop & reducedMotion 
     expect(rmStats.drawCalls).toBeGreaterThan(2);
 
     backend.dispose();
+  });
+
+  it('prevents double-ticking BattleSceneState when controller skips visual timers and renderer ticks them once', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const controller = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    const renderer = new BattleTheaterRenderer();
+
+    const state = controller.startEncounter({ biomeId: 'forest', tier: 'wild', forceOfflineRig: true });
+    renderer.triggerShutter('wild', false);
+
+    controller.update(0.016, { skipVisualTimers: true });
+    renderer.update(state, 0.016);
+
+    expect(state.elapsedSeconds).toBeCloseTo(0.016, 6);
+    expect(state.shutter.progress).toBeCloseTo(0.016 / state.shutter.duration, 5);
+  });
+
+  it('frames portrait mobile battle combatants inside the upper-middle arena window above the bottom HUD (#16 Item 3)', () => {
+    const mobileLayout = computeBattleStageLayout(390, 844);
+    expect(mobileLayout.enemyPad.y).toBeLessThan(844 * 0.36);
+    expect(mobileLayout.playerPad.y).toBeLessThan(844 * 0.50);
+    expect(mobileLayout.playerPad.y).toBeGreaterThan(mobileLayout.enemyPad.y);
+
+    const desktopLayout = computeBattleStageLayout(1366, 768);
+    expect(desktopLayout.playerPad.y).toBeCloseTo(768 * 0.705, 1);
+    expect(desktopLayout.enemyPad.y).toBeCloseTo(768 * 0.575, 1);
   });
 });

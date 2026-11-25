@@ -24,18 +24,23 @@ export class StarlightAudioController {
   unlock(): void {
     this.engine.unlock();
     this.attachAnalyser();
+    this.applyGainNow();
   }
 
   private attachAnalyser(): void {
     const ctx = this.engine.ensureContext?.();
-    if (!ctx || this.analyser || typeof ctx.createAnalyser !== 'function') return;
+    if (!ctx) return;
+    if (this.analyser || typeof ctx.createAnalyser !== 'function') {
+      this.applyGainNow();
+      return;
+    }
     try {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.72;
       if (this.engine.masterGain) {
         this.engine.masterGain.connect(analyser);
-        this.engine.masterGain.gain.value = this.engine.muted ? 0 : this.masterVolume;
+        this.applyGainNow();
       }
       this.analyser = analyser;
     } catch {
@@ -45,22 +50,38 @@ export class StarlightAudioController {
 
   setMuted(muted: boolean): void {
     this.engine.setMuted(Boolean(muted));
+    this.applyGainNow();
   }
 
   setMasterVolume(volume: number): void {
     this.masterVolume = Math.max(0, Math.min(1, Number.isFinite(volume) ? volume : 0.65));
-    if (this.engine.masterGain && !this.engine.muted) {
-      try {
-        this.engine.masterGain.gain.value = this.masterVolume;
-      } catch {
-        // Ignore in headless environments
+    this.applyGainNow();
+  }
+
+  private applyGainNow(): void {
+    const gainParam = this.engine.masterGain?.gain;
+    if (!gainParam) return;
+    const target = this.engine.muted ? 0 : this.masterVolume;
+    try {
+      const ctx = this.engine.ctx;
+      const now = ctx && Number.isFinite(ctx.currentTime) ? Math.max(0, ctx.currentTime) : 0;
+      if (typeof gainParam.cancelScheduledValues === 'function') {
+        gainParam.cancelScheduledValues(now);
       }
+      if (typeof gainParam.setTargetAtTime === 'function' && ctx) {
+        gainParam.setTargetAtTime(target, now, 0.015);
+      } else {
+        gainParam.value = target;
+      }
+    } catch {
+      // Ignore in headless environments
     }
   }
 
   playBGM(themeName: string): void {
     const key = THEMES[themeName] ? themeName : 'overworld';
     this.engine.playBGM(key);
+    this.applyGainNow();
   }
 
   stopBGM(): void {
@@ -87,12 +108,40 @@ export class StarlightAudioController {
     this.engine.playPhysicalImpact(superEffective ? 92 : 48);
   }
 
-  playMoveSfx(moveId: string, fx?: string): void {
-    this.engine.playAttackSfx(fx || 'normal', moveId);
+  playMoveSfx(moveId: string, moveTypeOrFx?: string): void {
+    this.engine.playAttackSfx(moveTypeOrFx || 'normal', moveId);
   }
 
   playHealChime(): void {
     this.engine.playHealChime();
+  }
+
+  playUpgradeFanfare(): void {
+    this.engine.playUpgradeFanfare?.();
+  }
+
+  playBuddyCheer(): void {
+    this.engine.playBuddyCheer?.();
+  }
+
+  playQuestCompleteFanfare(): void {
+    this.engine.playQuestCompleteFanfare?.();
+  }
+
+  playArcadeUnlockFanfare(): void {
+    this.engine.playArcadeUnlockFanfare?.();
+  }
+
+  playDiscoveryChime(kind?: string): void {
+    this.engine.playDiscoveryChime?.(kind);
+  }
+
+  playWarpTeleport(): void {
+    this.engine.playWarpTeleport?.();
+  }
+
+  playSafeRecall(): void {
+    this.engine.playSafeRecall?.();
   }
 
   playCatchThrow(): void {
@@ -107,8 +156,16 @@ export class StarlightAudioController {
     this.engine.playCaptureSuccess();
   }
 
-  playVictoryFanfare(): void {
+  playLevelUp(): void {
     this.engine.playLevelUp();
+  }
+
+  playVictoryFanfare(): void {
+    if (typeof this.engine.playQuestCompleteFanfare === 'function') {
+      this.engine.playQuestCompleteFanfare();
+    } else {
+      this.engine.playLevelUp();
+    }
   }
 
   playBadgeFanfare(): void {

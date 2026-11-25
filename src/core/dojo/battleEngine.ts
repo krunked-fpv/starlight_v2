@@ -26,10 +26,11 @@ import {
   getScaledRivalParty,
   getScaledShrineGuard,
   getScaledShrineTrial,
+  getTypeEffectiveness,
   resolveSpeciesArchetype,
   rollWildPokemon,
 } from './raw/pokemon.js';
-import { ENCOUNTER_TRAITS, RIVAL_TRAINERS, SHRINES } from './raw/config.js';
+import { ENCOUNTER_TRAITS, EVOLUTION_ITEMS, RIVAL_TRAINERS, SHRINES } from './raw/config.js';
 import type { StarlightStorageBridge } from '../save/saveHydrator';
 import type { SpriteAssetLoader } from './spriteLoader';
 import { getAbilityEntry, getMoveEntry, getSpeciesEntry } from './catalog';
@@ -62,14 +63,47 @@ export interface BattleActionOutcome {
   sfx: Array<'hit' | 'super-hit' | 'heal' | 'catch-throw' | 'catch-success' | 'victory' | 'badge' | 'evolve'>;
   moveSfxId?: string;
   moveSfxFx?: string;
+  moveSfxEvents?: Array<{ moveId: string; type: string; side: 'player' | 'enemy' }>;
   battleEnded?: 'victory' | 'defeat' | 'caught' | 'fled';
   newBadgeIds?: string[];
 }
 
+const STRUGGLE_MOVE = {
+  id: 'struggle',
+  name: 'Struggle',
+  type: 'normal' as ElementalType,
+  power: 35,
+  accuracy: 100,
+  pp: 1,
+  damageClass: 'physical' as const,
+  category: 'attack' as const,
+  fx: 'impact',
+};
+
+const BIOME_DROP_GEMS: Record<string, () => string> = {
+  forest: () => 'leaf_gem',
+  cave: () => 'moon_gem',
+  water: () => 'water_gem',
+  volcano: () => (Math.random() < 0.5 ? 'fire_gem' : 'thunder_gem'),
+  peak: () => 'ice_gem',
+  grove: () => 'astral_gem',
+  desert: () => (Math.random() < 0.5 ? 'prism_gem' : 'sun_gem'),
+  marsh: () => (Math.random() < 0.5 ? 'dusk_gem' : 'leaf_gem'),
+  sanctum: () => (Math.random() < 0.5 ? 'prism_gem' : 'astral_gem'),
+  canyon: () => (Math.random() < 0.5 ? 'thunder_gem' : 'sun_gem'),
+  reef: () => (Math.random() < 0.5 ? 'water_gem' : 'moon_gem'),
+  ruins: () => (Math.random() < 0.5 ? 'chrono_gem' : 'dusk_gem'),
+  rift: () => (Math.random() < 0.5 ? 'nebula_gem' : 'astral_gem'),
+  faeveldt: () => 'pixie_gem',
+  atoll: () => 'alola_gem',
+  highlands: () => 'crown_gem',
+  crater: () => 'tera_gem',
+};
+
 function toCombatantSnapshot(mon: Pokemon): BattleCombatantSnapshot {
   const sp = getSpeciesEntry(mon.speciesId);
   const ab = getAbilityEntry(mon.abilityId);
-  const moves = mon.getMoveObjects().slice(0, 4).map((rawMove) => {
+  const rawMoves = mon.getMoveObjects().slice(0, 4).map((rawMove) => {
     const entry = getMoveEntry(rawMove.id);
     const pp = mon.getMovePp(entry.id);
     return {
@@ -78,6 +112,10 @@ function toCombatantSnapshot(mon: Pokemon): BattleCombatantSnapshot {
       maxPp: pp.max,
     };
   });
+  const hasUsablePp = rawMoves.some((m) => m.currentPp > 0);
+  const moves = hasUsablePp
+    ? rawMoves
+    : [{ ...STRUGGLE_MOVE, currentPp: 1, maxPp: 1 }];
 
   return {
     uid: mon.uid,
@@ -138,6 +176,7 @@ export class DojoBattleController {
   private playerMon: Pokemon;
   private enemyParty: Pokemon[] = [];
   private enemyIndex = 0;
+  private playerBuddyEndured = false;
 
   constructor(storage: StarlightStorageBridge, sprites: SpriteAssetLoader) {
     this.storage = storage;
@@ -249,6 +288,7 @@ export class DojoBattleController {
     const healthy = team.find((m) => m && !m.isFainted) ?? team[0] ?? createPokemon(25, 5, 'starter');
     healthy.resetBattleState();
     this.playerMon = healthy;
+    this.playerBuddyEndured = false;
 
     let biomeId: BiomeId = opts.biomeId;
     let isBoss = false;
@@ -353,8 +393,8 @@ export class DojoBattleController {
       forceOfflineRig: offline,
       statusMessage: '',
       battleLog: [],
-      canCapture: !isTrainerBattle,
-      canRun: !isTrainerBattle,
+      canCapture: !isTrainerBattle && !shrineId,
+      canRun: true,
     };
 
     const foeName = stripEmojis(foe.displayName);
@@ -389,21 +429,28 @@ export class DojoBattleController {
     attackerSide: 'player' | 'enemy',
     outcome: BattleActionOutcome,
   ): void {
-    const move = getMoveEntry(moveId);
-    attacker.consumeMovePp(move.id);
+    const isStruggle = moveId === 'struggle';
+    const move = isStruggle ? STRUGGLE_MOVE : getMoveEntry(moveId);
+    if (!isStruggle) {
+      attacker.consumeMovePp(move.id);
+    }
     const atkVis = attackerSide === 'player' ? this.state.player : this.state.enemy;
     const defVis = attackerSide === 'player' ? this.state.enemy : this.state.player;
     const defenderSide = attackerSide === 'player' ? 'enemy' : 'player';
 
-    outcome.moveSfxId = move.id;
-    outcome.moveSfxFx = move.fx;
+    if (!outcome.moveSfxId) {
+      outcome.moveSfxId = move.id;
+      outcome.moveSfxFx = move.type;
+    }
+    if (!outcome.moveSfxEvents) outcome.moveSfxEvents = [];
+    outcome.moveSfxEvents.push({ moveId: move.id, type: move.type, side: attackerSide });
 
     const result = calculateDamage(attacker, defender, move, {
       applyAbilities: true,
       applyComposure: true,
       applyEncounterTraits: true,
       defenderSide,
-      isBoss: this.state.isBoss,
+      isBoss: Boolean(this.state.shrineId),
     });
 
     if (result.category === 'heal') {
@@ -456,6 +503,7 @@ export class DojoBattleController {
     }
 
     // Apply damage
+    const prevHp = defender.hp;
     const dealt = defender.takeDamage(result.damage);
     atkVis.lungeOffset = attackerSide === 'player' ? 1 : -1;
     defVis.hitFlash = 1;
@@ -486,11 +534,12 @@ export class DojoBattleController {
       }
     }
 
-    // Bond endure check for player Pokémon
-    if (defenderSide === 'player' && defender.isFainted) {
+    // Bond endure check for player Pokémon (once per active mon, requires Trusted Buddy 60+ bond & prevHp > 1)
+    if (defenderSide === 'player' && defender.isFainted && prevHp > 1 && !this.playerBuddyEndured) {
       const bondTier = getBondTier(defender.bond);
-      if (bondTier.endureChance > 0 && Math.random() < bondTier.endureChance) {
+      if (defender.bond >= 60 && bondTier.endureChance > 0 && Math.random() < bondTier.endureChance) {
         defender.hp = 1;
+        this.playerBuddyEndured = true;
         defVis.bracedFlash = 1;
         this.pushLog(`${stripEmojis(defender.displayName)} toughed it out for you with 1 HP!`);
       }
@@ -532,14 +581,45 @@ export class DojoBattleController {
   private pickEnemyMove(enemy: Pokemon): string {
     const moves = enemy.getMoveObjects();
     const usable = moves.filter((m) => enemy.getMovePp(m.id).current > 0);
-    const pool = usable.length > 0 ? usable : moves;
-    if (pool.length === 0) return 'tackle';
-    if (enemy.hp < enemy.maxHp * 0.4) {
-      const healMove = pool.find((m) => m.category === 'heal');
-      if (healMove && Math.random() < 0.45) return healMove.id;
+    if (usable.length === 0) return 'struggle';
+
+    const hpRatio = enemy.maxHp > 0 ? enemy.hp / enemy.maxHp : 1;
+    if (hpRatio <= 0.42) {
+      const healMove = usable.find((m) => m.category === 'heal');
+      if (healMove && Math.random() < 0.55) return healMove.id;
     }
-    const idx = Math.floor(Math.random() * pool.length);
-    return pool[idx].id;
+
+    const defenderType = this.playerMon.type || 'normal';
+    const scored = usable.map((m) => {
+      let score = 10;
+      if (m.category === 'heal') {
+        score = hpRatio < 0.6 ? 45 : 4;
+      } else if (m.category === 'shield') {
+        score = (enemy.shieldTurns ?? 0) === 0 ? 52 : 8;
+      } else if (m.category === 'buff') {
+        const stat = (m.buffStat || 'atk') as 'atk' | 'def' | 'spd';
+        const curStage = enemy.battleStages?.[stat] ?? 0;
+        score = curStage < 2 && this.state.turnNumber <= 3 ? 44 : 10;
+      } else {
+        const eff = getTypeEffectiveness(m.type, defenderType);
+        const stab = m.type === enemy.type ? 1.25 : 1.0;
+        score = Math.max(12, (Number(m.power) || 40) * eff * stab);
+      }
+      return { id: m.id, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    if (scored.length === 1 || Math.random() < 0.62) {
+      return scored[0].id;
+    }
+    const topPool = scored.slice(0, Math.min(3, scored.length));
+    const total = topPool.reduce((s, item) => s + item.score, 0);
+    let roll = Math.random() * total;
+    for (const item of topPool) {
+      roll -= item.score;
+      if (roll <= 0) return item.id;
+    }
+    return topPool[0].id;
   }
 
   private applyTurnEndAbilities(): void {
@@ -566,7 +646,57 @@ export class DojoBattleController {
     }
   }
 
-  private awardVictoryRewards(caught: boolean, outcome: BattleActionOutcome): void {
+  private awardPartialFaintXp(defeatedEnemy: Pokemon, outcome: BattleActionOutcome): void {
+    const profile = this.storage.manager.getActiveProfile();
+    const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [this.playerMon];
+    const bondTier = getBondTier(this.playerMon.bond);
+    const xpRes = computeBattleXpReward(this.playerMon, defeatedEnemy, {
+      scale: 1.0,
+      bondMult: bondTier.xpMult,
+      traitMult: 1,
+    });
+    const lvRes = this.playerMon.gainXp(xpRes.xp);
+    for (const bench of team) {
+      if (!bench || bench === this.playerMon || bench.isFainted) continue;
+      const share = computeBenchXpShare(bench, this.playerMon, defeatedEnemy, xpRes.baseXp);
+      bench.gainXp(share.xp);
+    }
+    const badges = this.storage.manager.evaluateBadges(false) || [];
+    if (badges.length > 0) {
+      const ids = badges.map((b: { id: string }) => b.id);
+      outcome.newBadgeIds = [...new Set([...(outcome.newBadgeIds ?? []), ...ids])];
+      outcome.sfx.push('badge');
+    }
+    const lvMsg = lvRes.leveledUp ? ` ${stripEmojis(this.playerMon.displayName)} grew to Lv.${this.playerMon.level}!` : '';
+    this.pushLog(`Earned +${xpRes.xp} XP!${lvMsg}`);
+  }
+
+  private rollVictoryTrailDrop(): string | null {
+    if (this.state.isTrainerBattle) return null;
+    const dropChance = this.state.shrineId ? 0.9 : 0.45;
+    if (Math.random() >= dropChance) return null;
+
+    const dropBiome = this.state.biomeId;
+    const gemId = BIOME_DROP_GEMS[dropBiome]?.() ?? null;
+    const roll = Math.random();
+    if (gemId && roll < 0.34) {
+      this.storage.manager.addRewards({ gems: { [gemId]: 1 } }, false);
+      const gemName = stripEmojis(EVOLUTION_ITEMS[gemId]?.name || 'Evolution Gem');
+      return `a ${gemName}`;
+    }
+    if (roll < 0.58) {
+      this.storage.manager.addRewards({ starBalls: 1 }, false);
+      return 'a Star Ball';
+    }
+    if (roll < 0.8) {
+      this.storage.manager.addRewards({ greatBalls: 1 }, false);
+      return 'a Great Ball';
+    }
+    this.storage.manager.addRewards({ potions: 1 }, false);
+    return 'a Berry Potion';
+  }
+
+  private awardVictoryRewards(caught: boolean, outcome: BattleActionOutcome, excludeBenchUid?: string): void {
     const enemy = this.getCurrentEnemy();
     const profile = this.storage.manager.getActiveProfile();
     const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [this.playerMon];
@@ -575,7 +705,7 @@ export class DojoBattleController {
     const traitMult = enemy.encounterTrait && ENCOUNTER_TRAITS[enemy.encounterTrait]
       ? ENCOUNTER_TRAITS[enemy.encounterTrait].xpMult
       : 1;
-    const scale = this.state.isBoss ? 1.35 : 1.0;
+    const scale = caught ? 0.6 : this.state.isBoss ? 1.35 : 1.0;
 
     const xpRes = computeBattleXpReward(this.playerMon, enemy, {
       scale,
@@ -584,10 +714,18 @@ export class DojoBattleController {
     });
     const lvRes = this.playerMon.gainXp(xpRes.xp);
     this.playerMon.gainBond(caught ? 6 : 4);
+    if (caught && enemy.encounterTrait === 'curious') {
+      this.playerMon.gainBond(4);
+      enemy.gainBond(4);
+    }
+    if (caught) {
+      this.storage.manager.addCheerCharges(1, false);
+    }
 
-    // Smart bench XP share
+    // Smart bench XP share (never awards catch XP to the newly caught Pokémon itself!)
     for (const bench of team) {
       if (!bench || bench === this.playerMon || bench.isFainted) continue;
+      if (excludeBenchUid && bench.uid === excludeBenchUid) continue;
       const share = computeBenchXpShare(bench, this.playerMon, enemy, xpRes.baseXp);
       bench.gainXp(share.xp);
       bench.gainBond(2);
@@ -600,7 +738,7 @@ export class DojoBattleController {
     });
     this.storage.manager.addStarShards(shards, false);
 
-    const newBadgeIds: string[] = [];
+    const newBadgeIds: string[] = [...(outcome.newBadgeIds ?? [])];
     const winBadges = this.storage.manager.recordBattleWin() || [];
     for (const b of winBadges) newBadgeIds.push(b.id);
 
@@ -609,8 +747,11 @@ export class DojoBattleController {
         const trialRes = this.storage.manager.recordShrineTrialWin(this.state.shrineId, { starShards: 3, starBalls: 1 });
         for (const b of trialRes.newBadges || []) newBadgeIds.push(b.id);
       } else {
-        const shrine = SHRINES[this.state.shrineId];
-        if (shrine?.reward) this.storage.manager.addRewards(shrine.reward, false);
+        const alreadyCleared = Boolean(profile?.shrinesCleared?.includes(this.state.shrineId));
+        const shrine = Object.values(SHRINES).find((s) => s.id === this.state.shrineId);
+        if (!alreadyCleared && shrine?.reward) {
+          this.storage.manager.addRewards(shrine.reward, false);
+        }
         const shrineBadges = this.storage.manager.markShrineCleared(this.state.shrineId) || [];
         for (const b of shrineBadges) newBadgeIds.push(b.id);
       }
@@ -618,9 +759,21 @@ export class DojoBattleController {
 
     if (this.state.rivalId) {
       const rival = Object.values(RIVAL_TRAINERS).find((r) => r.id === this.state.rivalId);
-      const rivalRes = this.storage.manager.markRivalDefeated(this.state.rivalId, rival?.rewards ?? { starShards: 3, greatBalls: 2 });
+      const isRematch = Boolean(profile?.rivalsDefeated?.includes(this.state.rivalId));
+      const rivalRewards = isRematch
+        ? (rival?.rematchRewards ?? { greatBalls: 1, potions: 1 })
+        : (rival?.rewards ?? { starShards: 3, greatBalls: 2 });
+      const rivalRes = this.storage.manager.markRivalDefeated(this.state.rivalId, rivalRewards);
       for (const b of rivalRes.newBadges || []) newBadgeIds.push(b.id);
     }
+
+    let trailDropLabel: string | null = null;
+    if (!caught) {
+      trailDropLabel = this.rollVictoryTrailDrop();
+    }
+
+    const postBadges = this.storage.manager.evaluateBadges(false) || [];
+    for (const b of postBadges) newBadgeIds.push(b.id);
 
     this.storage.saveSync();
 
@@ -633,17 +786,19 @@ export class DojoBattleController {
       };
     }
 
+    const uniqueBadges = [...new Set(newBadgeIds)];
     this.state.rewardSummary = {
       xpGained: xpRes.xp,
       shardsGained: shards,
-      newBadges: [...new Set(newBadgeIds)],
+      newBadges: uniqueBadges,
       caught,
       leveledUp: lvRes.leveledUp,
+      trailDrop: trailDropLabel,
     };
 
     outcome.sfx.push(caught ? 'catch-success' : 'victory');
-    if (newBadgeIds.length > 0) outcome.sfx.push('badge');
-    outcome.newBadgeIds = [...new Set(newBadgeIds)];
+    if (uniqueBadges.length > 0) outcome.sfx.push('badge');
+    outcome.newBadgeIds = uniqueBadges;
     outcome.battleEnded = caught ? 'caught' : 'victory';
     this.state.phase = pendingEvo ? 'evolving' : 'victory';
     if (pendingEvo) {
@@ -652,15 +807,17 @@ export class DojoBattleController {
     }
 
     const lvMsg = lvRes.leveledUp ? ` ${stripEmojis(this.playerMon.displayName)} grew to Lv.${this.playerMon.level}!` : '';
-    this.pushLog(`Victory! +${xpRes.xp} XP & +${shards} Star Shards!${lvMsg}`);
+    const dropMsg = trailDropLabel ? ` Found ${trailDropLabel} on the victory trail!` : '';
+    this.pushLog(`Victory! +${xpRes.xp} XP & +${shards} Star Shards!${lvMsg}${dropMsg}`);
   }
 
-  private handleEnemyFainted(outcome: BattleActionOutcome): boolean {
+  private handleEnemyFainted(outcome: BattleActionOutcome): 'none' | 'switched' | 'victory' {
     const enemy = this.getCurrentEnemy();
-    if (!enemy.isFainted) return false;
+    if (!enemy.isFainted) return 'none';
 
     this.pushLog(`${stripEmojis(enemy.displayName)} fainted!`);
     if (this.enemyIndex + 1 < this.enemyParty.length) {
+      this.awardPartialFaintXp(enemy, outcome);
       this.enemyIndex += 1;
       const nextFoe = this.getCurrentEnemy();
       nextFoe.resetBattleState();
@@ -669,37 +826,36 @@ export class DojoBattleController {
       this.pushLog(`${this.state.rivalName || 'Rival'} sent out Lv.${nextFoe.level} ${stripEmojis(nextFoe.displayName)}!`);
       this.applyEntryAbility(nextFoe, 'enemy');
       this.syncCombatantSprites();
-      return false;
+      return 'switched';
     }
 
     this.state.rivalRemainingMons = 0;
     this.awardVictoryRewards(false, outcome);
-    return true;
+    return 'victory';
   }
 
-  private handlePlayerFainted(outcome: BattleActionOutcome): boolean {
-    if (!this.playerMon.isFainted) return false;
+  private handlePlayerFainted(outcome: BattleActionOutcome): 'none' | 'forced-switch' | 'defeat' {
+    if (!this.playerMon.isFainted) return 'none';
     this.pushLog(`${stripEmojis(this.playerMon.displayName)} fainted!`);
 
     const profile = this.storage.manager.getActiveProfile();
     const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [];
-    const nextHealthy = team.find((m) => m && !m.isFainted);
-    if (nextHealthy) {
-      nextHealthy.resetBattleState();
-      this.playerMon = nextHealthy;
-      this.pushLog(`Go, ${stripEmojis(nextHealthy.displayName)}!`);
-      this.applyEntryAbility(nextHealthy, 'player');
+    const hasHealthyBench = team.some((m) => m && !m.isFainted && m !== this.playerMon);
+    if (hasHealthyBench) {
+      this.state.phase = 'forced-switch';
+      this.pushLog('Choose your next Pokémon!');
       this.syncCombatantSprites();
-      return false;
+      return 'forced-switch';
     }
 
     // All fainted -> gentle Starlight Village heal recall
     this.storage.manager.healTeam(true);
     this.storage.manager.warpToSafeZone();
     this.state.phase = 'defeat';
+    outcome.sfx.push('heal');
     outcome.battleEnded = 'defeat';
     this.pushLog('Your team rested up safely at Starlight Village Healing Fountain!');
-    return true;
+    return 'defeat';
   }
 
   performMove(moveId: string): BattleActionOutcome {
@@ -707,6 +863,14 @@ export class DojoBattleController {
     if (!this.state.active || (this.state.phase !== 'command' && this.state.phase !== 'shutter')) {
       return outcome;
     }
+
+    const effectiveMoveId =
+      moveId === 'struggle' || !this.playerMon.hasAnyMovePp() ? 'struggle' : moveId;
+    if (effectiveMoveId !== 'struggle' && this.playerMon.getMovePp(effectiveMoveId).current <= 0) {
+      this.pushLog('No PP left for that move! Choose another move.');
+      return outcome;
+    }
+
     this.state.shutter.active = false;
     this.state.phase = 'command';
 
@@ -715,24 +879,44 @@ export class DojoBattleController {
     const playerFirst = this.playerMon.getEffectiveSpd() >= enemy.getEffectiveSpd();
 
     if (playerFirst) {
-      this.executeSingleMove(this.playerMon, enemy, moveId, 'player', outcome);
-      if (this.handleEnemyFainted(outcome)) {
+      this.executeSingleMove(this.playerMon, enemy, effectiveMoveId, 'player', outcome);
+      const enemyFaint = this.handleEnemyFainted(outcome);
+      if (enemyFaint !== 'none') {
+        if (enemyFaint === 'switched') {
+          this.state.turnNumber += 1;
+          this.storage.saveSync();
+        }
         this.syncCombatantSprites();
         return outcome;
       }
       this.executeSingleMove(enemy, this.playerMon, enemyMoveId, 'enemy', outcome);
-      if (this.handlePlayerFainted(outcome)) {
+      const playerFaint = this.handlePlayerFainted(outcome);
+      if (playerFaint !== 'none') {
+        if (playerFaint === 'forced-switch') {
+          this.state.turnNumber += 1;
+          this.storage.saveSync();
+        }
         this.syncCombatantSprites();
         return outcome;
       }
     } else {
       this.executeSingleMove(enemy, this.playerMon, enemyMoveId, 'enemy', outcome);
-      if (this.handlePlayerFainted(outcome)) {
+      const playerFaint = this.handlePlayerFainted(outcome);
+      if (playerFaint !== 'none') {
+        if (playerFaint === 'forced-switch') {
+          this.state.turnNumber += 1;
+          this.storage.saveSync();
+        }
         this.syncCombatantSprites();
         return outcome;
       }
-      this.executeSingleMove(this.playerMon, enemy, moveId, 'player', outcome);
-      if (this.handleEnemyFainted(outcome)) {
+      this.executeSingleMove(this.playerMon, enemy, effectiveMoveId, 'player', outcome);
+      const enemyFaint = this.handleEnemyFainted(outcome);
+      if (enemyFaint !== 'none') {
+        if (enemyFaint === 'switched') {
+          this.state.turnNumber += 1;
+          this.storage.saveSync();
+        }
         this.syncCombatantSprites();
         return outcome;
       }
@@ -747,17 +931,27 @@ export class DojoBattleController {
 
   throwBall(kind: BallKind): BattleActionOutcome {
     const outcome: BattleActionOutcome = { vfxEvents: [], sfx: [] };
-    if (!this.state.active || !this.state.canCapture) return outcome;
-    if (this.state.phase === 'victory' || this.state.phase === 'defeat') return outcome;
+    if (!this.state.active || (this.state.phase !== 'command' && this.state.phase !== 'shutter')) {
+      return outcome;
+    }
+    if (!this.state.canCapture) {
+      this.pushLog(
+        this.state.shrineId
+          ? 'Shrine Guardians cannot be caught! Defeat them to earn their Shrine blessing!'
+          : 'You cannot catch another Trainer\'s Pokémon!',
+      );
+      return outcome;
+    }
 
     this.state.shutter.active = false;
+    this.state.phase = 'command';
     const ballKey = kind === 'star' ? 'starBalls' : kind === 'great' ? 'greatBalls' : null;
     if (ballKey && !this.storage.manager.useItem(ballKey)) {
       this.pushLog(`No ${kind === 'star' ? 'Star Balls' : 'Great Balls'} left!`);
       return outcome;
     }
 
-    const ballBonus = kind === 'star' ? 2.8 : kind === 'great' ? 1.55 : 1.0;
+    const ballBonus = kind === 'star' ? 2.0 : kind === 'great' ? 1.45 : 1.0;
     const enemy = this.getCurrentEnemy();
     const attempt = calculateCatchAttempt(enemy, ballBonus);
 
@@ -769,15 +963,16 @@ export class DojoBattleController {
     outcome.sfx.push('catch-throw');
 
     if (attempt.caught) {
+      enemy.hp = Math.max(1, enemy.hp);
       const catchRes = this.storage.manager.recordCaught(enemy);
-      this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${catchRes.destination}!`);
-      this.awardVictoryRewards(true, outcome);
       if (catchRes.newBadges?.length) {
         outcome.newBadgeIds = [
           ...(outcome.newBadgeIds ?? []),
           ...catchRes.newBadges.map((b: { id: string }) => b.id),
         ];
       }
+      this.pushLog(`Gotcha! ${stripEmojis(enemy.displayName)} joined your ${catchRes.destination}!`);
+      this.awardVictoryRewards(true, outcome, enemy.uid);
       this.syncCombatantSprites();
       return outcome;
     }
@@ -785,19 +980,32 @@ export class DojoBattleController {
     this.pushLog(`Oh no! ${stripEmojis(enemy.displayName)} broke free after ${attempt.shakes} shakes!`);
     const enemyMoveId = this.pickEnemyMove(enemy);
     this.executeSingleMove(enemy, this.playerMon, enemyMoveId, 'enemy', outcome);
-    this.handlePlayerFainted(outcome);
+    const faintRes = this.handlePlayerFainted(outcome);
+    if (faintRes === 'none') {
+      this.applyTurnEndAbilities();
+    }
     this.state.turnNumber += 1;
+    this.storage.saveSync();
     this.syncCombatantSprites();
     return outcome;
   }
 
   usePotion(): BattleActionOutcome {
     const outcome: BattleActionOutcome = { vfxEvents: [], sfx: [] };
-    if (!this.state.active) return outcome;
+    if (!this.state.active || (this.state.phase !== 'command' && this.state.phase !== 'shutter')) {
+      return outcome;
+    }
+    if (this.playerMon.hp >= this.playerMon.maxHp) {
+      this.pushLog(`${stripEmojis(this.playerMon.displayName)}'s HP is already full!`);
+      return outcome;
+    }
     if (!this.storage.manager.useItem('potions')) {
       this.pushLog('No Potions left in your bag!');
       return outcome;
     }
+
+    this.state.shutter.active = false;
+    this.state.phase = 'command';
     const healAmt = Math.max(
       BALANCE.combat.potionMinHeal,
       Math.round(this.playerMon.maxHp * BALANCE.combat.potionHealRatio),
@@ -810,29 +1018,54 @@ export class DojoBattleController {
     const enemy = this.getCurrentEnemy();
     const enemyMoveId = this.pickEnemyMove(enemy);
     this.executeSingleMove(enemy, this.playerMon, enemyMoveId, 'enemy', outcome);
-    this.handlePlayerFainted(outcome);
+    const faintRes = this.handlePlayerFainted(outcome);
+    if (faintRes === 'none') {
+      this.applyTurnEndAbilities();
+    }
     this.state.turnNumber += 1;
+    this.storage.saveSync();
     this.syncCombatantSprites();
     return outcome;
   }
 
   switchTeamMember(teamIdx: number): BattleActionOutcome {
     const outcome: BattleActionOutcome = { vfxEvents: [], sfx: [] };
+    const wasForced = this.state.phase === 'forced-switch';
+    if (
+      !this.state.active
+      || (this.state.phase !== 'command' && this.state.phase !== 'shutter' && !wasForced)
+    ) {
+      return outcome;
+    }
     const profile = this.storage.manager.getActiveProfile();
     const team: Pokemon[] = Array.isArray(profile?.team) ? profile.team : [];
     const target = team[teamIdx];
     if (!target || target.isFainted || target === this.playerMon) return outcome;
 
+    this.state.shutter.active = false;
+    this.state.phase = 'command';
     target.resetBattleState();
     this.playerMon = target;
-    this.pushLog(`Switched in ${stripEmojis(target.displayName)}!`);
+    this.playerBuddyEndured = false;
+    this.pushLog(wasForced ? `Go, ${stripEmojis(target.displayName)}!` : `Switched in ${stripEmojis(target.displayName)}!`);
     this.applyEntryAbility(target, 'player');
+
+    // Forced switch after faint gives the player a clean send-out without a free enemy hit (v1 parity)
+    if (wasForced) {
+      this.storage.saveSync();
+      this.syncCombatantSprites();
+      return outcome;
+    }
 
     const enemy = this.getCurrentEnemy();
     const enemyMoveId = this.pickEnemyMove(enemy);
     this.executeSingleMove(enemy, this.playerMon, enemyMoveId, 'enemy', outcome);
-    this.handlePlayerFainted(outcome);
+    const faintRes = this.handlePlayerFainted(outcome);
+    if (faintRes === 'none') {
+      this.applyTurnEndAbilities();
+    }
     this.state.turnNumber += 1;
+    this.storage.saveSync();
     this.syncCombatantSprites();
     return outcome;
   }
@@ -843,6 +1076,19 @@ export class DojoBattleController {
     const res = this.storage.manager.evolvePokemon(this.playerMon.uid, this.state.evolutionTarget.toId);
     if (res) {
       outcome.sfx.push('evolve');
+      const evoBadges: string[] = Array.isArray(res.newBadges)
+        ? res.newBadges.map((b: { id: string }) => b.id)
+        : [];
+      if (evoBadges.length > 0) {
+        outcome.sfx.push('badge');
+        outcome.newBadgeIds = [...new Set([...(outcome.newBadgeIds ?? []), ...evoBadges])];
+        if (this.state.rewardSummary) {
+          this.state.rewardSummary = {
+            ...this.state.rewardSummary,
+            newBadges: [...new Set([...this.state.rewardSummary.newBadges, ...evoBadges])],
+          };
+        }
+      }
       this.pushLog(`Congratulations! Evolved into ${stripEmojis(res.evolution.newName)}!`);
       this.state.evolutionTarget = undefined;
       this.state.phase = 'victory';
@@ -853,13 +1099,22 @@ export class DojoBattleController {
 
   flee(): BattleActionOutcome {
     const outcome: BattleActionOutcome = { vfxEvents: [], sfx: [] };
+    if (!this.state.active || (this.state.phase !== 'command' && this.state.phase !== 'shutter')) {
+      return outcome;
+    }
     if (!this.state.canRun) {
-      this.pushLog('Cannot flee from a Trainer Duel!');
+      this.pushLog('Cannot flee from this battle!');
       return outcome;
     }
     this.state.active = false;
     outcome.battleEnded = 'fled';
-    this.pushLog('Got away safely!');
+    this.pushLog(
+      this.state.shrineId
+        ? 'Stepped back safely from the Shrine!'
+        : this.state.isTrainerBattle
+          ? 'Stepped back safely from the duel!'
+          : 'Got away safely!',
+    );
     return outcome;
   }
 
@@ -868,8 +1123,9 @@ export class DojoBattleController {
     this.state.phase = 'command';
   }
 
-  update(dtSeconds: number): void {
+  update(dtSeconds: number, options?: { skipVisualTimers?: boolean }): void {
     if (!this.state.active) return;
+    if (options?.skipVisualTimers) return;
     const dt = Math.min(0.05, Math.max(0.001, dtSeconds));
     this.state.elapsedSeconds += dt;
     this.state.cameraCueElapsed += dt;

@@ -104,6 +104,7 @@ export interface BattleSceneState {
     | 'command'
     | 'animating'
     | 'capturing'
+    | 'forced-switch'
     | 'evolving'
     | 'victory'
     | 'defeat';
@@ -130,6 +131,7 @@ export interface BattleSceneState {
     newBadges: string[];
     caught: boolean;
     leveledUp: boolean;
+    trailDrop?: string | null;
   };
 }
 

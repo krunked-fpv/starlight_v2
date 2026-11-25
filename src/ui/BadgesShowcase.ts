@@ -7,6 +7,14 @@ import type {
 import { getAllBadges, typeToIconId } from '../core';
 import { badgeIconId, createIconSvg, safeText } from './iconHelper';
 
+function getBadgeMaterial(index: number): { id: string; label: string } {
+  if (index >= 25) return { id: 'astral', label: 'Astral Crest' };
+  if (index >= 19) return { id: 'gold', label: 'Gold Crest' };
+  if (index >= 13) return { id: 'prism', label: 'Prism Crest' };
+  if (index >= 7) return { id: 'silver', label: 'Silver Crest' };
+  return { id: 'obsidian', label: 'Obsidian Crest' };
+}
+
 export class BadgesShowcase {
   private selectedBadgeId = '';
   private badgeButtons = new Map<string, HTMLButtonElement>();
@@ -27,15 +35,18 @@ export class BadgesShowcase {
     container.innerHTML = `
       <div class="sl-badges-body">
         <div class="sl-badges-summary">
-          <span class="sl-pill sl-num" data-testid="badges-progress-summary">0 / 28 Badges Earned</span>
-          <div style="flex: 1 1 200px; max-width: 360px;">
+          <span class="sl-pill sl-pill-gold sl-num" data-testid="badges-progress-summary">0 / 28 Island Badges Earned</span>
+          <div style="flex: 1 1 220px; max-width: 420px;">
             <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-dash" data-testid="badges-progress-bar" style="--fill: 0;"></div></div>
           </div>
+          <span class="sl-pill">Select any crest to inspect unlock criteria</span>
         </div>
         <div class="sl-badge-case">
-          <div class="sl-badge-grid" data-testid="badges-grid"></div>
+          <div class="sl-badge-velvet">
+            <div class="sl-badge-grid" data-testid="badges-grid"></div>
+          </div>
+          <aside class="sl-badge-detail" data-testid="badge-detail" aria-live="polite"></aside>
         </div>
-        <div class="sl-badge-detail" data-testid="badge-detail"></div>
       </div>
     `;
 
@@ -58,28 +69,19 @@ export class BadgesShowcase {
 
     this.gridEl.innerHTML = sorted
       .map((b) => {
-        const material =
-          b.index >= 25
-            ? 'astral'
-            : b.index >= 19
-              ? 'gold'
-              : b.index >= 13
-                ? 'prism'
-                : b.index >= 7
-                  ? 'silver'
-                  : 'obsidian';
+        const material = getBadgeMaterial(b.index);
         return `
           <button
             type="button"
             class="sl-badge-card"
             data-badge-id="${safeText(b.id)}"
             data-testid="badge-card-${b.index}"
-            data-material="${material}"
+            data-material="${material.id}"
             data-unlocked="false"
           >
             ${createIconSvg(badgeIconId(b.index), 'sl-icon-xl')}
             <span class="sl-badge-name">${safeText(b.name)}</span>
-            <span class="sl-pill sl-num" style="min-height:22px; font-size:10px;">
+            <span class="sl-pill sl-num" style="min-height:20px; padding:1px 7px; font-size:10px;">
               ${createIconSvg(typeToIconId(b.type), 'sl-icon-sm')}
               #${String(b.index).padStart(2, '0')}
             </span>
@@ -152,30 +154,36 @@ export class BadgesShowcase {
       this.currentBadges.find((b) => b.id === this.selectedBadgeId) ?? this.currentBadges[0];
     if (this.detailEl && activeBadge) {
       const unlocked = this.currentUnlocked.has(activeBadge.id);
+      const material = getBadgeMaterial(activeBadge.index);
       this.detailEl.innerHTML = `
-        <div style="display:flex; align-items:center; gap:12px; min-width:0;">
-          ${createIconSvg(badgeIconId(activeBadge.index), 'sl-icon-lg')}
-          <div style="min-width:0;">
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-              <strong>#${String(activeBadge.index).padStart(2, '0')} ${safeText(activeBadge.name)}</strong>
-              <span class="sl-pill sl-type-pill" data-type="${activeBadge.type}">
-                ${createIconSvg(typeToIconId(activeBadge.type), 'sl-icon-sm')}
-                <span>${safeText(activeBadge.type.toUpperCase())}</span>
-              </span>
-              <span class="sl-pill">
-                ${createIconSvg(activeBadge.iconId as IconId, 'sl-icon-sm')}
-                <span>Crest</span>
-              </span>
-            </div>
-            <div style="font-size:12px; color:var(--sl-text-secondary); margin-top:4px;">
-              ${safeText(activeBadge.description)}
-            </div>
-          </div>
+        <div class="sl-badge-pedestal" style="opacity:${unlocked ? 1 : 0.6};">
+          ${createIconSvg(badgeIconId(activeBadge.index), 'sl-icon-xxl')}
         </div>
-        <span class="sl-pill" style="border-color:${unlocked ? 'var(--sl-emerald)' : 'var(--sl-border-subtle)'};">
-          ${unlocked ? createIconSvg('icon-crown', 'sl-icon-sm') : createIconSvg('icon-lock', 'sl-icon-sm')}
-          <span>${unlocked ? 'Earned' : 'Locked'}</span>
-        </span>
+        <div>
+          <div class="sl-num" style="font-size:11px; color:var(--sl-text-dim); font-weight:800; letter-spacing:0.08em;">
+            BADGE #${String(activeBadge.index).padStart(2, '0')} • ${safeText(material.label.toUpperCase())}
+          </div>
+          <h3 style="margin:4px 0 0; font-family:var(--sl-font-display); font-size:19px; color:var(--sl-gold-bright);">
+            ${safeText(activeBadge.name)}
+          </h3>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap;">
+          <span class="sl-pill sl-type-pill" data-type="${activeBadge.type}">
+            ${createIconSvg(typeToIconId(activeBadge.type), 'sl-icon-sm')}
+            <span>${safeText(activeBadge.type.toUpperCase())}</span>
+          </span>
+          <span class="sl-pill ${unlocked ? 'sl-pill-emerald' : ''}">
+            ${unlocked ? createIconSvg('icon-crown', 'sl-icon-sm') : createIconSvg('icon-lock', 'sl-icon-sm')}
+            <span>${unlocked ? 'Earned' : 'Locked'}</span>
+          </span>
+        </div>
+        <p style="margin:0; font-size:13px; color:var(--sl-text-muted); line-height:1.48;">
+          ${safeText(activeBadge.description)}
+        </p>
+        <div class="sl-pill sl-pill-cyan">
+          ${createIconSvg(activeBadge.iconId as IconId, 'sl-icon-sm')}
+          <span>${unlocked ? 'Displayed in Jewel Case' : 'Complete goal to unlock'}</span>
+        </div>
       `;
     }
   }

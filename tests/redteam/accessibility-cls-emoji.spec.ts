@@ -234,8 +234,8 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
     allViolations.push(...(await scanScreenForRawEmojis(page, 'settings')));
     await page.getByTestId('settings-close').click();
 
-    // 8. Sky-Hop Arcade
-    await page.getByTestId('nav-skyhop').click();
+    // 8. Sky-Hop Arcade (unlock & open cleanly since nav-skyhop is gated until unlocked per BUG-11)
+    await page.evaluate(() => window.__STARLIGHT_DEBUG__!.openSkyHop());
     await expect(page.getByTestId('skyhop-screen')).toBeVisible();
     allViolations.push(...(await scanScreenForRawEmojis(page, 'skyhop')));
 
@@ -246,12 +246,9 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
 
   for (const vp of VIEWPORTS) {
     test(`CLS < 0.001, >= 44x44px touch targets, and zero horizontal overflow on ${vp.name}`, async ({
-      browser,
+      page,
     }) => {
-      const context = await browser.newContext({
-        viewport: { width: vp.width, height: vp.height },
-      });
-      const page = await context.newPage();
+      await page.setViewportSize({ width: vp.width, height: vp.height });
       const errors = attachErrorCollector(page);
       await stubExternalSpriteCdns(page);
 
@@ -358,7 +355,7 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
       await page.getByTestId('settings-close').click();
 
       // 7. Sky-Hop
-      await page.getByTestId('nav-skyhop').click();
+      await page.evaluate(() => window.__STARLIGHT_DEBUG__!.openSkyHop());
       await expect(page.getByTestId('skyhop-screen')).toBeVisible();
       await assertScreenClean('skyhop');
 
@@ -380,7 +377,6 @@ test.describe('Red-Team: Accessibility, Zero-Emoji Ban, 4-Viewport CLS/Targets, 
 
       expect(errors.consoleErrors).toEqual([]);
       expect(errors.pageErrors).toEqual([]);
-      await context.close();
     });
   }
 

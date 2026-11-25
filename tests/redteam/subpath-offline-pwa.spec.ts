@@ -346,7 +346,7 @@ test.describe('Red-Team: GitHub Pages Subpath (/starlight_v2/), Offline PWA & An
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
 
     // 4. Sky-Hop Arcade offline
-    await page.getByTestId('nav-skyhop').click();
+    await page.evaluate(() => window.__STARLIGHT_DEBUG__!.openSkyHop());
     await expect(page.getByTestId('skyhop-screen')).toBeVisible();
     await page.getByTestId('skyhop-start').click();
     await page.waitForTimeout(180);

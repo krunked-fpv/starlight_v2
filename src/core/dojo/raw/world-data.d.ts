@@ -39,6 +39,7 @@ export const NPCS: Record<string, {
   dialogue?: string[];
   lines?: string[];
   greeting?: string;
+  questId?: string;
 }>;
 export const FIELD_QUESTS: Array<{
   id: string;
@@ -48,9 +49,10 @@ export const FIELD_QUESTS: Array<{
   rewards?: Record<string, any>;
   check?: (profile: any) => boolean;
   progress?: (profile: any) => string;
+  progressText?: (profile: any) => string;
   introDialogue?: string[];
   reminderDialogue?: string[];
-  completeDialogue?: string[];
+  completeDialogue?: string | string[];
 }>;
 export const RIVAL_TRAINERS: Record<string, {
   id: string;
@@ -61,9 +63,12 @@ export const RIVAL_TRAINERS: Record<string, {
   party: Array<{ speciesId: number; level: number }>;
   rematchPool?: number[];
   rewards?: Record<string, any>;
+  rematchRewards?: Record<string, any>;
   intro?: string;
   defeat?: string;
   rematchIntro?: string;
+  winText?: string;
+  rematchWinText?: string;
 }>;
 export const LANDMARKS: Record<string, {
   id: string;
@@ -87,8 +92,8 @@ export function getTileDepthInfo(x: number, y: number): {
   biomeId: string;
 };
 export function findNearestSafePosition(x: number, y: number, dir?: string): { x: number; y: number; dir: string };
-export function getBiomeDiscoveryStats(profile: any, biomeId?: string): any;
-export function getCompassGuidance(profile: any, x: number, y: number): any;
+export function getBiomeDiscoveryStats(profile: any, biomeId?: string, speciesMap?: any): any;
+export function getCompassGuidance(profile: any, speciesMap?: any): any;
 export const FARMING_BIOME_ORDER: string[];
 export const BIOME_WARP_POINTS: Record<string, { x: number; y: number; dir?: string }>;
 export const BIOME_MINIMAP_PALETTE: Record<string, string>;

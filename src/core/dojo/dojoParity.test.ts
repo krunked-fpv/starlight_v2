@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   BIOME_IDS,
 } from '../../contracts';
@@ -15,6 +15,8 @@ import {
   SECRET_ARCADE_SPOT,
   SHRINES,
   SIGNPOSTS,
+  SKYHOP_PALETTES,
+  SKYHOP_WAVE_TEMPLATES,
   STARTER_IDS,
   STEPS_PER_ARCADE_CHARGE,
   STEPS_PER_CHEER_CHARGE,
@@ -23,6 +25,7 @@ import {
   WORLD_COLS,
   WORLD_MAP,
   WORLD_ROWS,
+  StarlightAudioController,
   applyComposureGuardrail,
   containsEmoji,
   createPokemon,
@@ -352,7 +355,7 @@ describe('Earned Economy, Composure, Battle & Sky-Hop Invariants', () => {
     expect(outcome.vfxEvents.length).toBeGreaterThanOrEqual(1);
 
     const sky = new DojoSkyHopController(bridge, loader);
-    sky.open();
+    sky.open({ forceUnlock: true });
     expect(sky.startNewRun()).toBe(true);
     expect(sky.getState().running).toBe(true);
     sky.update(0.016);
@@ -391,5 +394,324 @@ describe('SpriteAssetLoader GIF89a Decoder & CORS / Offline Policy', () => {
     expect(fb.archetype).toBe('biped');
     const eeveeFb = await loader.loadSpeciesSprite(133, { back: false, shiny: false });
     expect(eeveeFb.archetype).toBe('quadruped');
+  });
+});
+
+describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
+  it('BUG-02 & BUG-19: populates live Compass Guidance (targetX/targetY) and real species flavor texts', () => {
+    expect(getSpeciesEntry(1).description).toContain('sunny seed');
+    expect(getSpeciesEntry(4).description).toContain('tail flame');
+    expect(getSpeciesEntry(7).description).toContain('playful swimmer');
+
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const ow = new DojoOverworldSim(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    ow.syncFromProfile();
+
+    const compass = ow.getState().compassTarget;
+    expect(compass).not.toBeNull();
+    expect(compass!.label).toContain('Professor Willow');
+    expect(compass!.x).toBe(9);
+    expect(compass!.y).toBe(12);
+  });
+
+  it('BUG-04 & BUG-12 & BUG-14: enables Shallow Water encounters, auto-heal fountain steps, Landmarks, BFS auto-interact, and safe follower trailing', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const ow = new DojoOverworldSim(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    ow.syncFromProfile();
+
+    // Injure lead Pokémon and step onto Healing Fountain (7,13) from (7,14)
+    const profile = bridge.manager.getActiveProfile();
+    profile.team[0].hp = 5;
+    profile.pos = { x: 7, y: 14, dir: 'up' };
+    ow.syncFromProfile();
+    const healStep = ow.stepDirection(0, -1);
+    expect(healStep.moved).toBe(true);
+    expect(healStep.steppedHealSpot).toBe(true);
+    // Follower should trail onto previous walkable tile (7,14)
+    expect(ow.getState().follower).not.toBeNull();
+    ow.update(0.05, { dx: 0, dy: 0 });
+
+    // Landmark interactability
+    const firstLandmarkKey = Object.keys(LANDMARKS)[0];
+    const [lx, ly] = firstLandmarkKey.split(',').map(Number);
+    const lmTarget = ow.getInteractableAtTile(lx, ly);
+    expect(lmTarget?.kind).toBe('landmark');
+
+    // BFS auto-interact target resolves on arrival
+    profile.pos = { x: 8, y: 15, dir: 'up' };
+    ow.syncFromProfile();
+    const path = ow.setBfsTarget(9, 12, { autoInteract: true });
+    expect(path.length).toBeGreaterThan(0);
+    let arrived = false;
+    for (let i = 0; i < 60; i++) {
+      const ev = ow.update(0.05, { dx: 0, dy: 0 });
+      if (ev?.arrivedInteractTarget) {
+        arrived = true;
+        break;
+      }
+    }
+    expect(arrived).toBe(true);
+
+    // Shallow Water encounter trigger in Sapphire Lagoon
+    let shallowX = -1;
+    let shallowY = -1;
+    outer: for (let y = 1; y < WORLD_ROWS - 1; y++) {
+      for (let x = 1; x < WORLD_COLS - 1; x++) {
+        if (WORLD_MAP[y][x] === TILE.SHALLOW_WATER && isTileWalkableAt(x - 1, y)) {
+          shallowX = x;
+          shallowY = y;
+          break outer;
+        }
+      }
+    }
+    expect(shallowX).toBeGreaterThan(0);
+    profile.pos = { x: shallowX - 1, y: shallowY, dir: 'right' };
+    ow.syncFromProfile();
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.01);
+    const waterStep = ow.stepDirection(1, 0);
+    randSpy.mockRestore();
+    expect(waterStep.moved).toBe(true);
+    expect(waterStep.onGrass).toBe(true);
+    expect(waterStep.wildEncounterTriggered?.biomeId).toBe('water');
+
+    // Solid coordinate repair on syncFromProfile
+    profile.pos = { x: 0, y: 0, dir: 'down' };
+    ow.syncFromProfile();
+    expect(isTileWalkableAt(ow.getState().player.tileX, ow.getState().player.tileY)).toBe(true);
+  });
+
+  it('BUG-05, BUG-06, BUG-15, BUG-16: forbids Shrine capture, awards Shrine rewards by id, allows safe Shrine/Rival flee, and rolls victory trail drops', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    const shrineState = battle.startEncounter({
+      biomeId: 'forest',
+      tier: 'shrine',
+      shrineId: 'forest_shrine',
+      forceOfflineRig: true,
+    });
+
+    // BUG-06: Cannot capture Shrine Guardian; Star Ball is not consumed
+    expect(shrineState.canCapture).toBe(false);
+    expect(shrineState.canRun).toBe(true);
+    const ballsBefore = profile.bag.starBalls;
+    battle.throwBall('star');
+    expect(profile.bag.starBalls).toBe(ballsBefore);
+    expect(battle.getState().statusMessage).toContain('Shrine Guardians cannot be caught');
+
+    // BUG-15: Can step back safely from Shrine
+    const fleeRes = battle.flee();
+    expect(fleeRes.battleEnded).toBe('fled');
+    expect(battle.getState().statusMessage).toContain('Stepped back safely from the Shrine');
+
+    // BUG-05 & BUG-16: Defeat Forest Shrine (start at Lv.5 so guardian scales cleanly, then boost lead)
+    battle.startEncounter({
+      biomeId: 'forest',
+      tier: 'shrine',
+      shrineId: 'forest_shrine',
+      forceOfflineRig: true,
+    });
+    profile.team[0].level = 25;
+    profile.team[0].recalculateStats();
+    profile.team[0].healFull();
+    const forestShrine = Object.values(SHRINES).find((s) => s.id === 'forest_shrine')!;
+    const potionsBefore = profile.bag.potions;
+    const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    for (let turn = 0; turn < 10 && battle.getState().phase !== 'victory' && battle.getState().phase !== 'evolving'; turn++) {
+      battle.performMove(battle.getState().player.mon.moves[0].id);
+    }
+    randSpy.mockRestore();
+
+    expect(['victory', 'evolving']).toContain(battle.getState().phase);
+    expect(profile.shrinesCleared).toContain('forest_shrine');
+    if (forestShrine.reward?.potions) {
+      expect(profile.bag.potions).toBeGreaterThanOrEqual(potionsBefore + forestShrine.reward.potions);
+    }
+    // Trail drop with random=0.1 grants biome leaf_gem
+    expect(profile.bag.gems.leaf_gem).toBeGreaterThanOrEqual(1);
+  });
+
+  it('BUG-07 & BUG-17: handles 0-PP Struggle, full-HP Potion refusal, Rival faint turn termination + per-faint XP, Rival rematch rewards, and catch XP exclusion', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+    const lead = profile.team[0];
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true });
+
+    // Full-HP potion should be refused without consuming a potion
+    const potBefore = profile.bag.potions;
+    battle.usePotion();
+    expect(profile.bag.potions).toBe(potBefore);
+    expect(battle.getState().statusMessage).toContain('already full');
+
+    // BUG-07: Drain all PP -> exposes Struggle and executes cleanly without soft-lock
+    for (const mv of lead.getMoveObjects()) {
+      lead.movePp[mv.id] = 0;
+    }
+    const zeroPpRes = battle.performMove(lead.getMoveObjects()[0].id);
+    expect(zeroPpRes.vfxEvents.length).toBeGreaterThanOrEqual(1);
+    expect(battle.getState().player.mon.moves[0].id).toBe('struggle');
+
+    // Start multi-mon Rival duel first, then boost lead so it reliably KOs enemy #1
+    lead.restoreAllPp();
+    const rivalState = battle.startEncounter({
+      biomeId: 'forest',
+      tier: 'rival',
+      rivalId: 'rival_leo',
+      forceOfflineRig: true,
+    });
+    expect(rivalState.rivalTotalMons).toBeGreaterThanOrEqual(2);
+    lead.level = 25;
+    lead.recalculateStats();
+    lead.healFull();
+
+    // Attack until enemy #1 faints; on the faint turn, enemy #2 MUST NOT attack and partial XP is awarded
+    let faintTurnOutcome: ReturnType<DojoBattleController['performMove']> | null = null;
+    let hpBeforeFaintTurn = lead.hp;
+    let xpBeforeFaintTurn = lead.xp;
+    let lvBeforeFaintTurn = lead.level;
+    for (let t = 0; t < 4; t++) {
+      hpBeforeFaintTurn = lead.hp;
+      xpBeforeFaintTurn = lead.xp;
+      lvBeforeFaintTurn = lead.level;
+      const out = battle.performMove(battle.getState().player.mon.moves[0].id);
+      if (battle.getState().rivalRemainingMons === rivalState.rivalTotalMons - 1) {
+        faintTurnOutcome = out;
+        break;
+      }
+    }
+    expect(faintTurnOutcome).not.toBeNull();
+    expect(lead.hp).toBe(hpBeforeFaintTurn);
+    expect(faintTurnOutcome!.vfxEvents.filter((e) => e.fromSide === 'enemy').length).toBe(0);
+    expect(lead.level > lvBeforeFaintTurn || lead.xp > xpBeforeFaintTurn).toBe(true);
+
+    // Finish Rival -> verify rematch grants rematchRewards (NOT first-clear leaf_gem again!)
+    for (let t = 0; t < 8 && battle.getState().phase !== 'victory' && battle.getState().phase !== 'evolving'; t++) {
+      battle.performMove(battle.getState().player.mon.moves[0].id);
+    }
+    expect(profile.rivalsDefeated).toContain('rival_leo');
+    const leafGemsAfterFirst = profile.bag.gems.leaf_gem || 0;
+
+    // Rematch: reset scaling anchor before startEncounter, then boost lead so rematch victory is deterministic
+    lead.level = 5;
+    lead.recalculateStats();
+    lead.healFull();
+    battle.startEncounter({ biomeId: 'forest', tier: 'rival', rivalId: 'rival_leo', forceOfflineRig: true });
+    lead.level = 50;
+    lead.recalculateStats();
+    lead.healFull();
+    for (let t = 0; t < 16 && battle.getState().phase !== 'victory' && battle.getState().phase !== 'evolving'; t++) {
+      lead.healFull();
+      battle.performMove(battle.getState().player.mon.moves[0].id);
+    }
+    expect(['victory', 'evolving']).toContain(battle.getState().phase);
+    expect(profile.bag.gems.leaf_gem || 0).toBe(leafGemsAfterFirst);
+
+    // Catch XP exclusion: caught Pokémon must NOT earn bench XP from catching itself!
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true });
+    const catchRandSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
+    const catchOutcome = battle.throwBall('star');
+    catchRandSpy.mockRestore();
+    expect(catchOutcome.battleEnded).toBe('caught');
+    const caughtMon = profile.team[profile.team.length - 1];
+    expect(caughtMon.speciesId).toBe(10);
+    expect(caughtMon.xp).toBe(0);
+    expect(caughtMon.hp).toBeGreaterThanOrEqual(1);
+    expect(profile.bag.cheerCharges).toBeGreaterThanOrEqual(1);
+  });
+
+  it('BUG-11, BUG-22 & BUG-23: enforces Secret Arcade attunement/unlock, 26 waves + 18 palettes, and Audio masterVolume preservation', () => {
+    expect(SKYHOP_WAVE_TEMPLATES.length).toBe(26);
+    expect(SKYHOP_PALETTES.length).toBe(18);
+
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+
+    // Unattuned player cannot bypass unlock via plain open()
+    const knockRes = bridge.manager.recordSecretKnock();
+    expect(knockRes.attuned).toBe(false);
+    const sky = new DojoSkyHopController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    sky.open();
+    expect(bridge.manager.isArcadeUnlocked()).toBe(false);
+    expect(sky.getState().outOfCharges).toBe(true);
+
+    // BUG-23: Audio controller preserves configured masterVolume across mute/unmute
+    const audio = new StarlightAudioController();
+    const fakeGain = { value: 0.52, cancelScheduledValues: vi.fn(), setTargetAtTime: vi.fn() };
+    const internal = audio as unknown as {
+      engine: { masterGain: { gain: typeof fakeGain }; ctx: { currentTime: number }; muted: boolean };
+    };
+    internal.engine.masterGain = { gain: fakeGain };
+    internal.engine.ctx = { currentTime: 1.0 };
+
+    audio.setMasterVolume(0.3);
+    audio.setMuted(true);
+    expect(fakeGain.setTargetAtTime).toHaveBeenLastCalledWith(0, 1.0, 0.015);
+    audio.setMuted(false);
+    expect(fakeGain.setTargetAtTime).toHaveBeenLastCalledWith(0.3, 1.0, 0.015);
+  });
+
+  it('#16 Item 6 & #17 GAP-1/GAP-5: fresh starter Caught count is 1 (not 2), forced-switch triggers cleanly on faint with dual moveSfxEvents, and natural rare encounters can roll', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+
+    // Fresh starter must show Caught (1), NEVER Caught (2)!
+    expect(profile.pokedex.caught[1]).toBe(1);
+    expect(profile.stats.totalCaught).toBe(1);
+
+    // Add a healthy bench partner so fainting enters 'forced-switch' instead of auto-switching
+    const bench = createPokemon(25, 10, 'forest');
+    profile.team.push(bench);
+
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true });
+
+    // Dual moveSfxEvents preserved on a normal 2-sided turn
+    const turnOut = battle.performMove(battle.getState().player.mon.moves[0].id);
+    expect(turnOut.moveSfxEvents?.length).toBe(2);
+    expect(turnOut.moveSfxEvents![0].side).not.toBe(turnOut.moveSfxEvents![1].side);
+
+    // Drop active mon to 1 HP and let enemy KO it -> enters 'forced-switch'
+    profile.team[0].hp = 1;
+    battle.performMove(battle.getState().player.mon.moves[0].id);
+    if (profile.team[0].isFainted) {
+      expect(battle.getState().phase).toBe('forced-switch');
+      const benchHpBefore = bench.hp;
+      const swOut = battle.switchTeamMember(1);
+      expect(battle.getState().phase).toBe('command');
+      expect(battle.getState().player.mon.speciesId).toBe(25);
+      // Forced switch grants clean send-out with NO free enemy hit
+      expect(bench.hp).toBe(benchHpBefore);
+      expect(swOut.vfxEvents.length).toBe(0);
+    }
+
+    // Natural overworld rare encounter roll (with Math.random = 0.01)
+    const ow = new DojoOverworldSim(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    profile.pos = { x: 8, y: 8, dir: 'up' };
+    ow.syncFromProfile();
+    const rSpy = vi.spyOn(Math, 'random').mockReturnValue(0.01);
+    let sawRare = false;
+    for (let step = 0; step < 6; step++) {
+      const ev = ow.stepDirection(0, -1);
+      if (ev.wildEncounterTriggered?.isRarePatch) {
+        sawRare = true;
+        break;
+      }
+    }
+    rSpy.mockRestore();
+    expect(sawRare).toBe(true);
   });
 });

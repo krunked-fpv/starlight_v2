@@ -202,6 +202,7 @@ export interface IRenderBackend {
   ): void;
   endFrame(): FrameStats;
   getCanvas2DContext(): CanvasRenderingContext2D | null;
+  getViewportSize?(): { width: number; height: number };
   getStats(): FrameStats;
   dispose(): void;
 }
