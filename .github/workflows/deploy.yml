@@ -34,24 +34,49 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Bake procedural atlases and vector icons
+      - name: Bake pixel-art atlases and vector icons
         run: npm run bake
 
-      - name: Verify byte-identical second bake
+      - name: Verify byte-identical second bake & PNG/SVG invariants
         run: |
-          find public/atlases public/icons -type f | sort | xargs sha256sum > /tmp/bake1.sha256
+          LC_ALL=C find public/atlases public/icons -type f | LC_ALL=C sort | xargs sha256sum > /tmp/bake1.sha256
           npm run bake
-          find public/atlases public/icons -type f | sort | xargs sha256sum > /tmp/bake2.sha256
+          LC_ALL=C find public/atlases public/icons -type f | LC_ALL=C sort | xargs sha256sum > /tmp/bake2.sha256
           diff -u /tmp/bake1.sha256 /tmp/bake2.sha256
+          node -e "
+            const fs = require('fs');
+            const path = require('path');
+            function walk(dir) {
+              const out = [];
+              for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+                const p = path.join(dir, e.name);
+                if (e.isDirectory()) out.push(...walk(p));
+                else out.push(p);
+              }
+              return out;
+            }
+            for (const f of walk('public/atlases').filter((p) => p.endsWith('.png'))) {
+              const b = fs.readFileSync(f);
+              const w = b.readUInt32BE(16), h = b.readUInt32BE(20);
+              if (w > 2048 || h > 2048) throw new Error(f + ' exceeds 2048x2048: ' + w + 'x' + h);
+            }
+            const emojiRe = /[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u2600-\u27BF\u2B00-\u2BFF\uFE0E\uFE0F\u20E3\u200D]/gu;
+            for (const f of walk('public/icons').filter((p) => p.endsWith('.svg'))) {
+              const txt = fs.readFileSync(f, 'utf8');
+              if (emojiRe.test(txt)) throw new Error('Unicode emoji found in ' + f);
+            }
+          "
 
       - name: Build production static bundle
         run: npm run build
 
-      - name: Verify dist footprint under 25 MB
+      - name: Verify public/ (< 15 MB) and dist/ (< 25 MB) footprints
         run: |
-          BYTES=$(du -sb dist | awk '{print $1}')
-          echo "dist/ size: ${BYTES} bytes"
-          test "${BYTES}" -lt 26214400
+          PUB_BYTES=$(du -sb public | awk '{print $1}')
+          DIST_BYTES=$(du -sb dist | awk '{print $1}')
+          echo "public/ size: ${PUB_BYTES} bytes, dist/ size: ${DIST_BYTES} bytes"
+          test "${PUB_BYTES}" -lt 15728640
+          test "${DIST_BYTES}" -lt 26214400
 
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

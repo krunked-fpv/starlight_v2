@@ -1,5 +1,28 @@
 /* Starlight v2 — Offline-First Service Worker (Cache Storage only; never touches localStorage/IndexedDB) */
-const CACHE_NAME = 'starlight-v2-cache-2.0.0';
+const CACHE_NAME = 'starlight-v2-cache-3.0.0';
+const SPRITE_CACHE = 'starlight-v2-sprites-v1';
+
+const ARENA_IDS = [
+  'village',
+  'forest',
+  'cave',
+  'water',
+  'volcano',
+  'peak',
+  'grove',
+  'desert',
+  'marsh',
+  'sanctum',
+  'canyon',
+  'reef',
+  'ruins',
+  'rift',
+  'faeveldt',
+  'atoll',
+  'highlands',
+  'crater',
+  'skyhop',
+];
 
 const PRECACHE_ASSETS = [
   './',
@@ -10,9 +33,16 @@ const PRECACHE_ASSETS = [
   './atlases/terrain-normal.png',
   './atlases/terrain-emissive.png',
   './atlases/props-atlas.png',
+  './atlases/props-normal.png',
+  './atlases/props-emissive.png',
   './atlases/characters-atlas.png',
+  './atlases/fallbacks-atlas.png',
+  ...ARENA_IDS.map((id) => `./atlases/arenas/${id}.png`),
   './icons/starlight-icons.svg',
   './icons/starlight-emblem.svg',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png',
 ];
 
 function resolveAssetUrl(relPath) {
@@ -64,7 +94,11 @@ self.addEventListener('activate', (event) => {
       .then((keys) =>
         Promise.all(
           keys
-            .filter((key) => key.startsWith('starlight-v2-cache-') && key !== CACHE_NAME)
+            .filter(
+              (key) =>
+                (key.startsWith('starlight-v2-cache-') && key !== CACHE_NAME) ||
+                (key.startsWith('starlight-v2-sprites-') && key !== SPRITE_CACHE),
+            )
             .map((key) => caches.delete(key)),
         ),
       )
@@ -77,6 +111,29 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
 
   const url = new URL(request.url);
+
+  // Dynamically cache CORS-safe remote PokéAPI/Showdown sprite responses from raw.githubusercontent.com
+  if (url.hostname === 'raw.githubusercontent.com') {
+    event.respondWith(
+      caches.open(SPRITE_CACHE).then(async (spriteCache) => {
+        const cached = await spriteCache.match(request);
+        if (cached) {
+          return cached;
+        }
+        try {
+          const response = await fetch(request);
+          if (response && response.ok && response.type === 'cors') {
+            spriteCache.put(request, response.clone()).catch(() => {});
+          }
+          return response;
+        } catch {
+          return Response.error();
+        }
+      }),
+    );
+    return;
+  }
+
   if (url.origin !== self.location.origin) return;
 
   event.respondWith(
