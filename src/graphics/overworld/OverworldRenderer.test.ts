@@ -1193,4 +1193,71 @@ describe('OverworldRenderer (Starlight v2 HD-2D Pixel Overworld)', () => {
 
     backend.dispose();
   });
+
+  it('marks mutated player cosmetic canvases staticSource: false on dirty frames and staticSource: true when unchanged', async () => {
+    const manifest = loadV2ManifestFixture();
+    const { canvas } = createMockCanvas(960, 540);
+    const backend = new Canvas2DBackend();
+    await backend.init(canvas, { dprCap: 1, reducedMotion: false, crtMode: false });
+    registerFixtureAtlases(backend, manifest);
+
+    // Stub minimal DOM canvas creation so CharacterRigRenderer exercises backCosmeticCanvas & frontCosmeticCanvas
+    vi.stubGlobal('document', {
+      createElement: () => createMockCanvas(48, 52).canvas,
+    });
+
+    const spriteSpy = vi.spyOn(backend, 'drawSprite');
+    const renderer = new OverworldRenderer();
+    renderer.attachAtlas(manifest);
+    const { state } = createSimScene('violet', 25);
+    state.player.facing = 'down';
+    state.player.look = getResolvedTrainerLook('violet', {
+      styleId: 'royal',
+      accessory: 'crown',
+      cape: true,
+      aura: 'none',
+    });
+
+    // Frame 1 (initial paint -> dirty -> staticSource: false so WebGL2 uploads initial pixels)
+    renderer.update(state, 0.016);
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const cosmeticFrame1 = spriteSpy.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.dw === 48 && c.dh === 52 && c.source);
+    expect(cosmeticFrame1.length).toBe(2);
+    expect(cosmeticFrame1.every((c) => c.staticSource === false)).toBe(true);
+
+    // Frame 2 (same state & same animBucket -> unchanged -> staticSource: true for zero WebGL2 upload)
+    spriteSpy.mockClear();
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const cosmeticFrame2 = spriteSpy.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.dw === 48 && c.dh === 52 && c.source);
+    expect(cosmeticFrame2.length).toBe(2);
+    expect(cosmeticFrame2.every((c) => c.staticSource === true)).toBe(true);
+
+    // Frame 3 (Style Studio accessory/facing change -> dirty again -> staticSource: false!)
+    spriteSpy.mockClear();
+    state.player.facing = 'right';
+    state.player.look = getResolvedTrainerLook('violet', {
+      styleId: 'aurora',
+      accessory: 'wizard',
+      cape: true,
+      aura: 'none',
+    });
+    backend.beginFrame(1.0, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+    const cosmeticFrame3 = spriteSpy.mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.dw === 48 && c.dh === 52 && c.source);
+    expect(cosmeticFrame3.length).toBe(2);
+    expect(cosmeticFrame3.every((c) => c.staticSource === false)).toBe(true);
+
+    backend.dispose();
+  });
 });

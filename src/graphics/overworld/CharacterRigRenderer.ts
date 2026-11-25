@@ -674,6 +674,7 @@ export class CharacterRigRenderer {
           dh,
           flipX,
           pixelCrisp: false, // Smooth bilinear filtering (eliminates harsh nearest-neighbor sharpness!)
+          staticSource: true,
           tint: followerTint,
           depth,
           rimColor: shinyRim,
@@ -716,59 +717,75 @@ export class CharacterRigRenderer {
           ? hexToRgb01(player.look.accent)
           : null;
 
+    const hasCustomCosmetics =
+      player.look.styleId !== 'default' ||
+      player.look.accessory !== 'cap' ||
+      player.look.cape ||
+      player.look.aura !== 'none';
+
     let usedCanvasCosmetics = false;
     if (typeof document !== 'undefined') {
-      if (!this.backCosmeticCanvas) this.backCosmeticCanvas = createCosmeticCanvas(48, 52);
-      if (!this.frontCosmeticCanvas) this.frontCosmeticCanvas = createCosmeticCanvas(48, 52);
-
-      if (this.backCosmeticCanvas && this.frontCosmeticCanvas) {
+      if (!hasCustomCosmetics) {
+        // Default 64x80 HD-2D trainer sprite already includes crisp gold cap star & clasp;
+        // skipping redundant cosmetic canvas avoids extra WebGL2 sprite batch breaks!
         usedCanvasCosmetics = true;
-        const ox = Math.round((player.x + 0.5) * tileSize - 24);
-        const oy = Math.round((player.y + 0.94) * tileSize - 48 + playerBob);
-        const animBucket = reducedMotion ? 0 : Math.floor(t * 15);
+      } else {
+        if (!this.backCosmeticCanvas) this.backCosmeticCanvas = createCosmeticCanvas(48, 52);
+        if (!this.frontCosmeticCanvas) this.frontCosmeticCanvas = createCosmeticCanvas(48, 52);
 
-        // Back layer (cape when facing !== 'up')
-        if (player.look.cape && player.facing !== 'up') {
-          const backKey = `${player.facing}|${player.look.outfitPrimary}|${player.look.outfitSecondary}|${player.moving ? 1 : 0}|${Math.round(player.walkCycle * 6)}|${animBucket}`;
-          if (backKey !== this.lastBackKey) {
-            this.lastBackKey = backKey;
-            const bCtx = this.backCosmeticCanvas.ctx;
-            bCtx.clearRect(0, 0, 48, 52);
-            this.drawPixelCape(bCtx, 24, 48, player.facing, player.look, player.moving, player.walkCycle, t, reducedMotion);
+        if (this.backCosmeticCanvas && this.frontCosmeticCanvas) {
+          usedCanvasCosmetics = true;
+          const ox = Math.round((player.x + 0.5) * tileSize - 24);
+          const oy = Math.round((player.y + 0.94) * tileSize - 48 + playerBob);
+          const animBucket = reducedMotion ? 0 : Math.floor(t * 15);
+
+          // Back layer (cape when facing !== 'up') — pass staticSource: !backChanged so WebGL2 re-uploads ONLY when mutated!
+          if (player.look.cape && player.facing !== 'up') {
+            const backKey = `${player.facing}|${player.look.outfitPrimary}|${player.look.outfitSecondary}|${player.moving ? 1 : 0}|${Math.round(player.walkCycle * 6)}|${animBucket}`;
+            const backChanged = backKey !== this.lastBackKey;
+            if (backChanged) {
+              this.lastBackKey = backKey;
+              const bCtx = this.backCosmeticCanvas.ctx;
+              bCtx.clearRect(0, 0, 48, 52);
+              this.drawPixelCape(bCtx, 24, 48, player.facing, player.look, player.moving, player.walkCycle, t, reducedMotion);
+            }
+            outSprites.push({
+              source: this.backCosmeticCanvas.canvas,
+              dx: ox,
+              dy: oy,
+              dw: 48,
+              dh: 52,
+              pixelCrisp: true,
+              staticSource: !backChanged,
+              depth: pDepth - 0.05,
+            });
+          }
+
+          // Front layer (outfit trim, front cape if facing === 'up', 8 accessories, aura glints)
+          const needsFrontAnim =
+            player.look.aura !== 'none' ||
+            player.look.accessory === 'halo' ||
+            player.look.accessory === 'headband' ||
+            (player.look.cape && player.facing === 'up');
+          const frontKey = `${player.facing}|${player.look.styleId}|${player.look.accessory}|${player.look.aura}|${player.look.cape ? 1 : 0}|${needsFrontAnim ? animBucket : 0}`;
+          const frontChanged = frontKey !== this.lastFrontKey;
+          if (frontChanged) {
+            this.lastFrontKey = frontKey;
+            const fCtx = this.frontCosmeticCanvas.ctx;
+            fCtx.clearRect(0, 0, 48, 52);
+            this.drawPlayerFrontCosmetics(fCtx, 24, 48, player, t, reducedMotion);
           }
           outSprites.push({
-            source: this.backCosmeticCanvas.canvas,
+            source: this.frontCosmeticCanvas.canvas,
             dx: ox,
             dy: oy,
             dw: 48,
             dh: 52,
             pixelCrisp: true,
-            depth: pDepth - 0.05,
+            staticSource: !frontChanged,
+            depth: pDepth + 0.05,
           });
         }
-
-        // Front layer (outfit trim, front cape if facing === 'up', 8 accessories, aura glints)
-        const needsFrontAnim =
-          player.look.aura !== 'none' ||
-          player.look.accessory === 'halo' ||
-          player.look.accessory === 'headband' ||
-          (player.look.cape && player.facing === 'up');
-        const frontKey = `${player.facing}|${player.look.styleId}|${player.look.accessory}|${player.look.aura}|${player.look.cape ? 1 : 0}|${needsFrontAnim ? animBucket : 0}`;
-        if (frontKey !== this.lastFrontKey) {
-          this.lastFrontKey = frontKey;
-          const fCtx = this.frontCosmeticCanvas.ctx;
-          fCtx.clearRect(0, 0, 48, 52);
-          this.drawPlayerFrontCosmetics(fCtx, 24, 48, player, t, reducedMotion);
-        }
-        outSprites.push({
-          source: this.frontCosmeticCanvas.canvas,
-          dx: ox,
-          dy: oy,
-          dw: 48,
-          dh: 52,
-          pixelCrisp: true,
-          depth: pDepth + 0.05,
-        });
       }
     }
 

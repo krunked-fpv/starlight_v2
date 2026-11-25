@@ -561,9 +561,19 @@ interface StaticMapMeta {
   chunkHasTallGrass: Uint8Array;
 }
 
-const TERRAIN_CHUNK_TILES = 8;
+const TERRAIN_CHUNK_TILES = 16;
 const CHUNK_PIXEL_SCALE = 2; // 64px per 32px world tile -> full 2x HD-2D fidelity!
 const STATIC_META_CACHE = new WeakMap<number[][], StaticMapMeta>();
+
+interface ShoreBankChunkEntry {
+  canvas: HTMLCanvasElement;
+  startTx: number;
+  startTy: number;
+  endTx: number;
+  endTy: number;
+  widthWorld: number;
+  heightWorld: number;
+}
 
 function getOrBuildStaticMapMeta(
   worldMap: number[][],
@@ -916,7 +926,7 @@ export class AutotileRenderer {
   private grassDisplacements = new Map<number, GrassDisplacement>();
   private terrainChunks = new Map<string, HTMLCanvasElement>();
   private detailOverlayChunks = new Map<string, HTMLCanvasElement | null>();
-  private shoreBankChunks = new Map<string, HTMLCanvasElement | null>();
+  private shoreBankChunks = new Map<string, ShoreBankChunkEntry | null>();
   private chunkCacheSignature = '';
   private usedStaticChunkCacheThisFrame = false;
   private usedStaticDetailChunksThisFrame = false;
@@ -977,8 +987,9 @@ export class AutotileRenderer {
   }
 
   /**
-   * Bakes an 8x8 tile terrain chunk at 2x HD-2D resolution (64px per 32px world tile)
-   * with full tile albedo, organic per-tile micro-variation, and static 47-tile transitions.
+   * Bakes a 16x16 tile terrain chunk at `chunkScale` resolution (2x = 64px/tile HD-2D on Canvas2D,
+   * 1x = 32px/tile L2-cache-friendly on WebGL2 software rasterizer) with full tile albedo,
+   * organic per-tile micro-variation, static 47-tile transitions, and baked prop shadows.
    */
   private getOrBakeTerrainChunk(
     chunkX: number,
@@ -987,12 +998,18 @@ export class AutotileRenderer {
     meta: StaticMapMeta,
     terrainAlbedo: HTMLImageElement,
     landmarkTileKeys: ReadonlySet<string> | ReadonlySet<number>,
+    chunkScale = CHUNK_PIXEL_SCALE,
   ): HTMLCanvasElement | null {
     const { cols, rows, tileSize, worldMap } = state;
     const sheet = this.manifest?.sheets?.terrain;
     if (!sheet || typeof document === 'undefined') return null;
 
-    this.syncChunkSignature(cols, rows, tileSize, terrainAlbedo.src || String(terrainAlbedo.naturalWidth));
+    this.syncChunkSignature(
+      cols,
+      rows,
+      tileSize,
+      `${terrainAlbedo.src || String(terrainAlbedo.naturalWidth)}|s${chunkScale}`,
+    );
 
     const key = `${chunkX},${chunkY}`;
     const existing = this.terrainChunks.get(key);
@@ -1007,14 +1024,14 @@ export class AutotileRenderer {
     if (spanCols <= 0 || spanRows <= 0) return null;
 
     const canvas = document.createElement('canvas');
-    canvas.width = spanCols * tileSize * CHUNK_PIXEL_SCALE;
-    canvas.height = spanRows * tileSize * CHUNK_PIXEL_SCALE;
+    canvas.width = spanCols * tileSize * chunkScale;
+    canvas.height = spanRows * tileSize * chunkScale;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.imageSmoothingEnabled = false;
 
     const regions = sheet.regions;
-    const scaledTile = tileSize * CHUNK_PIXEL_SCALE;
+    const scaledTile = tileSize * chunkScale;
     for (let ty = startTy; ty <= endTy; ty++) {
       const row = worldMap[ty];
       if (!row) continue;
@@ -1041,9 +1058,9 @@ export class AutotileRenderer {
       }
     }
 
-    // Bake static 47-tile transitions, per-tile micro-variation, and static prop shadows at 2x resolution
+    // Bake static 47-tile transitions, per-tile micro-variation, and static prop shadows
     ctx.save();
-    ctx.scale(CHUNK_PIXEL_SCALE, CHUNK_PIXEL_SCALE);
+    ctx.scale(chunkScale, chunkScale);
     this.paintStaticChunkTransitions(ctx, state, meta, startTx, startTy, endTx, endTy);
     this.paintStaticChunkPropShadows(ctx, state, meta, startTx, startTy, endTx, endTy, landmarkTileKeys);
     ctx.restore();
@@ -1107,15 +1124,17 @@ export class AutotileRenderer {
   }
 
   /**
-   * Bakes a transparent 8x8 organic shoreline bank chunk rendered AFTER drawWaterQuad so
-   * curved sand/grass coves & rounded corner banks cleanly eliminate boxy water rectangles!
+   * Bakes a tightly cropped transparent organic shoreline bank chunk rendered AFTER drawWaterQuad
+   * so curved sand/grass coves & rounded corner banks eliminate boxy water rectangles with minimal
+   * fragment overdraw on WebGL2 & Canvas2D!
    */
   private getOrBakeShoreBankChunk(
     chunkX: number,
     chunkY: number,
     state: OverworldSceneState,
     meta: StaticMapMeta,
-  ): HTMLCanvasElement | null {
+    chunkScale = CHUNK_PIXEL_SCALE,
+  ): ShoreBankChunkEntry | null {
     const { cols, rows, tileSize, worldMap } = state;
     if (typeof document === 'undefined' || typeof document.createElement !== 'function') return null;
     const cIdx = chunkY * meta.chunkCols + chunkX;
@@ -1130,16 +1149,64 @@ export class AutotileRenderer {
     const startTy = chunkY * TERRAIN_CHUNK_TILES;
     const endTx = Math.min(cols - 1, startTx + TERRAIN_CHUNK_TILES - 1);
     const endTy = Math.min(rows - 1, startTy + TERRAIN_CHUNK_TILES - 1);
-    const spanCols = endTx - startTx + 1;
-    const spanRows = endTy - startTy + 1;
-    if (spanCols <= 0 || spanRows <= 0) {
+    if (endTx < startTx || endTy < startTy) {
       this.shoreBankChunks.set(key, null);
       return null;
     }
 
+    // Pass 1: Compute tight bounding box of water tiles that actually border land or shallow/deep transitions
+    const isLand = (id: number | undefined): boolean =>
+      id !== undefined && !LIQUID_TILES.has(id) && id !== TILE.BRIDGE;
+    let minSTx = cols;
+    let maxSTx = -1;
+    let minSTy = rows;
+    let maxSTy = -1;
+
+    for (let ty = startTy; ty <= endTy; ty++) {
+      const row = worldMap[ty];
+      if (!row) continue;
+      for (let tx = startTx; tx <= endTx; tx++) {
+        const tileId = row[tx] ?? TILE.GRASS;
+        if (!WATER_TILES.has(tileId)) continue;
+        const nTile = ty > 0 ? worldMap[ty - 1]?.[tx] : undefined;
+        const sTile = ty + 1 < rows ? worldMap[ty + 1]?.[tx] : undefined;
+        const wTile = tx > 0 ? row[tx - 1] : undefined;
+        const eTile = tx + 1 < cols ? row[tx + 1] : undefined;
+        const nwTile = ty > 0 && tx > 0 ? worldMap[ty - 1]?.[tx - 1] : undefined;
+        const neTile = ty > 0 && tx + 1 < cols ? worldMap[ty - 1]?.[tx + 1] : undefined;
+        const swTile = ty + 1 < rows && tx > 0 ? worldMap[ty + 1]?.[tx - 1] : undefined;
+        const seTile = ty + 1 < rows && tx + 1 < cols ? worldMap[ty + 1]?.[tx + 1] : undefined;
+
+        const hasShore =
+          isLand(nTile) ||
+          isLand(sTile) ||
+          isLand(wTile) ||
+          isLand(eTile) ||
+          isLand(nwTile) ||
+          isLand(neTile) ||
+          isLand(swTile) ||
+          isLand(seTile) ||
+          ((tileId === TILE.SHALLOW_WATER || tileId === TILE.REEF_WATER) &&
+            (nTile === TILE.WATER || sTile === TILE.WATER || wTile === TILE.WATER || eTile === TILE.WATER));
+        if (!hasShore) continue;
+
+        if (tx < minSTx) minSTx = tx;
+        if (tx > maxSTx) maxSTx = tx;
+        if (ty < minSTy) minSTy = ty;
+        if (ty > maxSTy) maxSTy = ty;
+      }
+    }
+
+    if (maxSTx < minSTx || maxSTy < minSTy) {
+      this.shoreBankChunks.set(key, null);
+      return null;
+    }
+
+    const spanCols = maxSTx - minSTx + 1;
+    const spanRows = maxSTy - minSTy + 1;
     const canvas = document.createElement('canvas');
-    canvas.width = spanCols * tileSize * CHUNK_PIXEL_SCALE;
-    canvas.height = spanRows * tileSize * CHUNK_PIXEL_SCALE;
+    canvas.width = spanCols * tileSize * chunkScale;
+    canvas.height = spanRows * tileSize * chunkScale;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       this.shoreBankChunks.set(key, null);
@@ -1147,17 +1214,17 @@ export class AutotileRenderer {
     }
     ctx.imageSmoothingEnabled = false;
     ctx.save();
-    ctx.scale(CHUNK_PIXEL_SCALE, CHUNK_PIXEL_SCALE);
+    ctx.scale(chunkScale, chunkScale);
 
     let drewAny = false;
-    for (let ty = startTy; ty <= endTy; ty++) {
+    for (let ty = minSTy; ty <= maxSTy; ty++) {
       const row = worldMap[ty];
       if (!row) continue;
-      const ly = (ty - startTy) * tileSize;
-      for (let tx = startTx; tx <= endTx; tx++) {
+      const ly = (ty - minSTy) * tileSize;
+      for (let tx = minSTx; tx <= maxSTx; tx++) {
         const tileId = row[tx] ?? TILE.GRASS;
         if (!WATER_TILES.has(tileId)) continue;
-        const lx = (tx - startTx) * tileSize;
+        const lx = (tx - minSTx) * tileSize;
         const nTile = ty > 0 ? worldMap[ty - 1]?.[tx] : undefined;
         const sTile = ty + 1 < rows ? worldMap[ty + 1]?.[tx] : undefined;
         const wTile = tx > 0 ? row[tx - 1] : undefined;
@@ -1198,8 +1265,17 @@ export class AutotileRenderer {
     }
 
     markImmutableCanvas(canvas);
-    this.shoreBankChunks.set(key, canvas);
-    return canvas;
+    const entry: ShoreBankChunkEntry = {
+      canvas,
+      startTx: minSTx,
+      startTy: minSTy,
+      endTx: maxSTx,
+      endTy: maxSTy,
+      widthWorld: spanCols * tileSize,
+      heightWorld: spanRows * tileSize,
+    };
+    this.shoreBankChunks.set(key, entry);
+    return entry;
   }
 
   private paintStaticChunkTransitions(
@@ -1521,31 +1597,51 @@ export class AutotileRenderer {
       }, 'world');
     }
 
+    // Use unified single-pass pre-baked 16x16 HD-2D terrain+detail chunks on Canvas2D AND
+    // WebGL2 software rasterizers (eliminates full-screen double overdraw and cuts draw calls by ~3-4x!).
+    const isSoftwareWebGL =
+      backend.kind === 'webgl2' && backend.capabilities.isSoftwareRasterizer;
+    const useUnifiedTerrainChunks = backend.kind === 'canvas2d' || isSoftwareWebGL;
+    const activeChunkScale = isSoftwareWebGL ? 1 : CHUNK_PIXEL_SCALE;
     const terrainAlbedo =
-      backend.kind === 'canvas2d' && this.hasSheet('terrain') && this.getSheetImage
+      useUnifiedTerrainChunks && this.hasSheet('terrain') && this.getSheetImage
         ? this.getSheetImage('terrain')
         : null;
 
-    const minCx = Math.floor(bounds.minTx / TERRAIN_CHUNK_TILES);
-    const maxCx = Math.floor(bounds.maxTx / TERRAIN_CHUNK_TILES);
-    const minCy = Math.floor(bounds.minTy / TERRAIN_CHUNK_TILES);
-    const maxCy = Math.floor(bounds.maxTy / TERRAIN_CHUNK_TILES);
+    // Tighten 16x16 chunk bounds inward by 1 tile from the +2-tile padded frustum (still >=1 tile margin)
+    // so off-screen 16x16 chunks aren't unnecessarily drawn.
+    const chunkMinTx = Math.min(bounds.maxTx, bounds.minTx + 1);
+    const chunkMaxTx = Math.max(bounds.minTx, bounds.maxTx - 1);
+    const chunkMinTy = Math.min(bounds.maxTy, bounds.minTy + 1);
+    const chunkMaxTy = Math.max(bounds.minTy, bounds.maxTy - 1);
+    const minCx = Math.floor(chunkMinTx / TERRAIN_CHUNK_TILES);
+    const maxCx = Math.floor(chunkMaxTx / TERRAIN_CHUNK_TILES);
+    const minCy = Math.floor(chunkMinTy / TERRAIN_CHUNK_TILES);
+    const maxCy = Math.floor(chunkMaxTy / TERRAIN_CHUNK_TILES);
 
     if (
       terrainAlbedo &&
       terrainAlbedo.naturalWidth > 0 &&
       typeof document !== 'undefined'
     ) {
-      // Canvas2D fast path: blit pre-baked 2x-resolution 8x8 static terrain chunks (full 64x64 HD-2D fidelity!)
+      // Unified single-pass fast path: blit pre-baked 16x16 static terrain+detail chunks
       this.usedStaticChunkCacheThisFrame = true;
       this.usedStaticDetailChunksThisFrame = true;
 
       for (let cy = minCy; cy <= maxCy; cy++) {
         for (let cx = minCx; cx <= maxCx; cx++) {
-          const chunk = this.getOrBakeTerrainChunk(cx, cy, state, meta, terrainAlbedo, landmarkTileKeys);
+          const chunk = this.getOrBakeTerrainChunk(
+            cx,
+            cy,
+            state,
+            meta,
+            terrainAlbedo,
+            landmarkTileKeys,
+            activeChunkScale,
+          );
           if (!chunk) continue;
-          const worldW = chunk.width / CHUNK_PIXEL_SCALE;
-          const worldH = chunk.height / CHUNK_PIXEL_SCALE;
+          const worldW = chunk.width / activeChunkScale;
+          const worldH = chunk.height / activeChunkScale;
           backend.drawSprite({
             source: chunk,
             sx: 0,
@@ -1557,12 +1653,14 @@ export class AutotileRenderer {
             dw: worldW,
             dh: worldH,
             pixelCrisp: true,
+            useNormalMap: false,
+            staticSource: true,
             depth: 0,
           });
         }
       }
     } else {
-      // WebGL2 instanced / headless test path: emit visible tiles (0..60) with full 512x512 normal & emissive maps
+      // Hardware WebGL2 instanced / headless test path: emit visible tiles (0..60) with full 512x512 normal & emissive maps
       const regions = this.manifest?.sheets?.terrain?.regions;
       for (let ty = bounds.minTy; ty <= bounds.maxTy; ty++) {
         const row = worldMap[ty];
@@ -1590,7 +1688,7 @@ export class AutotileRenderer {
         }
       }
 
-      // On WebGL2 in real browsers, blit cached 2x immutable detail chunks (transitions + micro-variation + shadows)
+      // On hardware WebGL2 in real browsers, blit cached 2x immutable 16x16 detail chunks (2-4 draws)
       if (backend.kind === 'webgl2' && typeof document !== 'undefined') {
         this.usedStaticDetailChunksThisFrame = true;
         for (let cy = minCy; cy <= maxCy; cy++) {
@@ -1608,6 +1706,8 @@ export class AutotileRenderer {
               dw: detailChunk.width / CHUNK_PIXEL_SCALE,
               dh: detailChunk.height / CHUNK_PIXEL_SCALE,
               pixelCrisp: true,
+              useNormalMap: false,
+              staticSource: true,
               depth: 0.1,
             });
           }
@@ -1615,8 +1715,9 @@ export class AutotileRenderer {
       }
     }
 
-    // Water & Lava shimmering quads (run-length merged per row using precomputed foam masks!)
-    const softenCanvas2DShoreFoam = backend.kind === 'canvas2d' && this.usedStaticChunkCacheThisFrame;
+    // Water & Lava shimmering quads (2D rectangle coalesced on Canvas2D & SwiftShader WebGL2 when organic shore chunks handle banks!)
+    const softenCanvas2DShoreFoam =
+      (backend.kind === 'canvas2d' || isSoftwareWebGL) && this.usedStaticChunkCacheThisFrame;
     const spanW = Math.max(1, bounds.maxTx - bounds.minTx + 1);
     const spanH = Math.max(1, bounds.maxTy - bounds.minTy + 1);
     const waterVisited =
@@ -1707,23 +1808,33 @@ export class AutotileRenderer {
       }
     }
 
-    // Blit organic curved shoreline bank chunks AFTER water quads (masks boxy pond/beach corners!)
+    // Blit tightly cropped organic curved shoreline bank chunks AFTER water quads (masks boxy pond/beach corners!)
     if (this.usedStaticDetailChunksThisFrame) {
       for (let cy = minCy; cy <= maxCy; cy++) {
         for (let cx = minCx; cx <= maxCx; cx++) {
-          const shoreChunk = this.getOrBakeShoreBankChunk(cx, cy, state, meta);
+          const shoreChunk = this.getOrBakeShoreBankChunk(cx, cy, state, meta, activeChunkScale);
           if (!shoreChunk) continue;
+          if (
+            shoreChunk.endTx < bounds.minTx ||
+            shoreChunk.startTx > bounds.maxTx ||
+            shoreChunk.endTy < bounds.minTy ||
+            shoreChunk.startTy > bounds.maxTy
+          ) {
+            continue;
+          }
           backend.drawSprite({
-            source: shoreChunk,
+            source: shoreChunk.canvas,
             sx: 0,
             sy: 0,
-            sw: shoreChunk.width,
-            sh: shoreChunk.height,
-            dx: cx * TERRAIN_CHUNK_TILES * tileSize,
-            dy: cy * TERRAIN_CHUNK_TILES * tileSize,
-            dw: shoreChunk.width / CHUNK_PIXEL_SCALE,
-            dh: shoreChunk.height / CHUNK_PIXEL_SCALE,
+            sw: shoreChunk.canvas.width,
+            sh: shoreChunk.canvas.height,
+            dx: shoreChunk.startTx * tileSize,
+            dy: shoreChunk.startTy * tileSize,
+            dw: shoreChunk.widthWorld,
+            dh: shoreChunk.heightWorld,
             pixelCrisp: true,
+            useNormalMap: false,
+            staticSource: true,
             depth: 0.2,
           });
         }
