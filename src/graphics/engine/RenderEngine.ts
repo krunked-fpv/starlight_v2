@@ -2,6 +2,7 @@ import type {
   AtlasManifest,
   AtlasRegion,
   BackendKind,
+  BiomeId,
   ContextLossListener,
   FrameStats,
   IRenderBackend,
@@ -43,6 +44,7 @@ interface LoadedAtlasRecord {
   albedo: HTMLImageElement | HTMLCanvasElement;
   normal?: HTMLImageElement | HTMLCanvasElement;
   emissive?: HTMLImageElement | HTMLCanvasElement;
+  pixelCrisp: boolean;
   regions: Record<string, AtlasRegion>;
 }
 
@@ -60,14 +62,21 @@ interface StarlightDebugGlobal {
   [key: string]: unknown;
 }
 
-function resolveManifestUrl(manifestUrl: string): string {
+function getRuntimeBaseUri(): string | undefined {
+  if (typeof document !== 'undefined' && typeof document.baseURI === 'string' && document.baseURI.length > 0) {
+    return document.baseURI;
+  }
+  if (typeof window !== 'undefined' && window.location && typeof window.location.href === 'string' && window.location.href.length > 0) {
+    return window.location.href;
+  }
+  return undefined;
+}
+
+export function resolveManifestUrl(manifestUrl: string): string {
   if (/^https?:\/\//i.test(manifestUrl) || manifestUrl.startsWith('data:') || manifestUrl.startsWith('blob:')) {
     return manifestUrl;
   }
-  const baseUri =
-    typeof document !== 'undefined' && typeof document.baseURI === 'string' && document.baseURI.length > 0
-      ? document.baseURI
-      : undefined;
+  const baseUri = getRuntimeBaseUri();
   if (baseUri) {
     try {
       return new URL(manifestUrl, baseUri).href;
@@ -78,26 +87,44 @@ function resolveManifestUrl(manifestUrl: string): string {
   return manifestUrl;
 }
 
-function resolveSheetAssetUrl(assetPath: string, manifestResolvedUrl: string): string {
+export function resolveManifestAssetUrl(assetPath: string, manifestResolvedUrl: string): string {
   if (/^https?:\/\//i.test(assetPath) || assetPath.startsWith('data:') || assetPath.startsWith('blob:')) {
     return assetPath;
   }
-  const baseUri =
-    typeof document !== 'undefined' && typeof document.baseURI === 'string' && document.baseURI.length > 0
-      ? document.baseURI
-      : undefined;
+  const baseUri = getRuntimeBaseUri();
 
-  if (baseUri && /^\.?\/?atlases\//i.test(assetPath)) {
-    try {
-      return new URL(assetPath, baseUri).href;
-    } catch {
-      // fall through
+  // Support legacy root-relative `./atlases/...` entries inside `/atlases/manifest.json`
+  // without producing a duplicated `/atlases/atlases/` path under `/starlight_v2/` subpaths.
+  if (/^\.?\/?atlases\//i.test(assetPath)) {
+    if (baseUri) {
+      try {
+        return new URL(assetPath, baseUri).href;
+      } catch {
+        // fall through
+      }
+    }
+    if (/\/atlases\/[^/]*$/i.test(manifestResolvedUrl)) {
+      try {
+        return new URL(assetPath, new URL('../', manifestResolvedUrl)).href;
+      } catch {
+        // fall through
+      }
     }
   }
 
   try {
     return new URL(assetPath, manifestResolvedUrl).href;
   } catch {
+    // Fallback for relative manifestUrl in bare headless environments without document.baseURI
+    const slashIdx = manifestResolvedUrl.lastIndexOf('/');
+    if (slashIdx >= 0 && assetPath.startsWith('./')) {
+      const dir = manifestResolvedUrl.slice(0, slashIdx + 1);
+      const cleanRel = assetPath.slice(2);
+      if (/\/atlases\/$/i.test(dir) && /^atlases\//i.test(cleanRel)) {
+        return `${dir}${cleanRel.slice('atlases/'.length)}`;
+      }
+      return `${dir}${cleanRel}`;
+    }
     if (baseUri) {
       try {
         return new URL(assetPath, baseUri).href;
@@ -191,6 +218,8 @@ export class RenderEngine implements IRenderEngine {
 
   private manifest: AtlasManifest | null = null;
   private loadedAtlases = new Map<string, LoadedAtlasRecord>();
+  private sheetImages = new Map<string, HTMLImageElement>();
+  private arenaImages = new Map<BiomeId | 'skyhop', HTMLImageElement>();
   private listeners = new Set<ContextLossListener>();
 
   private contextLostCount = 0;
@@ -309,47 +338,68 @@ export class RenderEngine implements IRenderEngine {
     this.manifest = manifest;
 
     const sheetEntries = Object.entries(manifest.sheets ?? {});
-    await Promise.allSettled(
-      sheetEntries.map(async ([sheetId, descriptor]) => {
-        const albedoUrl = resolveSheetAssetUrl(descriptor.albedoPath, resolvedManifestUrl);
-        const normalUrl = descriptor.normalPath
-          ? resolveSheetAssetUrl(descriptor.normalPath, resolvedManifestUrl)
-          : null;
-        const emissiveUrl = descriptor.emissivePath
-          ? resolveSheetAssetUrl(descriptor.emissivePath, resolvedManifestUrl)
-          : null;
+    const arenaEntries = Object.entries(manifest.arenas ?? {}) as Array<[BiomeId | 'skyhop', string]>;
 
-        const [albedoRes, normalRes, emissiveRes] = await Promise.allSettled([
-          preloadImage(albedoUrl),
-          normalUrl ? preloadImage(normalUrl) : Promise.resolve(undefined),
-          emissiveUrl ? preloadImage(emissiveUrl) : Promise.resolve(undefined),
-        ]);
+    const sheetTasks = sheetEntries.map(async ([sheetId, descriptor]) => {
+      const albedoUrl = resolveManifestAssetUrl(descriptor.albedoPath, resolvedManifestUrl);
+      const normalUrl = descriptor.normalPath
+        ? resolveManifestAssetUrl(descriptor.normalPath, resolvedManifestUrl)
+        : null;
+      const emissiveUrl = descriptor.emissivePath
+        ? resolveManifestAssetUrl(descriptor.emissivePath, resolvedManifestUrl)
+        : null;
 
-        if (albedoRes.status === 'fulfilled' && albedoRes.value) {
-          const record: LoadedAtlasRecord = {
-            sheetId,
-            albedo: albedoRes.value,
-            normal: normalRes.status === 'fulfilled' ? normalRes.value : undefined,
-            emissive: emissiveRes.status === 'fulfilled' ? emissiveRes.value : undefined,
-            regions: descriptor.regions ?? {},
-          };
-          this.loadedAtlases.set(sheetId, record);
-          this._activeBackend.registerAtlas(
-            record.sheetId,
-            record.albedo,
-            record.normal,
-            record.emissive,
-          );
-          this._activeBackend.setAtlasRegions(record.sheetId, record.regions);
-        }
-      }),
-    );
+      const [albedoRes, normalRes, emissiveRes] = await Promise.allSettled([
+        preloadImage(albedoUrl),
+        normalUrl ? preloadImage(normalUrl) : Promise.resolve(undefined),
+        emissiveUrl ? preloadImage(emissiveUrl) : Promise.resolve(undefined),
+      ]);
+
+      if (albedoRes.status === 'fulfilled' && albedoRes.value) {
+        const pixelCrisp = descriptor.pixelCrisp !== false;
+        const record: LoadedAtlasRecord = {
+          sheetId,
+          albedo: albedoRes.value,
+          normal: normalRes.status === 'fulfilled' ? normalRes.value : undefined,
+          emissive: emissiveRes.status === 'fulfilled' ? emissiveRes.value : undefined,
+          pixelCrisp,
+          regions: descriptor.regions ?? {},
+        };
+        this.sheetImages.set(sheetId, albedoRes.value);
+        this.loadedAtlases.set(sheetId, record);
+        this._activeBackend.registerAtlas(
+          record.sheetId,
+          record.albedo,
+          record.normal,
+          record.emissive,
+          record.pixelCrisp,
+        );
+        this._activeBackend.setAtlasRegions(record.sheetId, record.regions);
+      }
+    });
+
+    const arenaTasks = arenaEntries.map(async ([arenaId, arenaPath]) => {
+      if (!arenaPath) return;
+      const arenaUrl = resolveManifestAssetUrl(arenaPath, resolvedManifestUrl);
+      const img = await preloadImage(arenaUrl);
+      this.arenaImages.set(arenaId, img);
+    });
+
+    await Promise.allSettled([...sheetTasks, ...arenaTasks]);
 
     return manifest;
   }
 
   getManifest(): AtlasManifest | null {
     return this.manifest;
+  }
+
+  getSheetImage(sheetId: string): HTMLImageElement | null {
+    return this.sheetImages.get(sheetId) ?? null;
+  }
+
+  getArenaImage(biomeId: BiomeId | 'skyhop'): HTMLImageElement | null {
+    return this.arenaImages.get(biomeId) ?? null;
   }
 
   async switchBackend(mode: RendererMode, reason?: string): Promise<BackendKind> {
@@ -569,6 +619,8 @@ export class RenderEngine implements IRenderEngine {
     this._activeBackend.dispose();
     this.listeners.clear();
     this.loadedAtlases.clear();
+    this.sheetImages.clear();
+    this.arenaImages.clear();
     this.manifest = null;
     this.canvas = null;
     this.lostWebGLCanvas = null;
@@ -737,6 +789,7 @@ export class RenderEngine implements IRenderEngine {
         this.canvasHasWebGLContext = true;
         this.attachCanvasListeners(this.canvas);
         this.reRegisterLoadedAtlases();
+        this.renderImmediateFrame();
         this.emitContextEvent({
           type: 'restored',
           previousBackend: previousKind,
@@ -807,6 +860,7 @@ export class RenderEngine implements IRenderEngine {
         record.albedo,
         record.normal,
         record.emissive,
+        record.pixelCrisp,
       );
       this._activeBackend.setAtlasRegions(record.sheetId, record.regions);
     }

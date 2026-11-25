@@ -3,6 +3,8 @@ export {
   createRenderEngine,
   detectSoftwareRenderer,
   clampFrameDt,
+  resolveManifestUrl,
+  resolveManifestAssetUrl,
   MAX_FRAME_DT_SECONDS,
 } from './RenderEngine';
 

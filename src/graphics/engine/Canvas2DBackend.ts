@@ -52,6 +52,7 @@ interface RegisteredAtlas2D {
   emissive?: HTMLImageElement | HTMLCanvasElement;
   width: number;
   height: number;
+  pixelCrisp: boolean;
   regions: Record<string, AtlasRegion>;
 }
 
@@ -72,7 +73,7 @@ export function createDefaultCamera(width = 960, height = 540): CameraState {
 
 export function createDefaultColorGrade(): BiomeColorGrade {
   return {
-    biomeId: 'starlight-village',
+    biomeId: 'village',
     ambientRgb: [0.68, 0.72, 0.88],
     ambientStrength: 0.72,
     tintRgb: [1.03, 0.98, 0.92],
@@ -356,6 +357,7 @@ export class Canvas2DBackend implements IRenderBackend {
     albedo: HTMLImageElement | HTMLCanvasElement,
     normal?: HTMLImageElement | HTMLCanvasElement,
     emissive?: HTMLImageElement | HTMLCanvasElement,
+    pixelCrisp = true,
   ): void {
     const dims = getImageSourceDimensions(albedo);
     const existingRegions = this.atlases.get(sheetId)?.regions ?? {};
@@ -365,6 +367,7 @@ export class Canvas2DBackend implements IRenderBackend {
       emissive,
       width: dims.width,
       height: dims.height,
+      pixelCrisp: pixelCrisp !== false,
       regions: existingRegions,
     });
   }
@@ -676,7 +679,7 @@ export class Canvas2DBackend implements IRenderBackend {
       ctx.fillRect(q.x, q.y, q.w, q.h);
       calls += 1;
 
-      // Animated horizontal ripple shimmer lines
+      // Pixel-snapped horizontal ripple shimmer bars
       const bandCount = Math.max(2, Math.min(5, Math.floor(q.h / 12)));
       ctx.fillStyle = rgbaStr(
         cfg.skyBottomColor[0] * 0.7 + 0.3,
@@ -686,60 +689,68 @@ export class Canvas2DBackend implements IRenderBackend {
       );
       for (let i = 0; i < bandCount; i++) {
         const frac = (i + 0.5) / bandCount;
-        const wy = q.y + frac * q.h;
-        const shift = Math.sin(t * 2.1 + wy * 0.12 + q.x * 0.05) * 3.2 * amp;
-        const segW = Math.max(6, q.w * (0.36 + 0.22 * Math.sin(t * 1.4 + i * 1.7 + q.x * 0.04)));
-        const sx = q.x + ((q.w - segW) * 0.5 + shift);
-        ctx.fillRect(clamp(sx, q.x, q.x + q.w - 2), wy, Math.min(segW, q.w), 1.6);
+        const wy = Math.round(q.y + frac * q.h);
+        const shift = Math.round(Math.sin(t * 2.1 + wy * 0.12 + q.x * 0.05) * 3.2 * amp);
+        const segW = Math.max(
+          4,
+          Math.round(q.w * (0.36 + 0.22 * Math.sin(t * 1.4 + i * 1.7 + q.x * 0.04))),
+        );
+        const sx = Math.round(q.x + ((q.w - segW) * 0.5 + shift));
+        ctx.fillRect(clamp(sx, q.x, q.x + q.w - 2), wy, Math.min(segW, q.w), 1);
       }
 
-      // Twinkling starlight specular sparkles
+      // Pixel-snapped twinkling starlight 4-point cross sparkles
       if (cfg.starlightIntensity > 0.02) {
         const cellX = Math.floor(q.x / 24);
         const cellY = Math.floor(q.y / 24);
         const seed = hash2d(cellX, cellY);
         if (seed > 0.38) {
-          const twinkle = 0.5 + 0.5 * Math.sin(t * (2.5 + seed * 4.0) + seed * 25.0);
+          const twinkleRaw = 0.5 + 0.5 * Math.sin(t * (2.5 + seed * 4.0) + seed * 25.0);
+          const twinkle = Math.floor(twinkleRaw * 4) / 4;
           const sparkAlpha = twinkle * cfg.starlightIntensity * 0.78;
           if (sparkAlpha > 0.06) {
-            const sx = q.x + (0.18 + seed * 0.64) * q.w + Math.sin(t * 1.8 + seed * 10) * 1.5;
-            const sy = q.y + (0.18 + hash2d(cellY, cellX) * 0.64) * q.h;
+            const sx = Math.round(
+              q.x + (0.18 + seed * 0.64) * q.w + Math.sin(t * 1.8 + seed * 10) * 1.5,
+            );
+            const sy = Math.round(q.y + (0.18 + hash2d(cellY, cellX) * 0.64) * q.h);
             ctx.fillStyle = `rgba(255, 248, 224, ${clamp(sparkAlpha, 0, 1).toFixed(3)})`;
-            ctx.fillRect(sx - 1.2, sy - 0.5, 2.4, 1.0);
-            ctx.fillRect(sx - 0.5, sy - 1.2, 1.0, 2.4);
+            ctx.fillRect(sx - 1, sy, 3, 1);
+            ctx.fillRect(sx, sy - 1, 1, 3);
           }
         }
       }
 
-      // Animated shoreline surf foam waves (supports both 0..1 float and 4-bit N/E/S/W bitmask)
+      // Pixel-snapped animated shoreline surf foam (0..1 float & 4-bit N/E/S/W bitmask)
       if (q.foamMask > 0.001) {
-        const waveOffset = Math.sin(t * 3.1 + q.x * 0.15 + q.y * 0.12) * 2.2 * amp;
-        const foamThickness = Math.max(2.5, Math.min(q.w, q.h) * 0.14);
+        const waveOffset = Math.round(Math.sin(t * 3.1 + q.x * 0.15 + q.y * 0.12) * 2.0 * amp);
+        const foamThickness = Math.max(2, Math.round(Math.min(q.w, q.h) * 0.14));
         ctx.fillStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.78);
 
         if (q.foamMask > 1.01) {
           const mask = Math.round(q.foamMask);
+          const inset = Math.max(0, Math.round(waveOffset * 0.5));
           if ((mask & 1) !== 0) {
-            ctx.fillRect(q.x, q.y + Math.max(0, waveOffset * 0.5), q.w, foamThickness);
+            ctx.fillRect(q.x, q.y + inset, q.w, foamThickness);
           }
           if ((mask & 2) !== 0) {
-            ctx.fillRect(q.x + q.w - foamThickness - Math.max(0, waveOffset * 0.5), q.y, foamThickness, q.h);
+            ctx.fillRect(q.x + q.w - foamThickness - inset, q.y, foamThickness, q.h);
           }
           if ((mask & 4) !== 0) {
-            ctx.fillRect(q.x, q.y + q.h - foamThickness - Math.max(0, waveOffset * 0.5), q.w, foamThickness);
+            ctx.fillRect(q.x, q.y + q.h - foamThickness - inset, q.w, foamThickness);
           }
           if ((mask & 8) !== 0) {
-            ctx.fillRect(q.x + Math.max(0, waveOffset * 0.5), q.y, foamThickness, q.h);
+            ctx.fillRect(q.x + inset, q.y, foamThickness, q.h);
           }
         } else {
           const intensity = clamp(q.foamMask, 0, 1);
+          const inset = Math.max(0, Math.round(waveOffset * 0.5));
           ctx.fillStyle = rgbaStr(cfg.foamColor[0], cfg.foamColor[1], cfg.foamColor[2], 0.72 * intensity);
-          ctx.fillRect(q.x + 1, q.y + Math.max(0, waveOffset * 0.5), q.w - 2, foamThickness * 0.85);
+          ctx.fillRect(q.x + 1, q.y + inset, q.w - 2, Math.max(2, Math.round(foamThickness * 0.85)));
           ctx.fillRect(
             q.x + 2,
-            q.y + q.h * 0.5 + waveOffset * 0.4,
-            q.w * 0.65,
-            Math.max(1.5, foamThickness * 0.45),
+            Math.round(q.y + q.h * 0.5 + waveOffset * 0.4),
+            Math.round(q.w * 0.65),
+            Math.max(1, Math.round(foamThickness * 0.45)),
           );
         }
       }
@@ -762,6 +773,8 @@ export class Canvas2DBackend implements IRenderBackend {
 
     for (const cmd of ordered) {
       let source: CanvasImageSource | undefined = cmd.source;
+      let atlasEmissive: CanvasImageSource | undefined;
+      let defaultCrisp = true;
       let sx = cmd.sx;
       let sy = cmd.sy;
       let sw = cmd.sw;
@@ -771,6 +784,8 @@ export class Canvas2DBackend implements IRenderBackend {
         const atlas = this.atlases.get(cmd.sheetId);
         if (atlas) {
           source = atlas.albedo;
+          atlasEmissive = atlas.emissive;
+          defaultCrisp = atlas.pixelCrisp;
           if (cmd.regionId && atlas.regions[cmd.regionId]) {
             const r = atlas.regions[cmd.regionId];
             sx = sx ?? r.x;
@@ -796,7 +811,10 @@ export class Canvas2DBackend implements IRenderBackend {
         continue;
       }
 
+      const crisp = cmd.pixelCrisp !== undefined ? cmd.pixelCrisp !== false : defaultCrisp;
+
       ctx.save();
+      ctx.imageSmoothingEnabled = !crisp;
       ctx.globalAlpha = alpha;
       ctx.globalCompositeOperation = cmd.additive ? 'lighter' : 'source-over';
 
@@ -823,7 +841,25 @@ export class Canvas2DBackend implements IRenderBackend {
       ctx.drawImage(source, srcX, srcY, srcW, srcH, -cmd.dw * 0.5, -cmd.dh * 0.5, cmd.dw, cmd.dh);
       calls += 1;
 
+      if (atlasEmissive) {
+        ctx.imageSmoothingEnabled = !crisp;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = clamp(alpha * 0.9, 0, 1);
+        ctx.drawImage(
+          atlasEmissive,
+          srcX,
+          srcY,
+          srcW,
+          srcH,
+          -cmd.dw * 0.5,
+          -cmd.dh * 0.5,
+          cmd.dw,
+          cmd.dh,
+        );
+      }
+
       if (cmd.emissive && cmd.emissive > 0.05) {
+        ctx.imageSmoothingEnabled = !crisp;
         ctx.globalCompositeOperation = 'lighter';
         ctx.globalAlpha = clamp(alpha * cmd.emissive * 0.45, 0, 0.85);
         ctx.drawImage(source, srcX, srcY, srcW, srcH, -cmd.dw * 0.5, -cmd.dh * 0.5, cmd.dw, cmd.dh);
