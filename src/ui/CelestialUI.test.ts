@@ -1424,6 +1424,95 @@ describe('Task 7: CelestialUIController Full-Screen Integration', () => {
 
     ui.dispose();
   });
+
+  it('verifies Round 2 HD-2D RPG Overhaul & async Battle FSM UI contracts (input lock, pips, ability banners, visual Pokedex grid, Starter swatches, segmented Settings)', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1); // Bulbasaur
+    const loader = new SpriteAssetLoader({ forceOffline: true });
+    const overworld = new DojoOverworldSim(bridge, loader);
+    const battleCtrl = new DojoBattleController(bridge, loader);
+    const skyCtrl = new DojoSkyHopController(bridge, loader);
+
+    const doc = new MockDocument();
+    const root = doc.createElement('div');
+    doc.body.appendChild(root);
+
+    const callbacks = makeMockCallbacks();
+    const ui = new CelestialUIController();
+    ui.mount(root as unknown as HTMLElement, callbacks);
+
+    // 1. Starter Lab direct visual swatch buttons (10 Outfits, 8 Gear, 6 Auras)
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'starter' }));
+    expect(root.querySelectorAll('[data-starter-outfit]').length).toBe(10);
+    expect(root.querySelectorAll('[data-starter-accessory]').length).toBe(8);
+    expect(root.querySelectorAll('[data-starter-aura]').length).toBe(6);
+    root.querySelector('[data-testid="starter-outfit-aurora"]')?.click();
+    expect(callbacks.calls.onUpdateAppearance?.at(-1)).toEqual([{ styleId: 'aurora' }]);
+
+    // 2. Overworld initial load suppresses duplicate biome banner; zone change triggers it
+    const owSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'overworld' });
+    owSnap.overworld.biomeBannerTimer = 2.0;
+    ui.sync(owSnap);
+    expect(root.querySelector('[data-testid="biome-banner"]')?.classList.contains('is-visible')).toBe(false);
+    expect(root.querySelector('[data-testid="hud-lead-sprite"]')).not.toBeNull();
+
+    const forestSnap = buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'overworld' });
+    forestSnap.overworld = { ...forestSnap.overworld, currentBiomeId: 'forest', currentBiomeName: 'Whispering Forest', biomeBannerTimer: 2.0 };
+    ui.sync(forestSnap);
+    expect(root.querySelector('[data-testid="biome-banner"]')?.classList.contains('is-visible')).toBe(true);
+
+    // 3. Battle HUD: inputLocked disables controls, renders enemyPartyPips, abilityBanner, stat stages & single-beat narration
+    battleCtrl.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 25 });
+    for (let i = 0; i < 30; i += 1) battleCtrl.update(0.05);
+    const baseBattle = battleCtrl.getState();
+    const actingBattle: BattleSceneState = {
+      ...baseBattle,
+      phase: 'player-acting',
+      inputLocked: true,
+      activeActionLabel: 'Your Turn',
+      statusMessage: 'Bulbasaur used Vine Whip!',
+      battleLog: ['Old beat 1', 'Old beat 2'],
+      enemyPartyPips: [
+        { speciesId: 25, name: 'Pikachu', level: 5, fainted: false, active: true },
+        { speciesId: 133, name: 'Eevee', level: 6, fainted: true, active: false },
+      ],
+      enemy: {
+        ...baseBattle.enemy,
+        displayedHp: Math.max(1, baseBattle.enemy.mon.hp - 5),
+        abilityBanner: { name: 'Storm Conduit', summary: 'Boosts Electric moves!', elapsed: 0.2 },
+        mon: { ...baseBattle.enemy.mon, battleStages: { atk: 1, def: -1, spd: 0 } },
+      },
+    };
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'battle', battle: actingBattle }));
+    expect(root.querySelector('[data-testid="battle-deck-shell"]')?.getAttribute('data-busy')).toBe('true');
+    expect(root.querySelector('[data-testid="battle-move-0"]')?.disabled).toBe(true);
+    expect(root.querySelector('[data-testid="battle-ball-poke"]')?.disabled).toBe(true);
+    expect(root.querySelector('[data-testid="battle-flee"]')?.disabled).toBe(true);
+    expect(root.querySelector('[data-testid="battle-turn-badge"]')?.textContent).toBe('Your Turn');
+    expect(root.querySelector('[data-testid="battle-status-message"]')?.textContent).toBe('Bulbasaur used Vine Whip!');
+    expect(root.querySelector('[data-testid="battle-enemy-ability-banner"]')?.hidden).toBe(false);
+    expect(root.querySelector('[data-testid="battle-rival-dots"]')?.querySelectorAll('[data-pip-active]').length).toBe(2);
+    expect(root.querySelector('[data-stage-stat="atk"]')?.textContent).toContain('ATK +1');
+    expect(root.querySelector('[data-stage-stat="def"]')?.textContent).toContain('DEF -1');
+
+    // 4. Visual Pokédex Collectible Sprite Card Grid (0 native <select> elements!)
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'pokedex', activeDrawerTab: 'pokedex', selectedPokedexId: 1 }));
+    const dexPanel = root.querySelector('[data-testid="drawer-panel-pokedex"]');
+    expect(dexPanel?.querySelectorAll('select').length).toBe(0);
+    expect(dexPanel?.querySelector('canvas[data-tile-species="1"]')).not.toBeNull();
+    expect(dexPanel?.querySelector('.sl-dex-tile-mystery')).not.toBeNull();
+    expect(dexPanel?.querySelectorAll('[data-dex-type]').length).toBe(19);
+
+    // 5. Settings segmented RPG controls for Battle Pace & Touch D-Pad
+    ui.sync(buildSnapshot(bridge, overworld, battleCtrl, skyCtrl, { screen: 'settings' }));
+    root.querySelector('[data-pace-val="fast"]')?.click();
+    expect(callbacks.calls.onUpdateSettings?.at(-1)).toEqual([{ battlePace: 'fast' }]);
+    root.querySelector('[data-touch-val="show"]')?.click();
+    expect(callbacks.calls.onUpdateSettings?.at(-1)).toEqual([{ showTouchPad: 'show' }]);
+
+    ui.dispose();
+  });
 });
 
 describe('Task 7: LivingTitleRenderer & SkyHopRenderer Frame Output', () => {

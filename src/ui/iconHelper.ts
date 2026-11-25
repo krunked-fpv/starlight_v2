@@ -889,7 +889,7 @@ export function renderTrainerPortraitCanvas(
       stars: '#fde047',
       hearts: '#f472b6',
       lightning: '#38bdf8',
-      petals: '#fb7185',
+      blossom: '#fb7185',
       cosmic: '#2dd4bf',
     };
     const auraColor = auraColors[appearance.aura ?? 'none'];

@@ -68,11 +68,35 @@ export interface BattleCombatantSnapshot {
   moves: Array<DojoMoveEntry & { currentPp: number; maxPp: number }>;
 }
 
+export interface BattleFloatingText {
+  id: string;
+  side: 'player' | 'enemy';
+  text: string;
+  color: string;
+  size: number;
+  elapsed: number;
+  delay: number;
+  duration: number;
+  offsetY: number;
+}
+
+export interface BattleEnemyPartyPip {
+  speciesId: number;
+  name: string;
+  level: number;
+  fainted: boolean;
+  active: boolean;
+}
+
 export interface BattleCombatantVisual {
   side: 'player' | 'enemy';
   mon: BattleCombatantSnapshot;
   frames: DecodedSpriteFrames | null;
   useOfflineRig: boolean;
+  displayedHp: number;
+  displayedXpRatio: number;
+  faintDrop: number; // 0..1 faint drop & fade progress
+  sendOutProgress: number; // 0..1 send-out emergence progress
   hitFlash: number; // 0..1
   lungeOffset: number; // -1..1
   recoilOffset: number; // 0..1
@@ -95,6 +119,7 @@ export interface BattleSceneState {
   rivalName: string | null;
   rivalTotalMons: number;
   rivalRemainingMons: number;
+  enemyPartyPips: BattleEnemyPartyPip[];
   shrineId: string | null;
   shrineTrialNumber: number;
   turnNumber: number;
@@ -102,17 +127,23 @@ export interface BattleSceneState {
     | 'shutter'
     | 'intro'
     | 'command'
+    | 'player-acting'
+    | 'enemy-acting'
     | 'animating'
     | 'capturing'
     | 'forced-switch'
     | 'evolving'
     | 'victory'
     | 'defeat';
+  inputLocked: boolean;
+  activeActionLabel: string | null;
   player: BattleCombatantVisual;
   enemy: BattleCombatantVisual;
   shutter: BattleShutterState;
   activeVfx: BattleVfxEvent[];
+  floatingTexts: BattleFloatingText[];
   cameraCue: BattleCameraCue;
+  cameraCueSeq: number;
   cameraCueElapsed: number;
   hitStopRemaining: number;
   arenaLightingType: ElementalType | null;

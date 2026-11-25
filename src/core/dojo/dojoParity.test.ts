@@ -350,9 +350,14 @@ describe('Earned Economy, Composure, Battle & Sky-Hop Invariants', () => {
     const battle = new DojoBattleController(bridge, loader);
     const bState = battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceOfflineRig: true });
     expect(bState.active).toBe(true);
+    expect(bState.phase).toBe('shutter');
+    expect(bState.inputLocked).toBe(true);
     expect(bState.player.mon.speciesId).toBe(1);
-    const outcome = battle.performMove(bState.player.mon.moves[0].id);
-    expect(outcome.vfxEvents.length).toBeGreaterThanOrEqual(1);
+    battle.advanceUntilSettled();
+    expect(battle.getState().phase).toBe('command');
+    const initOutcome = battle.performMove(battle.getState().player.mon.moves[0].id);
+    const settledOutcome = battle.advanceUntilSettled();
+    expect(initOutcome.vfxEvents.length + settledOutcome.vfxEvents.length).toBeGreaterThanOrEqual(1);
 
     const sky = new DojoSkyHopController(bridge, loader);
     sky.open({ forceUnlock: true });
@@ -497,6 +502,9 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
       shrineId: 'forest_shrine',
       forceOfflineRig: true,
     });
+    // COMBAT-04: First-clear Shrine Guardian is NOT marked isElite (only Astral Trials are!)
+    expect(shrineState.enemy.mon.isElite).toBe(false);
+    battle.advanceUntilSettled();
 
     // BUG-06: Cannot capture Shrine Guardian; Star Ball is not consumed
     expect(shrineState.canCapture).toBe(false);
@@ -506,7 +514,8 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
     expect(profile.bag.starBalls).toBe(ballsBefore);
     expect(battle.getState().statusMessage).toContain('Shrine Guardians cannot be caught');
 
-    // BUG-15: Can step back safely from Shrine
+    // Wait out 180ms rejection cooldown, then BUG-15: Can step back safely from Shrine
+    battle.advanceUntilSettled();
     const fleeRes = battle.flee();
     expect(fleeRes.battleEnded).toBe('fled');
     expect(battle.getState().statusMessage).toContain('Stepped back safely from the Shrine');
@@ -518,6 +527,7 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
       shrineId: 'forest_shrine',
       forceOfflineRig: true,
     });
+    battle.advanceUntilSettled();
     profile.team[0].level = 25;
     profile.team[0].recalculateStats();
     profile.team[0].healFull();
@@ -526,6 +536,7 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
     const randSpy = vi.spyOn(Math, 'random').mockReturnValue(0.1);
     for (let turn = 0; turn < 10 && battle.getState().phase !== 'victory' && battle.getState().phase !== 'evolving'; turn++) {
       battle.performMove(battle.getState().player.mon.moves[0].id);
+      battle.advanceUntilSettled();
     }
     randSpy.mockRestore();
 
@@ -547,19 +558,22 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
 
     const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
     battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true });
+    battle.advanceUntilSettled();
 
     // Full-HP potion should be refused without consuming a potion
     const potBefore = profile.bag.potions;
     battle.usePotion();
     expect(profile.bag.potions).toBe(potBefore);
     expect(battle.getState().statusMessage).toContain('already full');
+    battle.advanceUntilSettled();
 
     // BUG-07: Drain all PP -> exposes Struggle and executes cleanly without soft-lock
     for (const mv of lead.getMoveObjects()) {
       lead.movePp[mv.id] = 0;
     }
-    const zeroPpRes = battle.performMove(lead.getMoveObjects()[0].id);
-    expect(zeroPpRes.vfxEvents.length).toBeGreaterThanOrEqual(1);
+    const zeroInit = battle.performMove(lead.getMoveObjects()[0].id);
+    const zeroSettled = battle.advanceUntilSettled();
+    expect(zeroInit.vfxEvents.length + zeroSettled.vfxEvents.length).toBeGreaterThanOrEqual(1);
     expect(battle.getState().player.mon.moves[0].id).toBe('struggle');
 
     // Start multi-mon Rival duel first, then boost lead so it reliably KOs enemy #1
@@ -571,12 +585,14 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
       forceOfflineRig: true,
     });
     expect(rivalState.rivalTotalMons).toBeGreaterThanOrEqual(2);
+    expect(rivalState.enemyPartyPips.length).toBe(rivalState.rivalTotalMons);
+    battle.advanceUntilSettled();
     lead.level = 25;
     lead.recalculateStats();
     lead.healFull();
 
     // Attack until enemy #1 faints; on the faint turn, enemy #2 MUST NOT attack and partial XP is awarded
-    let faintTurnOutcome: ReturnType<DojoBattleController['performMove']> | null = null;
+    let faintTurnEnemyVfxCount = -1;
     let hpBeforeFaintTurn = lead.hp;
     let xpBeforeFaintTurn = lead.xp;
     let lvBeforeFaintTurn = lead.level;
@@ -584,20 +600,25 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
       hpBeforeFaintTurn = lead.hp;
       xpBeforeFaintTurn = lead.xp;
       lvBeforeFaintTurn = lead.level;
-      const out = battle.performMove(battle.getState().player.mon.moves[0].id);
+      const out1 = battle.performMove(battle.getState().player.mon.moves[0].id);
+      const out2 = battle.advanceUntilSettled();
       if (battle.getState().rivalRemainingMons === rivalState.rivalTotalMons - 1) {
-        faintTurnOutcome = out;
+        faintTurnEnemyVfxCount =
+          out1.vfxEvents.filter((e) => e.fromSide === 'enemy').length
+          + out2.vfxEvents.filter((e) => e.fromSide === 'enemy').length;
         break;
       }
     }
-    expect(faintTurnOutcome).not.toBeNull();
+    expect(faintTurnEnemyVfxCount).toBe(0);
     expect(lead.hp).toBe(hpBeforeFaintTurn);
-    expect(faintTurnOutcome!.vfxEvents.filter((e) => e.fromSide === 'enemy').length).toBe(0);
     expect(lead.level > lvBeforeFaintTurn || lead.xp > xpBeforeFaintTurn).toBe(true);
+    expect(battle.getState().enemyPartyPips[0].fainted).toBe(true);
+    expect(battle.getState().enemyPartyPips[1].active).toBe(true);
 
     // Finish Rival -> verify rematch grants rematchRewards (NOT first-clear leaf_gem again!)
     for (let t = 0; t < 8 && battle.getState().phase !== 'victory' && battle.getState().phase !== 'evolving'; t++) {
       battle.performMove(battle.getState().player.mon.moves[0].id);
+      battle.advanceUntilSettled();
     }
     expect(profile.rivalsDefeated).toContain('rival_leo');
     const leafGemsAfterFirst = profile.bag.gems.leaf_gem || 0;
@@ -607,22 +628,28 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
     lead.recalculateStats();
     lead.healFull();
     battle.startEncounter({ biomeId: 'forest', tier: 'rival', rivalId: 'rival_leo', forceOfflineRig: true });
+    battle.advanceUntilSettled();
     lead.level = 50;
     lead.recalculateStats();
     lead.healFull();
     for (let t = 0; t < 16 && battle.getState().phase !== 'victory' && battle.getState().phase !== 'evolving'; t++) {
       lead.healFull();
       battle.performMove(battle.getState().player.mon.moves[0].id);
+      battle.advanceUntilSettled();
     }
     expect(['victory', 'evolving']).toContain(battle.getState().phase);
     expect(profile.bag.gems.leaf_gem || 0).toBe(leafGemsAfterFirst);
 
     // Catch XP exclusion: caught Pokémon must NOT earn bench XP from catching itself!
     battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true });
+    battle.advanceUntilSettled();
     const catchRandSpy = vi.spyOn(Math, 'random').mockReturnValue(0.001);
-    const catchOutcome = battle.throwBall('star');
+    const catchInit = battle.throwBall('star');
+    expect(battle.getState().phase).toBe('capturing');
+    expect(battle.getState().inputLocked).toBe(true);
+    const catchSettled = battle.advanceUntilSettled();
     catchRandSpy.mockRestore();
-    expect(catchOutcome.battleEnded).toBe('caught');
+    expect(catchInit.battleEnded || catchSettled.battleEnded).toBe('caught');
     const caughtMon = profile.team[profile.team.length - 1];
     expect(caughtMon.speciesId).toBe(10);
     expect(caughtMon.xp).toBe(0);
@@ -678,24 +705,29 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
 
     const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
     battle.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true });
+    battle.advanceUntilSettled();
 
-    // Dual moveSfxEvents preserved on a normal 2-sided turn
-    const turnOut = battle.performMove(battle.getState().player.mon.moves[0].id);
-    expect(turnOut.moveSfxEvents?.length).toBe(2);
-    expect(turnOut.moveSfxEvents![0].side).not.toBe(turnOut.moveSfxEvents![1].side);
+    // Dual moveSfxEvents preserved across a normal 2-sided turn
+    const turnInit = battle.performMove(battle.getState().player.mon.moves[0].id);
+    const turnRest = battle.advanceUntilSettled();
+    const allMoveSfx = [...(turnInit.moveSfxEvents ?? []), ...(turnRest.moveSfxEvents ?? [])];
+    expect(allMoveSfx.length).toBe(2);
+    expect(allMoveSfx[0].side).not.toBe(allMoveSfx[1].side);
 
     // Drop active mon to 1 HP and let enemy KO it -> enters 'forced-switch'
     profile.team[0].hp = 1;
     battle.performMove(battle.getState().player.mon.moves[0].id);
+    battle.advanceUntilSettled();
     if (profile.team[0].isFainted) {
       expect(battle.getState().phase).toBe('forced-switch');
       const benchHpBefore = bench.hp;
-      const swOut = battle.switchTeamMember(1);
+      const swInit = battle.switchTeamMember(1);
+      const swRest = battle.advanceUntilSettled();
       expect(battle.getState().phase).toBe('command');
       expect(battle.getState().player.mon.speciesId).toBe(25);
       // Forced switch grants clean send-out with NO free enemy hit
       expect(bench.hp).toBe(benchHpBefore);
-      expect(swOut.vfxEvents.length).toBe(0);
+      expect(swInit.vfxEvents.length + swRest.vfxEvents.length).toBe(0);
     }
 
     // Natural overworld rare encounter roll (with Math.random = 0.01)
@@ -713,5 +745,185 @@ describe('v1-vs-v2 Regression Parity Suite (BUG-01..BUG-23)', () => {
     }
     rSpy.mockRestore();
     expect(sawRare).toBe(true);
+  });
+});
+
+describe('Round 2 Combat State Machine, Anti-Spam Lock & v1 Parity (COMBAT-01..COMBAT-12)', () => {
+  it('COMBAT-01: hard-locks input during shutter, intro, and active turns (10x spam-clicking executes ONLY 1 turn)', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1); // Bulbasaur Lv.5
+    const profile = bridge.manager.getActiveProfile();
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+
+    battle.startEncounter({
+      biomeId: 'forest',
+      tier: 'wild',
+      forceSpeciesId: 10,
+      forceOfflineRig: true,
+      battlePace: 'classic',
+    });
+
+    // Rejects actions during shutter & intro!
+    const moveId = battle.getState().player.mon.moves[0].id;
+    const ppInitial = profile.team[0].getMovePp(moveId).current;
+    expect(battle.getState().phase).toBe('shutter');
+    expect(battle.getState().inputLocked).toBe(true);
+    battle.performMove(moveId);
+    battle.throwBall('poke');
+    battle.flee();
+    expect(battle.getState().active).toBe(true);
+    expect(profile.team[0].getMovePp(moveId).current).toBe(ppInitial);
+
+    // Step shutter -> intro -> command
+    battle.advanceUntilSettled();
+    expect(battle.getState().phase).toBe('command');
+    expect(battle.getState().inputLocked).toBe(false);
+
+    // Rapidly spam-fire performMove 10 times in a row during the active turn!
+    battle.performMove(moveId);
+    expect(battle.getState().inputLocked).toBe(true);
+    expect(['player-acting', 'enemy-acting']).toContain(battle.getState().phase);
+    for (let spam = 0; spam < 9; spam++) {
+      battle.performMove(moveId);
+    }
+
+    // Only ONE move's PP was consumed & only ONE turn completes
+    expect(profile.team[0].getMovePp(moveId).current).toBe(ppInitial - 1);
+    battle.advanceUntilSettled();
+    expect(battle.getState().turnNumber).toBe(2);
+    expect(profile.team[0].getMovePp(moveId).current).toBe(ppInitial - 1);
+  });
+
+  it('COMBAT-01 & Difficulty Parity: Lv.5 Bulbasaur spamming resisted Vine Whip vs Lv.12 Volcano Shrine Moltres LOSES', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1); // Lv.5 Bulbasaur (Grass)
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+
+    const st = battle.startEncounter({
+      biomeId: 'volcano',
+      tier: 'shrine',
+      shrineId: 'volcano_shrine',
+      forceOfflineRig: true,
+      battlePace: 'fast',
+    });
+    expect(st.enemy.mon.speciesId).toBe(146); // Moltres (Fire) Lv.12
+    expect(st.enemy.mon.level).toBeGreaterThanOrEqual(12);
+    expect(st.enemy.mon.isElite).toBe(false);
+    battle.advanceUntilSettled();
+
+    // Spam Vine Whip (move 0, Grass vs Fire 0.5x resisted) until battle ends
+    for (let turn = 0; turn < 12 && battle.getState().phase === 'command'; turn++) {
+      battle.performMove('vine_whip');
+      battle.advanceUntilSettled();
+    }
+    expect(battle.getState().phase).toBe('defeat');
+  });
+
+  it('COMBAT-02, COMBAT-03, COMBAT-05: animates Poké Ball capture 0..1 (both catch and breakout), floating damage callouts, smooth displayedHp & monotonic cameraCueSeq', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+
+    battle.startEncounter({
+      biomeId: 'forest',
+      tier: 'wild',
+      forceSpeciesId: 10,
+      forceOfflineRig: true,
+      battlePace: 'classic',
+    });
+    battle.advanceUntilSettled();
+
+    const seqBefore = battle.getState().cameraCueSeq;
+    const moveId = battle.getState().player.mon.moves[0].id;
+    battle.performMove(moveId);
+
+    // Step through windup into impact beat -> verify floating texts, cameraCueSeq increment & gradual displayedHp drain
+    let sawFloatingDamage = false;
+    let sawGradualHpDrain = false;
+    for (let i = 0; i < 60; i++) {
+      battle.update(0.03);
+      const st = battle.getState();
+      if (st.floatingTexts.some((ft) => ft.text.startsWith('-'))) {
+        sawFloatingDamage = true;
+      }
+      if (
+        Math.abs(st.enemy.displayedHp - st.enemy.mon.hp) > 0.2
+        || Math.abs(st.player.displayedHp - st.player.mon.hp) > 0.2
+      ) {
+        sawGradualHpDrain = true;
+      }
+    }
+    expect(sawFloatingDamage).toBe(true);
+    expect(sawGradualHpDrain).toBe(true);
+    expect(battle.getState().cameraCueSeq).toBeGreaterThan(seqBefore);
+    battle.advanceUntilSettled();
+
+    // Test Poké Ball breakout animation: enters 'capturing', sweeps captureProgress 0..0.88, resets to 0 on breakout, then enemy counter-attacks
+    const missCatchSpy = vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    battle.throwBall('poke');
+    expect(battle.getState().phase).toBe('capturing');
+    expect(battle.getState().enemy.captureProgress).toBe(0);
+    let maxCaptureProgress = 0;
+    let sawBreakoutFloating = false;
+    for (let i = 0; i < 120; i++) {
+      battle.update(0.03);
+      const st = battle.getState();
+      if (st.phase === 'capturing' && st.enemy.captureProgress > maxCaptureProgress) {
+        maxCaptureProgress = st.enemy.captureProgress;
+      }
+      if (st.floatingTexts.some((ft) => ft.text === 'BROKE FREE!')) {
+        sawBreakoutFloating = true;
+      }
+    }
+    missCatchSpy.mockRestore();
+    expect(maxCaptureProgress).toBeGreaterThan(0.5);
+    expect(sawBreakoutFloating).toBe(true);
+    battle.advanceUntilSettled();
+    expect(battle.getState().enemy.captureProgress).toBe(0);
+  });
+
+  it('COMBAT-07, COMBAT-08, COMBAT-09 & GAMEPLAY-02: Struggle beats Ghost 0x immunity, turn-end abilities skip Potion, ability metadata preserved, and 0-HP lead heals on encounter start', () => {
+    const bridge = new StarlightStorageBridge(createDefaultSaveState());
+    bridge.manager.selectTrainer('violet');
+    bridge.manager.chooseStarter(1);
+    const profile = bridge.manager.getActiveProfile();
+
+    // COMBAT-09: Ability metadata preserves drainRatio & counterBoostStat
+    const abilities = getAllAbilities();
+    const siphon = abilities.find((a) => a.id === 'nectar_siphon');
+    const mirage = abilities.find((a) => a.id === 'phantom_mirage');
+    expect(siphon?.drainRatio).toBeGreaterThan(0);
+    expect(mirage?.counterBoostStat).toBe('spd');
+
+    // GAMEPLAY-02: Even if lead starts at 0 HP, startEncounter restores healthy lead cleanly
+    profile.team[0].hp = 0;
+    const battle = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle.startEncounter({ biomeId: 'cave', tier: 'wild', forceSpeciesId: 92, forceOfflineRig: true, battlePace: 'fast' }); // Gastly (Ghost)
+    expect(profile.team[0].hp).toBeGreaterThan(0);
+    battle.advanceUntilSettled();
+
+    // COMBAT-07: Struggle vs Ghost deals >= 2 damage (not immune 0 / 1)
+    for (const mv of profile.team[0].getMoveObjects()) {
+      profile.team[0].movePp[mv.id] = 0;
+    }
+    const gastlyHpBefore = battle.getState().enemy.mon.hp;
+    battle.performMove('struggle');
+    battle.advanceUntilSettled();
+    expect(gastlyHpBefore - battle.getState().enemy.mon.hp).toBeGreaterThanOrEqual(2);
+
+    // COMBAT-08: Turn-end ability (Starlight Grace on Eevee #133) does NOT proc on Potion turn
+    const eevee = createPokemon(133, 8, 'forest');
+    eevee.hp = Math.max(1, eevee.maxHp - 25);
+    profile.team = [eevee];
+    const battle2 = new DojoBattleController(bridge, new SpriteAssetLoader({ forceOffline: true }));
+    battle2.startEncounter({ biomeId: 'forest', tier: 'wild', forceSpeciesId: 10, forceOfflineRig: true, battlePace: 'fast' });
+    battle2.advanceUntilSettled();
+    const outPot = battle2.usePotion();
+    const outPotRest = battle2.advanceUntilSettled();
+    const allAb = [...(outPot.abilitySfx ?? []), ...(outPotRest.abilitySfx ?? [])];
+    expect(allAb.some((a) => a.abilityId === 'starlight_grace')).toBe(false);
   });
 });

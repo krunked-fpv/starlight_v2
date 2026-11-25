@@ -160,6 +160,10 @@ export function getAbilityEntry(abilityId: string | null | undefined): DojoAbili
     shieldTurns: raw.shieldTurns,
     boostStat: raw.boostStat,
     boostStages: raw.boostStages,
+    drainRatio: Number.isFinite(Number(raw.drainRatio)) ? Number(raw.drainRatio) : undefined,
+    critBonus: Number.isFinite(Number(raw.critBonus)) ? Number(raw.critBonus) : undefined,
+    counterBoostStat: raw.counterBoostStat,
+    counterBoostStages: Number.isFinite(Number(raw.counterBoostStages)) ? Number(raw.counterBoostStages) : undefined,
     description: stripEmojis(raw.description),
   };
 }

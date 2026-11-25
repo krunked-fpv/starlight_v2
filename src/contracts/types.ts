@@ -173,6 +173,10 @@ export interface DojoAbilityEntry {
   shieldTurns?: number;
   boostStat?: 'atk' | 'def' | 'spd';
   boostStages?: number;
+  drainRatio?: number;
+  critBonus?: number;
+  counterBoostStat?: 'atk' | 'def' | 'spd';
+  counterBoostStages?: number;
   description: string;
 }
 

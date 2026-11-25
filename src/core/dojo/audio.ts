@@ -104,12 +104,56 @@ export class StarlightAudioController {
     this.engine.playEncounterAlert(mode);
   }
 
+  playMoveSelect(): void {
+    this.engine.playMoveSelect?.();
+  }
+
+  playWindup(): void {
+    this.engine.playWindup?.();
+  }
+
+  playHitStop(): void {
+    this.engine.playHitStop?.();
+  }
+
   playHit(superEffective = false): void {
     this.engine.playPhysicalImpact(superEffective ? 92 : 48);
   }
 
+  playMiss(): void {
+    this.engine.playTone?.({ freq: 340, endFreq: 165, duration: 0.14, gain: 0.055, type: 'triangle' });
+  }
+
   playMoveSfx(moveId: string, moveTypeOrFx?: string): void {
     this.engine.playAttackSfx(moveTypeOrFx || 'normal', moveId);
+  }
+
+  playFaint(): void {
+    this.engine.playFaint?.();
+  }
+
+  playBuffChime(): void {
+    this.engine.playBuffChime?.();
+  }
+
+  playShieldChime(): void {
+    this.engine.playShieldChime?.();
+  }
+
+  playComposureBrace(): void {
+    this.engine.playComposureBrace?.();
+  }
+
+  playBuddyEndure(): void {
+    this.engine.playBuddyEndure?.();
+  }
+
+  playAbilityCue(abilityId: string, abilityType = 'normal'): void {
+    this.engine.playAbilityCue?.(abilityId, abilityType);
+  }
+
+  playShinySparkle(): void {
+    this.engine.playShinySparkle?.();
   }
 
   playHealChime(): void {
@@ -148,8 +192,24 @@ export class StarlightAudioController {
     this.engine.playPokeballThrow();
   }
 
-  playCatchShake(): void {
-    this.engine.playPokeballWobble(1);
+  playCatchAbsorb(): void {
+    this.engine.playPokeballAbsorb?.();
+  }
+
+  playCatchBounce(bounceIdx = 0): void {
+    this.engine.playPokeballBounce?.(bounceIdx);
+  }
+
+  playCatchShake(shakeIdx = 1): void {
+    this.engine.playPokeballWobble?.(shakeIdx);
+  }
+
+  playCatchBreakout(): void {
+    this.engine.playBreakout?.();
+  }
+
+  playStarBallShimmer(): void {
+    this.engine.playStarBallShimmer?.();
   }
 
   playCatchSuccess(): void {
@@ -170,6 +230,10 @@ export class StarlightAudioController {
 
   playBadgeFanfare(): void {
     this.engine.playBadgeFanfare();
+  }
+
+  playEvolutionStart(): void {
+    this.engine.playEvolutionStart?.();
   }
 
   playEvolveFanfare(): void {

@@ -585,6 +585,11 @@ export class BattleVfxDirector {
         this.drawEvolutionSequence(ctx, state, layout, px);
       }
 
+      // 5. Floating Damage Numbers & Tactical Combat Callouts (COMBAT-05)
+      if (Array.isArray(state.floatingTexts) && state.floatingTexts.length > 0) {
+        this.drawFloatingTexts(ctx, state, layout);
+      }
+
       ctx.restore();
     }, 'post-light');
   }
@@ -764,38 +769,22 @@ export class BattleVfxDirector {
       }
     }
 
-    // Ability Activation Pixel Callout Pulse
+    // Ability Activation Subtle Pixel Aura Ring (R2-VIS-04: text banner is rendered by DOM brass ribbon to avoid duplicate boxes & floating damage collision)
     if (vis.abilityBanner && vis.abilityBanner.elapsed < 2.4) {
       const ab = vis.abilityBanner;
       const fade = ab.elapsed < 0.2 ? ab.elapsed / 0.2 : ab.elapsed > 1.9 ? (2.4 - ab.elapsed) / 0.5 : 1;
       const alpha = clamp(fade, 0, 1);
-      const boxW = Math.min(188, Math.max(128, ab.name.length * 8 + 26));
-      const boxH = 30;
-      const bx = snap(anchor.x - boxW * 0.5, px);
-      const by = snap(anchor.y - anchor.size * 0.68, px);
-
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.fillStyle = '#0d1538';
-      ctx.fillRect(bx, by, boxW, boxH);
-      ctx.strokeStyle = pal.glow;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(bx, by, boxW, boxH);
-
-      // Corner pixel accents
-      ctx.fillStyle = '#ffe566';
-      ctx.fillRect(bx - 2, by - 2, 4, 4);
-      ctx.fillRect(bx + boxW - 2, by - 2, 4, 4);
-
-      ctx.fillStyle = pal.glow;
-      ctx.font = 'bold 10px monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText(ab.name, bx + boxW * 0.5, by + 4);
-      ctx.fillStyle = '#e8f1ff';
-      ctx.font = '9px monospace';
-      ctx.fillText(ab.summary.slice(0, 26), bx + boxW * 0.5, by + 16);
-      ctx.restore();
+      const pulse = reducedMotion ? 0 : Math.sin(ab.elapsed * 8) * px;
+      drawPixelHexagon(
+        ctx,
+        anchor.x,
+        anchor.padY - px * 2,
+        anchor.size * 0.48 + pulse,
+        anchor.size * 0.16 + pulse * 0.4,
+        t * 0.7,
+        hexToRgba(pal.glow, alpha * 0.75),
+        px,
+      );
     }
   }
 
@@ -1244,5 +1233,53 @@ export class BattleVfxDirector {
     }
     drawPixelHexagon(ctx, anchor.x, anchor.padY - 4, anchor.size * 0.56, anchor.size * 0.22, t * 0.9, '#ffe599', px);
     ctx.restore();
+  }
+
+  private drawFloatingTexts(
+    ctx: CanvasRenderingContext2D,
+    state: BattleSceneState,
+    layout: BattleStageLayout,
+  ): void {
+    const scaleFactor = clamp(Math.min(layout.width / 960, layout.height / 540), 0.72, 1.35);
+    for (const ft of state.floatingTexts) {
+      const localTime = ft.elapsed - ft.delay;
+      if (localTime < 0) continue;
+      const progress = clamp(localTime / Math.max(0.25, ft.duration), 0, 1);
+      if (progress >= 1) continue;
+
+      const anchor = getSideAnchor(ft.side, layout, state);
+      const risePx = state.reducedMotion
+        ? 10 * progress
+        : (1 - Math.pow(1 - progress, 2)) * 46 * scaleFactor;
+      const popScale = state.reducedMotion
+        ? 1
+        : progress < 0.14
+          ? 0.72 + (progress / 0.14) * 0.44
+          : progress < 0.28
+            ? 1.16 - ((progress - 0.14) / 0.14) * 0.16
+            : 1.0;
+      const alpha = progress > 0.72 ? clamp(1 - (progress - 0.72) / 0.28, 0, 1) : 1;
+
+      const fontSize = Math.max(11, Math.round(ft.size * scaleFactor));
+      const x = Math.round(anchor.x);
+      const y = Math.round(anchor.y - anchor.size * 0.42 + ft.offsetY * scaleFactor - risePx);
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(x, y);
+      if (popScale !== 1) {
+        ctx.scale(popScale, popScale);
+      }
+      ctx.font = `900 ${fontSize}px "Trebuchet MS", "Segoe UI", monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(3, Math.round(fontSize * 0.24));
+      ctx.strokeStyle = '#090d1a';
+      ctx.strokeText(ft.text, 0, 0);
+      ctx.fillStyle = ft.color || '#ffffff';
+      ctx.fillText(ft.text, 0, 0);
+      ctx.restore();
+    }
   }
 }

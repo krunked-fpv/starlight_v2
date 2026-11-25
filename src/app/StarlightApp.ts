@@ -38,6 +38,8 @@ import {
   FIELD_QUESTS,
   LANDMARKS,
   NPCS,
+  RIVAL_TRAINERS,
+  SHRINES,
   SpriteAssetLoader,
   StarlightAudioController,
   StarlightStorageBridge,
@@ -342,9 +344,13 @@ export class StarlightApp {
     this.ui.setRigSynthesizer(rigSynth);
     this.ui.attachAssets(this.manifest, getSheetImg, getCachedSprite);
 
-    // Refresh follower/UI automatically whenever an animated sprite decodes
+    // Refresh follower/UI automatically whenever an animated sprite decodes (#34, R2-VIS-02)
     this.unsubSprites = this.sprites.onUpdate(() => {
       this.overworldSim.refreshState();
+      this.uiSyncAccum = 0.2;
+      if (this.screen === 'starter' || this.screen === 'title' || isDrawerScreen(this.screen)) {
+        this.syncUI();
+      }
     });
 
     // Preload title preview sprites & starters asynchronously (never blocks boot)
@@ -667,19 +673,7 @@ export class StarlightApp {
 
       onBattleCloseResult: () => {
         this.ensureAudioUnlocked();
-        this.clearBattleTimers();
-        const wasDefeat = this.battleController.getState().phase === 'defeat';
-        this.battleController.closeBattle();
-        this.overworldSim.syncFromProfile();
-        if (wasDefeat) {
-          this.overworldSim.applyPostWarpGrace();
-          this.audio.playSafeRecall();
-          this.showToast('Your team rested safely at Starlight Village Healing Fountain!');
-        }
-        this.clearMovementInputs();
-        this.screen = 'overworld';
-        this.syncBgmForCurrentScreen();
-        this.syncUI();
+        this.handleCloseBattleResult();
       },
 
       onSelectPokedexSpecies: (speciesId: number) => {
@@ -962,6 +956,9 @@ export class StarlightApp {
 
     if (!profile || !profile.starterId || profile.team.length === 0) {
       this.screen = 'starter';
+      for (const starterId of [1, 4, 7]) {
+        void this.sprites.loadSpeciesSprite(starterId, { back: false, shiny: false });
+      }
     } else {
       this.screen = 'overworld';
       const lead = profile.team[0];
@@ -1052,6 +1049,11 @@ export class StarlightApp {
       this.dialogue = null;
       this.battleController.closeBattle();
       this.skyHopController.close();
+      if (screen === 'starter') {
+        for (const starterId of [1, 4, 7]) {
+          void this.sprites.loadSpeciesSprite(starterId, { back: false, shiny: false });
+        }
+      }
     }
     this.screen = screen;
     this.syncBgmForCurrentScreen();
@@ -1107,12 +1109,85 @@ export class StarlightApp {
       return;
     }
 
-    // Biome scouting briefing -> launch a wild encounter in that biome (or forest if village)
-    const targetBiome: BiomeId = b.biomeId === 'village' ? 'forest' : b.biomeId;
+    // GAMEPLAY-03: In safe Starlight Village, warp cleanly to Whispering Forest instead of spawning zero-walk wilds by the fountain
+    if (b.biomeId === 'village') {
+      this.handleWarpBiome('forest');
+      return;
+    }
+
+    // Biome scouting briefing -> launch a wild encounter in that biome
     this.handleStartBattle({
-      biomeId: targetBiome,
+      biomeId: b.biomeId,
       tier: 'wild',
     });
+  }
+
+  private handleCloseBattleResult(): void {
+    this.clearBattleTimers();
+    const meta = this.battleController.getLastEncounterMeta();
+    const wasDefeat = meta.phase === 'defeat';
+    const wasVictory = meta.phase === 'victory';
+    this.battleController.closeBattle();
+    this.overworldSim.syncFromProfile();
+
+    if (wasDefeat) {
+      this.overworldSim.applyPostWarpGrace();
+      this.audio.playSafeRecall();
+      this.showToast('Your team rested safely at Starlight Village Healing Fountain!');
+    } else if (wasVictory) {
+      // GAMEPLAY-01: Authentic v1 Rival & Shrine post-victory RPG dialogue
+      const profileLive = this.storage.manager.getActiveProfile();
+      if (meta.rivalId) {
+        const rival = Object.values(RIVAL_TRAINERS).find((r) => r.id === meta.rivalId);
+        if (rival) {
+          const rewards = (meta.wasRivalRematch ? rival.rematchRewards : rival.rewards) ?? {};
+          const rawWinText = (meta.wasRivalRematch && rival.rematchWinText)
+            ? rival.rematchWinText
+            : (rival.winText || `${rival.name}: "What an awesome battle!"`);
+          this.dialogue = {
+            speaker: stripEmojis(rival.name),
+            speakerPortrait: 'rival',
+            title: meta.wasRivalRematch ? 'Rival Rematch Victory!' : 'Rival Victory!',
+            lines: [formatCleanGameText(rawWinText, { profile: profileLive, rival, trainerData: rival })],
+            currentIndex: 0,
+            rewardTags: buildRewardTags(rewards as Record<string, unknown>, this.evolutionItemNames),
+          };
+        }
+      } else if (meta.shrineId) {
+        const shrine = Object.values(SHRINES).find((s) => s.id === meta.shrineId);
+        if (meta.shrineTrialNumber > 0) {
+          this.dialogue = {
+            speaker: stripEmojis(shrine?.name || 'Astral Shrine'),
+            title: `Astral Shrine Trial #${meta.shrineTrialNumber} Cleared!`,
+            lines: [
+              formatCleanGameText(
+                `You triumphed in Astral Shrine Trial #${meta.shrineTrialNumber}! The shrine resonates with radiant starlight.`,
+                { profile: profileLive },
+              ),
+            ],
+            currentIndex: 0,
+            rewardTags: buildRewardTags({ starShards: 3, starBalls: 1 }, this.evolutionItemNames),
+          };
+        } else if (shrine && !meta.wasShrineClearedBefore) {
+          const rawClear =
+            (shrine as { clearText?: string; winText?: string }).clearText
+            || (shrine as { clearText?: string; winText?: string }).winText
+            || `You triumphed over the Guardian of ${stripEmojis(shrine.name)} and earned its Elemental Blessing!`;
+          this.dialogue = {
+            speaker: stripEmojis(shrine.name),
+            title: `${stripEmojis(shrine.name)} Cleared!`,
+            lines: [formatCleanGameText(rawClear, { profile: profileLive })],
+            currentIndex: 0,
+            rewardTags: buildRewardTags(shrine.reward as Record<string, unknown>, this.evolutionItemNames),
+          };
+        }
+      }
+    }
+
+    this.clearMovementInputs();
+    this.screen = 'overworld';
+    this.syncBgmForCurrentScreen();
+    this.syncUI();
   }
 
   private handleStartBattle(options: {
@@ -1132,10 +1207,19 @@ export class StarlightApp {
       this.storage.manager.chooseStarter(25);
     }
 
-    const reducedMotion = this.storage.getSettings().reducedMotion;
+    // GAMEPLAY-02: ensureHealthyParty() guard so battle NEVER starts with a 0-HP fainted party
+    const liveProfile = this.storage.manager.getActiveProfile();
+    const liveTeam = Array.isArray(liveProfile?.team) ? liveProfile.team : [];
+    if (liveTeam.length > 0 && !liveTeam.some((m: { isFainted?: boolean; hp?: number }) => m && !m.isFainted && (m.hp ?? 0) > 0)) {
+      this.storage.manager.healTeam(true);
+    }
+
+    const settings = this.storage.getSettings();
+    const reducedMotion = settings.reducedMotion;
     this.battleController.startEncounter({
       ...options,
       reducedMotion,
+      battlePace: settings.battlePace,
       forceOfflineRig: this.sprites.isForceOffline(),
     });
     this.clearBattleTimers();
@@ -1151,6 +1235,7 @@ export class StarlightApp {
     this.clearMovementInputs();
     this.briefing = null;
     this.dialogue = null;
+    this.lastSyncedBattlePhase = '';
     this.screen = 'battle';
     this.syncBgmForCurrentScreen();
     this.syncUI();
@@ -1159,75 +1244,68 @@ export class StarlightApp {
   private applyBattleOutcome(outcome: BattleActionOutcome): void {
     const settings = this.storage.getSettings();
     const reducedMotion = settings.reducedMotion;
-    const paceScale =
-      settings.battlePace === 'fast' ? 0.62 : settings.battlePace === 'classic' ? 0.84 : 1.0;
-    const staggerMs = reducedMotion
-      ? 0
-      : settings.battlePace === 'fast'
-        ? 130
-        : settings.battlePace === 'classic'
-          ? 230
-          : 340;
 
-    // Trigger VFX with clean per-turn pacing so first & second attacks don't stack on frame 0
-    outcome.vfxEvents.forEach((ev, idx) => {
-      const delayMs = idx > 0 ? staggerMs * idx : 0;
-      const fire = () => {
-        this.battleRenderer.triggerVfx({
-          type: ev.type,
-          fromSide: ev.fromSide,
-          targetSide: ev.targetSide,
-          power: ev.power,
-          effectiveness: ev.effectiveness,
-          category: ev.category,
-          composureBraced: ev.composureBraced,
-          isCrit: ev.isCrit,
-          duration: reducedMotion ? Math.min(0.28, ev.duration) : Math.max(0.18, ev.duration * paceScale),
-        });
-      };
-      if (delayMs > 0) {
-        this.battleSfxTimers.push(setTimeout(fire, delayMs));
-      } else {
-        fire();
-      }
-    });
+    for (const ev of outcome.vfxEvents) {
+      this.battleRenderer.triggerVfx({
+        type: ev.type,
+        fromSide: ev.fromSide,
+        targetSide: ev.targetSide,
+        power: ev.power,
+        effectiveness: ev.effectiveness,
+        category: ev.category,
+        composureBraced: ev.composureBraced,
+        isCrit: ev.isCrit,
+        duration: reducedMotion ? Math.min(0.28, ev.duration) : Math.max(0.18, ev.duration),
+      });
+    }
 
-    // Preserve & stagger BOTH attackers' move SFX (no second-attacker overwrite!)
     const moveSfxList = outcome.moveSfxEvents && outcome.moveSfxEvents.length > 0
       ? outcome.moveSfxEvents
       : outcome.moveSfxId
         ? [{ moveId: outcome.moveSfxId, type: outcome.moveSfxFx || 'normal', side: 'player' as const }]
         : [];
-    moveSfxList.forEach((mSfx, idx) => {
-      const delayMs = idx > 0 ? staggerMs * idx : 0;
-      if (delayMs > 0) {
-        this.battleSfxTimers.push(setTimeout(() => {
-          this.audio.playMoveSfx(mSfx.moveId, mSfx.type);
-        }, delayMs));
-      } else {
-        this.audio.playMoveSfx(mSfx.moveId, mSfx.type);
-      }
-    });
+    for (const mSfx of moveSfxList) {
+      this.audio.playMoveSfx(mSfx.moveId, mSfx.type);
+    }
 
-    const leveledUp = Boolean(this.battleController.getState().rewardSummary?.leveledUp);
-    let hitIdx = 0;
+    if (outcome.crySpeciesIds) {
+      for (const speciesId of outcome.crySpeciesIds) {
+        this.audio.playSpeciesCry(speciesId);
+      }
+    }
+
+    if (outcome.abilitySfx) {
+      for (const ab of outcome.abilitySfx) {
+        this.audio.playAbilityCue(ab.abilityId, ab.type);
+      }
+    }
+
+    const hasLevelUpSfx = outcome.sfx.includes('level-up');
     for (const sfx of outcome.sfx) {
-      if (sfx === 'hit' || sfx === 'super-hit') {
-        const delayMs = hitIdx > 0 ? staggerMs * hitIdx : 0;
-        const isSuper = sfx === 'super-hit';
-        hitIdx += 1;
-        if (delayMs > 0) {
-          this.battleSfxTimers.push(setTimeout(() => this.audio.playHit(isSuper), delayMs));
-        } else {
-          this.audio.playHit(isSuper);
-        }
-      } else if (sfx === 'heal') this.audio.playHealChime();
+      if (sfx === 'move-select') this.audio.playMoveSelect();
+      else if (sfx === 'windup') this.audio.playWindup();
+      else if (sfx === 'hit') this.audio.playHit(false);
+      else if (sfx === 'super-hit') this.audio.playHit(true);
+      else if (sfx === 'miss') this.audio.playMiss();
+      else if (sfx === 'heal') this.audio.playHealChime();
+      else if (sfx === 'buff') this.audio.playBuffChime();
+      else if (sfx === 'shield') this.audio.playShieldChime();
+      else if (sfx === 'brace') this.audio.playComposureBrace();
+      else if (sfx === 'endure') this.audio.playBuddyEndure();
+      else if (sfx === 'faint') this.audio.playFaint();
+      else if (sfx === 'shiny') this.audio.playShinySparkle();
       else if (sfx === 'catch-throw') this.audio.playCatchThrow();
+      else if (sfx === 'star-shimmer') this.audio.playStarBallShimmer();
+      else if (sfx === 'catch-absorb') this.audio.playCatchAbsorb();
+      else if (sfx === 'catch-bounce') this.audio.playCatchBounce();
+      else if (sfx === 'catch-shake') this.audio.playCatchShake(outcome.shakeIndex ?? 1);
+      else if (sfx === 'catch-breakout') this.audio.playCatchBreakout();
       else if (sfx === 'catch-success') this.audio.playCatchSuccess();
+      else if (sfx === 'level-up') this.audio.playLevelUp();
       else if (sfx === 'victory') {
-        if (leveledUp) this.audio.playLevelUp();
-        else this.audio.playVictoryFanfare();
+        if (!hasLevelUpSfx) this.audio.playVictoryFanfare();
       } else if (sfx === 'badge') this.audio.playBadgeFanfare();
+      else if (sfx === 'evo-start') this.audio.playEvolutionStart();
       else if (sfx === 'evolve') this.audio.playEvolveFanfare();
     }
 
@@ -1253,6 +1331,10 @@ export class StarlightApp {
 
     const nearby = this.overworldSim.resolveNearbyInteractable();
     if (!nearby) return;
+    // R2-VIS-03: Clear transient toasts before opening RPG dialogue so toasts never cover dialogue text
+    if (nearby.kind !== 'fountain') {
+      this.clearToast();
+    }
 
     if (nearby.kind === 'secret-arcade') {
       if (this.storage.manager.isArcadeUnlocked()) {
@@ -1302,7 +1384,7 @@ export class StarlightApp {
       this.storage.manager.healTeam(true);
       this.overworldSim.refreshState();
       this.audio.playHealChime();
-      this.showToast('Starlight Healing Fountain restored your entire team and refilled Potions!');
+      this.showToast('Starlight Healing Fountain fully restored your team HP & PP and refilled Berry Potions!');
       this.syncUI();
       return;
     }
@@ -1563,6 +1645,7 @@ export class StarlightApp {
 
     this.audio.setMuted(next.audioMuted);
     this.audio.setMasterVolume(next.masterVolume);
+    this.battleController.setBattlePace(next.battlePace);
     this.applyDocumentPreferences(next);
     this.engine.activeBackend.setReducedMotion(next.reducedMotion);
     this.engine.activeBackend.setCrtMode(next.crtMode);
@@ -1693,9 +1776,14 @@ export class StarlightApp {
 
       if (this.screen === 'battle') {
         const bState = this.battleController.getState();
-        const openSwitchToggle = document.querySelector<HTMLButtonElement>(
-          '[data-testid="battle-switch-toggle"][aria-pressed="true"]',
+        const switchDrawerOpenEl = document.querySelector<HTMLElement>(
+          '[data-testid="battle-switch-drawer"]:not([hidden])',
         );
+        const switchToggleBtn = document.querySelector<HTMLButtonElement>(
+          '[data-testid="battle-switch-btn"], [data-testid="battle-switch-toggle"]',
+        );
+        const isSwitchDrawerOpen = Boolean(switchDrawerOpenEl)
+          || switchToggleBtn?.getAttribute('aria-pressed') === 'true';
 
         // Arrow/WASD keyboard focus navigation across active battle controls
         if (
@@ -1723,14 +1811,15 @@ export class StarlightApp {
           return;
         }
 
-        if (bState.phase === 'command' || bState.phase === 'shutter') {
+        // COMBAT-01 & COMBAT-06: HARD INPUT LOCK — hotkeys ONLY fire when phase === 'command' && !inputLocked && switch drawer closed!
+        if (bState.phase === 'command' && !bState.inputLocked && !isSwitchDrawerOpen) {
           const digitIdx =
             code === 'Digit1' ? 0
               : code === 'Digit2' ? 1
                 : code === 'Digit3' ? 2
                   : code === 'Digit4' ? 3
                     : -1;
-          if (digitIdx >= 0 && !openSwitchToggle) {
+          if (digitIdx >= 0) {
             const move = bState.player.mon.moves[digitIdx];
             if (move && move.currentPp > 0) {
               e.preventDefault();
@@ -1740,46 +1829,44 @@ export class StarlightApp {
             }
             return;
           }
-          if (!openSwitchToggle) {
-            if (code === 'KeyB' && bState.canCapture) {
-              e.preventDefault();
-              this.ensureAudioUnlocked();
-              this.applyBattleOutcome(this.battleController.throwBall('poke'));
-              return;
+          if (code === 'KeyB' && bState.canCapture) {
+            e.preventDefault();
+            this.ensureAudioUnlocked();
+            this.applyBattleOutcome(this.battleController.throwBall('poke'));
+            return;
+          }
+          if (code === 'KeyG' && bState.canCapture) {
+            e.preventDefault();
+            this.ensureAudioUnlocked();
+            this.applyBattleOutcome(this.battleController.throwBall('great'));
+            return;
+          }
+          if (code === 'KeyS' && bState.canCapture) {
+            e.preventDefault();
+            this.ensureAudioUnlocked();
+            this.applyBattleOutcome(this.battleController.throwBall('star'));
+            return;
+          }
+          if (code === 'KeyP' || code === 'KeyH') {
+            e.preventDefault();
+            this.ensureAudioUnlocked();
+            this.applyBattleOutcome(this.battleController.usePotion());
+            return;
+          }
+          if (code === 'KeyR' && bState.canRun) {
+            e.preventDefault();
+            this.clearBattleTimers();
+            const outcome = this.battleController.flee();
+            this.applyBattleOutcome(outcome);
+            if (outcome.battleEnded === 'fled') {
+              this.overworldSim.applyPostEscapeGrace();
+              this.overworldSim.syncFromProfile();
+              this.screen = 'overworld';
+              this.syncBgmForCurrentScreen();
+              this.showToast('Escaped safely.');
+              this.syncUI();
             }
-            if (code === 'KeyG' && bState.canCapture) {
-              e.preventDefault();
-              this.ensureAudioUnlocked();
-              this.applyBattleOutcome(this.battleController.throwBall('great'));
-              return;
-            }
-            if (code === 'KeyS' && bState.canCapture) {
-              e.preventDefault();
-              this.ensureAudioUnlocked();
-              this.applyBattleOutcome(this.battleController.throwBall('star'));
-              return;
-            }
-            if (code === 'KeyP' || code === 'KeyH') {
-              e.preventDefault();
-              this.ensureAudioUnlocked();
-              this.applyBattleOutcome(this.battleController.usePotion());
-              return;
-            }
-            if (code === 'KeyR' && bState.canRun) {
-              e.preventDefault();
-              this.clearBattleTimers();
-              const outcome = this.battleController.flee();
-              this.applyBattleOutcome(outcome);
-              if (outcome.battleEnded === 'fled') {
-                this.overworldSim.applyPostEscapeGrace();
-                this.overworldSim.syncFromProfile();
-                this.screen = 'overworld';
-                this.syncBgmForCurrentScreen();
-                this.showToast('Escaped safely.');
-                this.syncUI();
-              }
-              return;
-            }
+            return;
           }
         }
         if (code === 'Space' || code === 'Enter' || code === 'KeyZ') {
@@ -1791,17 +1878,7 @@ export class StarlightApp {
           }
           if (bState.phase === 'victory' || bState.phase === 'defeat') {
             e.preventDefault();
-            this.clearBattleTimers();
-            const wasDefeat = bState.phase === 'defeat';
-            this.battleController.closeBattle();
-            this.overworldSim.syncFromProfile();
-            if (wasDefeat) {
-              this.overworldSim.applyPostWarpGrace();
-              this.audio.playSafeRecall();
-            }
-            this.screen = 'overworld';
-            this.syncBgmForCurrentScreen();
-            this.syncUI();
+            this.handleCloseBattleResult();
             return;
           }
           const activeBtn = document.activeElement;
@@ -1821,23 +1898,13 @@ export class StarlightApp {
           if (bState.phase === 'forced-switch') {
             return;
           }
-          if (openSwitchToggle) {
-            openSwitchToggle.click();
+          if (isSwitchDrawerOpen && switchToggleBtn) {
+            switchToggleBtn.click();
             return;
           }
           if (bState.phase === 'victory' || bState.phase === 'defeat') {
-            this.clearBattleTimers();
-            const wasDefeat = bState.phase === 'defeat';
-            this.battleController.closeBattle();
-            this.overworldSim.syncFromProfile();
-            if (wasDefeat) {
-              this.overworldSim.applyPostWarpGrace();
-              this.audio.playSafeRecall();
-            }
-            this.screen = 'overworld';
-            this.syncBgmForCurrentScreen();
-            this.syncUI();
-          } else if (code === 'Escape' && (bState.phase === 'command' || bState.phase === 'shutter')) {
+            this.handleCloseBattleResult();
+          } else if (code === 'Escape' && bState.phase === 'command' && !bState.inputLocked) {
             this.clearBattleTimers();
             const outcome = this.battleController.flee();
             this.applyBattleOutcome(outcome);
@@ -2038,10 +2105,15 @@ export class StarlightApp {
       backend.endFrame();
     } else if (this.screen === 'battle') {
       this.battleController.update(dtSeconds, { skipVisualTimers: true });
+      const stepOutcome = this.battleController.drainStepOutcome();
+      if (stepOutcome) {
+        this.applyBattleOutcome(stepOutcome);
+      }
       const bState = this.battleController.getState();
       this.battleRenderer.update(bState, dtSeconds);
-      if (bState.phase !== this.lastSyncedBattlePhase) {
-        this.lastSyncedBattlePhase = bState.phase;
+      const battleUiStamp = `${bState.phase}|${bState.inputLocked}|${bState.statusMessage}|${Math.round(bState.player.displayedHp)}|${Math.round(bState.enemy.displayedHp)}`;
+      if (battleUiStamp !== this.lastSyncedBattlePhase) {
+        this.lastSyncedBattlePhase = battleUiStamp;
         needsImmediateUiSync = true;
       }
       backend.beginFrame(elapsedSeconds, dtSeconds);

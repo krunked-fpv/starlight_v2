@@ -97,8 +97,33 @@ async function assertElementCanvasDrawn(page: Page, selector: string): Promise<v
   expect(drawn.distinct, `Expected ${selector} to have tonal/color variance`).toBeGreaterThan(3);
 }
 
+async function waitForBattleSettled(page: Page, timeout = 15_000): Promise<string> {
+  await page.waitForFunction(
+    () => {
+      const ph = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
+      return (
+        ph === 'command' ||
+        ph === 'forced-switch' ||
+        ph === 'evolving' ||
+        ph === 'victory' ||
+        ph === 'defeat'
+      );
+    },
+    undefined,
+    { timeout },
+  );
+  return page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+}
+
 async function exitBattleCleanly(page: Page): Promise<void> {
-  const phase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+  let phase = await waitForBattleSettled(page);
+  if (phase === 'forced-switch') {
+    const healthySwitch = page.locator('[data-testid^="battle-switch-slot-"]:not([disabled])').first();
+    if (await healthySwitch.isVisible().catch(() => false)) {
+      await healthySwitch.click();
+      phase = await waitForBattleSettled(page);
+    }
+  }
   if (phase === 'evolving') {
     await page.getByTestId('battle-confirm-evolution').click();
     await page.getByTestId('battle-close-result').click();
@@ -106,6 +131,10 @@ async function exitBattleCleanly(page: Page): Promise<void> {
     await page.getByTestId('battle-close-result').click();
   } else {
     await page.getByTestId('battle-flee').click();
+  }
+  // Dismiss optional post-victory Rival/Shrine dialogue (GAMEPLAY-01)
+  if (await page.getByTestId('dialogue-overlay').isVisible().catch(() => false)) {
+    await page.keyboard.press('Escape');
   }
   await expect(page.getByTestId('overworld-screen')).toBeVisible();
 }
@@ -246,6 +275,7 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
 
       const preMoveMsg = await page.getByTestId('battle-status-message').textContent();
       await page.getByTestId('battle-move-0').click();
+      await waitForBattleSettled(page);
       const postMoveMsg = await page.getByTestId('battle-status-message').textContent();
       expect(postMoveMsg).not.toBe(preMoveMsg);
 
@@ -253,15 +283,17 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
       const potionBtn = page.getByTestId('battle-potion');
       if (await potionBtn.isEnabled()) {
         await potionBtn.click();
+        await waitForBattleSettled(page);
       }
 
       // Throw Poké Ball / Great Ball / Star Ball while still in command phase
       for (const ballTestId of ['battle-ball-poke', 'battle-ball-great', 'battle-ball-star'] as const) {
-        const curPhase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+        const curPhase = await waitForBattleSettled(page);
         if (curPhase !== 'command') break;
         const btn = page.getByTestId(ballTestId);
         if (await btn.isEnabled()) {
           await btn.click();
+          await waitForBattleSettled(page);
         }
       }
 
@@ -282,8 +314,10 @@ for (const renderer of ['webgl2', 'canvas2d'] as const) {
         { timeout: 20_000 },
       );
       await page.getByTestId('battle-move-0').click();
-      if (await page.getByTestId('battle-potion').isEnabled()) {
+      const afterShrineMove = await waitForBattleSettled(page);
+      if (afterShrineMove === 'command' && (await page.getByTestId('battle-potion').isEnabled())) {
         await page.getByTestId('battle-potion').click();
+        await waitForBattleSettled(page);
       }
       await page.getByTestId('battle-offline-rig').click();
       await exitBattleCleanly(page);

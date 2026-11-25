@@ -1351,10 +1351,20 @@ export class WebGL2Backend implements IRenderBackend {
         this.spriteData = grown;
       }
 
-      const u0 = (sx ?? 0) / texW;
-      const v0 = (sy ?? 0) / texH;
-      const uSpan = (sw ?? texW) / texW;
-      const vSpan = (sh ?? texH) / texH;
+      const rawSx = sx ?? 0;
+      const rawSy = sy ?? 0;
+      const rawSw = sw ?? texW;
+      const rawSh = sh ?? texH;
+      // Inset packed atlas sub-rects slightly so GPU/SwiftShader fixed-point UV
+      // interpolation at quad edges never crosses onto a neighboring tile in the sheet
+      // (e.g. tile_8's bright bevel row directly beneath tile_0 grass in terrain-atlas.png).
+      const uvInset = wantCrisp ? 0.125 : 0.5;
+      const insetX = rawSw < texW && rawSw > 1 ? Math.min(uvInset, rawSw * 0.25) : 0;
+      const insetY = rawSh < texH && rawSh > 1 ? Math.min(uvInset, rawSh * 0.25) : 0;
+      const u0 = (rawSx + insetX) / texW;
+      const v0 = (rawSy + insetY) / texH;
+      const uSpan = (rawSw - insetX * 2) / texW;
+      const vSpan = (rawSh - insetY * 2) / texH;
       const tint = cmd.tint ?? [1, 1, 1, 1];
       const rim = cmd.rimColor ?? [0, 0, 0, 0];
 

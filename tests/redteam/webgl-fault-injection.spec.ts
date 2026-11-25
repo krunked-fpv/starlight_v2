@@ -68,8 +68,33 @@ async function enterOverworldWithStarter(page: Page): Promise<void> {
   await expect(page.getByTestId('overworld-screen')).toBeVisible();
 }
 
+async function waitForBattleSettled(page: Page, timeout = 15_000): Promise<string> {
+  await page.waitForFunction(
+    () => {
+      const ph = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
+      return (
+        ph === 'command' ||
+        ph === 'forced-switch' ||
+        ph === 'evolving' ||
+        ph === 'victory' ||
+        ph === 'defeat'
+      );
+    },
+    undefined,
+    { timeout },
+  );
+  return page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+}
+
 async function exitActiveBattleCleanly(page: Page): Promise<void> {
-  const phase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+  let phase = await waitForBattleSettled(page);
+  if (phase === 'forced-switch') {
+    const healthySwitch = page.locator('[data-testid^="battle-switch-slot-"]:not([disabled])').first();
+    if (await healthySwitch.isVisible().catch(() => false)) {
+      await healthySwitch.click();
+      phase = await waitForBattleSettled(page);
+    }
+  }
   if (phase === 'evolving') {
     await page.getByTestId('battle-confirm-evolution').click();
     await page.getByTestId('battle-close-result').click();
@@ -77,6 +102,9 @@ async function exitActiveBattleCleanly(page: Page): Promise<void> {
     await page.getByTestId('battle-close-result').click();
   } else {
     await page.getByTestId('battle-flee').click();
+  }
+  if (await page.getByTestId('dialogue-overlay').isVisible().catch(() => false)) {
+    await page.keyboard.press('Escape');
   }
   await expect(page.getByTestId('overworld-screen')).toBeVisible();
 }
@@ -293,6 +321,7 @@ test.describe('Red-Team: WebGL2 Context Loss & SwiftShader Canvas2D Parity Tortu
     // If still in command phase, verify another move executes cleanly too
     if (midBattle.battlePhase === 'command') {
       await page.getByTestId('battle-move-0').click();
+      await waitForBattleSettled(page);
     }
 
     await page.waitForTimeout(220);

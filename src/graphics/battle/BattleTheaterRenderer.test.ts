@@ -56,6 +56,7 @@ function createFullMockCanvas2DContext(): CanvasRenderingContext2D & {
   const stroke = vi.fn();
   const fill = vi.fn();
   const fillText = vi.fn();
+  const strokeText = vi.fn();
   const bezierCurveTo = vi.fn();
   const quadraticCurveTo = vi.fn();
   const arc = vi.fn();
@@ -87,6 +88,7 @@ function createFullMockCanvas2DContext(): CanvasRenderingContext2D & {
     fill,
     stroke,
     fillText,
+    strokeText,
     setLineDash: vi.fn(),
     createLinearGradient: vi.fn(() => createGradientStub()),
     createRadialGradient: vi.fn(() => createGradientStub()),
@@ -626,7 +628,8 @@ describe('BattleVfxDirector (all 18 ElementalTypes, heal/buff/shield, BRACED!, S
     expect(ctx._calls.fillText).toHaveBeenCalledWith('ATK+2', expect.any(Number), expect.any(Number));
     expect(ctx._calls.fillText).toHaveBeenCalledWith('DEF-1', expect.any(Number), expect.any(Number));
     expect(ctx._calls.fillText).toHaveBeenCalledWith('SPD+1', expect.any(Number), expect.any(Number));
-    expect(ctx._calls.fillText).toHaveBeenCalledWith('Starlight Shield', expect.any(Number), expect.any(Number));
+    // R2-VIS-04: Canvas must NOT duplicate the DOM ability text box on top of floating damage
+    expect(ctx._calls.fillText).not.toHaveBeenCalledWith('Starlight Shield', expect.any(Number), expect.any(Number));
 
     // Verify ability banner auto-prunes after 2.4s
     for (let i = 0; i < 60; i++) {
@@ -788,5 +791,46 @@ describe('BattleTheaterRenderer shutters, camera cues, hit-stop & reducedMotion 
     const desktopLayout = computeBattleStageLayout(1366, 768);
     expect(desktopLayout.playerPad.y).toBeCloseTo(768 * 0.705, 1);
     expect(desktopLayout.enemyPad.y).toBeCloseTo(768 * 0.575, 1);
+  });
+
+  it('COMBAT-02 & COMBAT-05: renders floating combat damage/callout popups and shakes camera on consecutive hit cues via cameraCueSeq', async () => {
+    const { backend, ctx } = await createCanvasBackendHarness();
+    const renderer = new BattleTheaterRenderer();
+    const state = makeBattleFixture('volcano', 'shrine', false);
+    state.shutter.active = false;
+    state.phase = 'player-acting';
+    state.floatingTexts = [
+      { id: 'ft-1', side: 'enemy', text: '-24', color: '#fde047', size: 24, elapsed: 0.2, delay: 0, duration: 1.3, offsetY: -8 },
+      { id: 'ft-2', side: 'enemy', text: 'SUPER EFFECTIVE!', color: '#fde047', size: 15, elapsed: 0.2, delay: 0.05, duration: 1.4, offsetY: -34 },
+    ];
+
+    // Hit #1
+    state.cameraCue = 'hit';
+    state.cameraCueSeq = 2;
+    renderer.update(state, 0.016);
+    expect(state.hitStopRemaining).toBeGreaterThan(0);
+
+    // Let hit-stop and shake decay completely
+    for (let i = 0; i < 40; i++) {
+      renderer.update(state, 0.04);
+    }
+    expect(state.hitStopRemaining).toBe(0);
+
+    // Consecutive Hit #2 with SAME cue ('hit') but incremented cameraCueSeq MUST re-trigger hit-stop & shake!
+    state.cameraCue = 'hit';
+    state.cameraCueSeq = 3;
+    renderer.update(state, 0.016);
+    expect(state.hitStopRemaining).toBeGreaterThan(0);
+    const camAfterSecondHit = renderer.getCameraTransform(false);
+    expect(Math.abs(camAfterSecondHit.shakeX) + Math.abs(camAfterSecondHit.shakeY)).toBeGreaterThan(0);
+
+    backend.beginFrame(1.5, 0.016);
+    renderer.render(backend, state);
+    backend.endFrame();
+
+    expect(ctx._calls.fillText).toHaveBeenCalledWith('-24', 0, 0);
+    expect(ctx._calls.fillText).toHaveBeenCalledWith('SUPER EFFECTIVE!', 0, 0);
+
+    backend.dispose();
   });
 });

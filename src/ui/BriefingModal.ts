@@ -29,7 +29,7 @@ export class BriefingModal {
     this.lastRenderStamp = '';
 
     container.innerHTML = `
-      <div class="sl-briefing-drawer sl-glass" data-testid="briefing-drawer" role="dialog" aria-modal="true" aria-label="Tactical Readiness Briefing">
+      <div class="sl-briefing-drawer sl-glass sl-rpg-ornate" data-testid="briefing-drawer" role="dialog" aria-modal="true" aria-label="Tactical Readiness Briefing">
         <div class="sl-briefing-head">
           <h2 class="sl-modal-title" style="font-size:17px;">
             ${createIconSvg('icon-briefing', 'sl-icon-md')}
@@ -193,6 +193,13 @@ export class BriefingModal {
       this.previewCanvas = this.contentEl.querySelector('[data-testid="briefing-preview-canvas"]');
       if (this.challengeBtn) {
         this.challengeBtn.disabled = !b.canChallenge;
+        const span = this.challengeBtn.querySelector('span');
+        if (span) {
+          span.textContent =
+            b.biomeId === 'village' && b.kind === 'biome'
+              ? 'Enter Whispering Forest'
+              : 'Challenge Now';
+        }
       }
       if (this.farmBtn) {
         const span = this.farmBtn.querySelector('span');

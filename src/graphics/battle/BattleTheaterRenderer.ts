@@ -150,6 +150,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
   private pendingVfx: BattleVfxEvent[] = [];
   private pendingCameraCue: BattleCameraCue | null = null;
   private lastObservedCue: BattleCameraCue = 'idle';
+  private lastObservedCueSeq = -1;
 
   private spring: CameraSpringState = {
     x: 0,
@@ -273,6 +274,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
 
     if (this.pendingCameraCue) {
       state.cameraCue = this.pendingCameraCue;
+      state.cameraCueSeq = (state.cameraCueSeq ?? 0) + 1;
       state.cameraCueElapsed = 0;
       if (state.cameraCue === 'hit' && !state.reducedMotion) {
         state.hitStopRemaining = Math.max(state.hitStopRemaining, 0.045);
@@ -281,8 +283,12 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       }
       this.applyCueImpulse(state.cameraCue, state.reducedMotion);
       this.lastObservedCue = state.cameraCue;
+      this.lastObservedCueSeq = state.cameraCueSeq;
       this.pendingCameraCue = null;
-    } else if (state.cameraCue !== this.lastObservedCue) {
+    } else if (
+      state.cameraCue !== this.lastObservedCue
+      || (typeof state.cameraCueSeq === 'number' && state.cameraCueSeq !== this.lastObservedCueSeq)
+    ) {
       state.cameraCueElapsed = 0;
       if (state.cameraCue === 'hit' && !state.reducedMotion) {
         state.hitStopRemaining = Math.max(state.hitStopRemaining, 0.045);
@@ -291,6 +297,7 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       }
       this.applyCueImpulse(state.cameraCue, state.reducedMotion);
       this.lastObservedCue = state.cameraCue;
+      this.lastObservedCueSeq = state.cameraCueSeq ?? 0;
     }
 
     if (state.reducedMotion) {
@@ -309,9 +316,6 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
       state.shutter.progress = clamp(state.shutter.progress + dt / dur, 0, 1);
       if (state.shutter.progress >= 1) {
         state.shutter.active = false;
-        if (state.phase === 'shutter') {
-          state.phase = 'command';
-        }
       }
     }
 
@@ -499,9 +503,18 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         captureAlpha = Math.max(0, 1 - absorb);
       }
     }
+    const faintDrop = clamp(visual.faintDrop ?? 0, 0, 1);
+    const sendOut = clamp(visual.sendOutProgress ?? 1, 0, 1);
+    const sendOutScale = sendOut >= 0.99
+      ? 1
+      : 0.25 + 0.75 * (1 - Math.pow(1 - sendOut, 3));
+    const sendOutAlpha = sendOut >= 0.99 ? 1 : clamp(sendOut * 1.9, 0, 1);
+
+    captureScale *= sendOutScale;
+    captureAlpha *= sendOutAlpha * (1 - faintDrop);
     if (captureAlpha <= 0.01) return;
 
-    const bobPx = state.reducedMotion
+    const bobPx = state.reducedMotion || faintDrop > 0.05
       ? 0
       : Math.round(
           Math.sin(state.elapsedSeconds * 3.1 + (visual.side === 'player' ? 0 : 1.7)) * 2,
@@ -511,9 +524,10 @@ export class BattleTheaterRenderer implements IBattleTheaterRenderer {
         ? 1 + Math.sin(state.elapsedSeconds * 9) * 0.08
         : 1;
 
+    const faintDropPx = faintDrop * pad.size * 0.44;
     const cx = pad.x + shiftX;
-    const cy = pad.spriteCy + shiftY - bobPx;
-    const groundY = pad.y;
+    const cy = pad.spriteCy + shiftY - bobPx + faintDropPx;
+    const groundY = pad.y + faintDropPx;
     const drawSize = pad.size * captureScale * evoScale;
     const facing: 'left' | 'right' = visual.side === 'player' ? 'right' : 'left';
     const mon = visual.mon;

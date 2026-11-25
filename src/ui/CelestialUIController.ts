@@ -87,6 +87,14 @@ function compassNeedleSvg(): string {
   return `<svg class="sl-icon sl-icon-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12L20 5l-4.5 7L20 19 4 12z" fill="currentColor" transform="rotate(180 12 12)"/></svg>`;
 }
 
+function rpgCaretSvg(): string {
+  return `<svg class="sl-icon" style="width:12px;height:12px;" viewBox="0 0 12 10" aria-hidden="true"><polygon points="1,1 11,1 6,9" fill="currentColor"/></svg>`;
+}
+
+function selectChevronSvg(): string {
+  return `<svg class="sl-icon" style="width:14px;height:14px;" viewBox="0 0 14 10" aria-hidden="true"><path d="M2 2.5L7 7.5L12 2.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`;
+}
+
 function titleCrestSvg(): string {
   return `
     <svg class="sl-title-crest-svg" viewBox="0 0 64 64" aria-hidden="true">
@@ -130,7 +138,8 @@ function formatStages(stages: { atk: number; def: number; spd: number }): string
   ] as const) {
     const val = stages[k] ?? 0;
     if (val !== 0) {
-      chips.push(`<span class="sl-pill sl-num">${label} ${val > 0 ? `+${val}` : val}</span>`);
+      const cls = val > 0 ? 'sl-pill sl-pill-emerald sl-num' : 'sl-pill sl-pill-rose sl-num';
+      chips.push(`<span class="${cls}" data-stage-stat="${k}">${label} ${val > 0 ? `+${val}` : val}</span>`);
     }
   }
   return chips.join('');
@@ -182,6 +191,7 @@ export class CelestialUIController implements ICelestialUIController {
   private dpadRepeatTimer: ReturnType<typeof setInterval> | null = null;
   private battleSwitchOpen = false;
   private suppressedTransitionToast: string | null = null;
+  private lastOverworldBiomeId: string | null = null;
   private skyPointerDown = false;
   private escapeGuardHandler: ((evt: KeyboardEvent) => void) | null = null;
 
@@ -220,6 +230,7 @@ export class CelestialUIController implements ICelestialUIController {
 
   // Overworld HUD refs
   private hudPortraitCanvas: HTMLCanvasElement | null = null;
+  private hudLeadSpriteCanvas: HTMLCanvasElement | null = null;
   private hudTrainerNameEl: HTMLElement | null = null;
   private hudTrainerLvEl: HTMLElement | null = null;
   private hudBiomeNameEl: HTMLElement | null = null;
@@ -237,17 +248,24 @@ export class CelestialUIController implements ICelestialUIController {
   private enemyNameEl: HTMLElement | null = null;
   private enemyBadgesEl: HTMLElement | null = null;
   private enemyHpBarEl: HTMLElement | null = null;
+  private enemyHpTrailEl: HTMLElement | null = null;
   private enemyHpValEl: HTMLElement | null = null;
   private enemyRivalDotsEl: HTMLElement | null = null;
   private enemyBuffsEl: HTMLElement | null = null;
+  private enemyAbilityBannerEl: HTMLElement | null = null;
 
   private playerNameEl: HTMLElement | null = null;
   private playerBadgesEl: HTMLElement | null = null;
   private playerHpBarEl: HTMLElement | null = null;
+  private playerHpTrailEl: HTMLElement | null = null;
   private playerHpValEl: HTMLElement | null = null;
   private playerXpBarEl: HTMLElement | null = null;
   private playerBuffsEl: HTMLElement | null = null;
+  private playerAbilityBannerEl: HTMLElement | null = null;
 
+  private battleDeckShellEl: HTMLElement | null = null;
+  private battleTurnBadgeEl: HTMLElement | null = null;
+  private battleCaretEl: HTMLElement | null = null;
   private battleMsgEl: HTMLElement | null = null;
   private moveButtons: HTMLButtonElement[] = [];
   private ballPokeBtn: HTMLButtonElement | null = null;
@@ -271,8 +289,8 @@ export class CelestialUIController implements ICelestialUIController {
   private setVolumeLabel: HTMLElement | null = null;
   private setMotionBtn: HTMLButtonElement | null = null;
   private setCrtBtn: HTMLButtonElement | null = null;
-  private setTouchSelect: HTMLSelectElement | null = null;
-  private setPaceSelect: HTMLSelectElement | null = null;
+  private setTouchGroupEl: HTMLElement | null = null;
+  private setPaceGroupEl: HTMLElement | null = null;
   private setTelemetryEl: HTMLElement | null = null;
   private parentTrainerProgressEl: HTMLElement | null = null;
   private parentAllProgressEl: HTMLElement | null = null;
@@ -317,6 +335,7 @@ export class CelestialUIController implements ICelestialUIController {
     this.callbacks = callbacks;
     this.memo.clear();
     this.lastScreen = null;
+    this.lastOverworldBiomeId = null;
     this.battleSwitchOpen = false;
     this.suppressedTransitionToast = null;
     this.skyPointerDown = false;
@@ -395,20 +414,21 @@ export class CelestialUIController implements ICelestialUIController {
         <!-- 2. Professor Willow's Starter Lab -->
         <section class="sl-screen sl-modal-screen" data-screen="starter" data-testid="starter-screen" hidden></section>
 
-        <!-- 3. Ultra-Clean Adventure Overworld HUD -->
+        <!-- 3. HD-2D RPG Adventure Overworld HUD -->
         <section class="sl-screen sl-overworld-screen" data-screen="overworld" data-testid="overworld-screen" hidden>
           <header class="sl-hud-top-row">
-            <!-- Top-left Trainer + Lead Partner + Waypoint Stack -->
+            <!-- Top-left Adventurer Crest + Waypoint Stack (zero duplicate zone banners) -->
             <div class="sl-hud-left-col">
               <div class="sl-trainer-pill sl-hud-plate" data-testid="hud-trainer-pill">
-                <canvas class="sl-hud-portrait" width="44" height="44" data-testid="hud-trainer-portrait" title="Open Style Studio" aria-hidden="true"></canvas>
+                <canvas class="sl-hud-portrait" width="46" height="46" data-testid="hud-trainer-portrait" title="Open Style Studio" aria-hidden="true"></canvas>
                 <div class="sl-hud-trainer-copy">
                   <div class="sl-hud-trainer-line">
                     <strong class="sl-hud-trainer-name" data-testid="hud-trainer-name">Violet</strong>
                     <span class="sl-pill sl-pill-gold sl-num" data-testid="hud-trainer-level">Lv.1</span>
-                    <span class="sl-pill sl-hud-biome-pill" data-testid="hud-biome-name">Starlight Village</span>
+                    <span class="sl-hud-zone-sub" data-testid="hud-biome-name">Starlight Village</span>
                   </div>
                   <div class="sl-hud-lead-row">
+                    <canvas class="sl-hud-lead-sprite" width="24" height="24" data-testid="hud-lead-sprite" aria-hidden="true"></canvas>
                     <span class="sl-hud-lead-text" data-testid="hud-lead-label">Partner Ready</span>
                     <div class="sl-hud-lead-hp-wrap" title="Lead Pokémon HP">
                       <div class="sl-bar-track sl-bar-track-sm">
@@ -420,14 +440,14 @@ export class CelestialUIController implements ICelestialUIController {
                 </div>
               </div>
 
-              <!-- Sleek Waypoint Compass Pill -->
+              <!-- Starlight Astrolabe Waypoint Compass Badge -->
               <button type="button" class="sl-compass-pill sl-hud-plate" data-testid="hud-compass" aria-label="Open Island Guide and Waypoints">
                 <span class="sl-compass-dial" aria-hidden="true">${createIconSvg('icon-compass', 'sl-icon-sm')}</span>
                 <span class="sl-compass-label">Explore Starlight Island</span>
               </button>
             </div>
 
-            <!-- Top-right Sleek RPG Utility Capsule -->
+            <!-- Top-right Iconic RPG Command Crest Bar -->
             <nav class="sl-action-dock sl-hud-plate" aria-label="Adventure Dock">
               <button type="button" class="sl-btn" data-testid="nav-pokedex" aria-label="Open Pokédex and Menu Drawer">
                 ${createIconSvg('icon-pokedex', 'sl-icon-sm')}
@@ -458,11 +478,11 @@ export class CelestialUIController implements ICelestialUIController {
             </nav>
           </header>
 
-          <!-- Open-Air Biome Transition Banner (reserved fixed slot, CLS = 0) -->
+          <!-- Area Transition Scroll Banner (only shown when crossing into a new biome; CLS = 0) -->
           <div class="sl-biome-banner sl-hud-plate" data-testid="biome-banner" aria-live="polite"></div>
 
           <footer class="sl-overworld-footer">
-            <!-- Lightweight Frosted Touch D-Pad (Bottom-Left) -->
+            <!-- Tactile Brass Touch Cross-Pad (Bottom-Left) -->
             <div class="sl-dpad" data-testid="touch-dpad" data-touch-active="false" role="group" aria-label="Movement Controls">
               <button type="button" class="sl-btn sl-dpad-btn sl-dpad-up" data-testid="dpad-up" aria-label="Move Up">${dpadChevronSvg('up')}</button>
               <button type="button" class="sl-btn sl-dpad-btn sl-dpad-left" data-testid="dpad-left" aria-label="Move Left">${dpadChevronSvg('left')}</button>
@@ -482,24 +502,30 @@ export class CelestialUIController implements ICelestialUIController {
         <!-- 4. Tactical Readiness Briefing Modal -->
         <section class="sl-screen sl-briefing-screen" data-screen="briefing" data-testid="briefing-screen" hidden></section>
 
-        <!-- 5. Iconic Switch HD-2D Battle Theater HUD -->
+        <!-- 5. Switch HD-2D Battle Theater HUD -->
         <section class="sl-screen sl-battle-screen" data-screen="battle" data-testid="battle-screen" hidden>
-          <!-- Top Band: Enemy Nameplate TOP-LEFT (unobstructed enemy on right), discreet Rig Toggle TOP-RIGHT -->
+          <!-- Top Band: Enemy Crest Plate + Ability Ribbon TOP-LEFT, Rig Toggle TOP-RIGHT -->
           <div class="sl-battle-top-row">
-            <div class="sl-combatant-card sl-combatant-enemy sl-hud-plate" data-testid="battle-enemy-card">
-              <div class="sl-combatant-head">
-                <strong class="sl-combatant-name" data-testid="battle-enemy-name">Wild Foe Lv.5</strong>
-                <div class="sl-combatant-badges" data-testid="battle-enemy-badges"></div>
+            <div class="sl-combatant-stack">
+              <div class="sl-combatant-card sl-combatant-enemy sl-hud-plate" data-testid="battle-enemy-card">
+                <div class="sl-combatant-head">
+                  <strong class="sl-combatant-name" data-testid="battle-enemy-name">Wild Foe Lv.5</strong>
+                  <div class="sl-combatant-badges" data-testid="battle-enemy-badges"></div>
+                </div>
+                <div class="sl-gauge-row">
+                  <span class="sl-gauge-label">HP</span>
+                  <div class="sl-bar-track">
+                    <div class="sl-bar-trail" data-testid="battle-enemy-hp-trail" style="--trail:1;"></div>
+                    <div class="sl-bar-fill sl-bar-hp" data-testid="battle-enemy-hp-bar" style="--fill:1;"></div>
+                  </div>
+                  <span class="sl-gauge-val sl-num" data-testid="battle-enemy-hp-val">25/25</span>
+                </div>
+                <div class="sl-battle-meta-row">
+                  <div class="sl-battle-buffs" data-testid="battle-enemy-buffs"></div>
+                  <div class="sl-rival-dots" data-testid="battle-rival-dots"></div>
+                </div>
               </div>
-              <div class="sl-gauge-row">
-                <span class="sl-gauge-label">HP</span>
-                <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-hp" data-testid="battle-enemy-hp-bar" style="--fill:1;"></div></div>
-                <span class="sl-gauge-val sl-num" data-testid="battle-enemy-hp-val">25/25</span>
-              </div>
-              <div class="sl-battle-meta-row">
-                <div class="sl-battle-buffs" data-testid="battle-enemy-buffs"></div>
-                <div class="sl-rival-dots" data-testid="battle-rival-dots"></div>
-              </div>
+              <div class="sl-ability-banner" data-testid="battle-enemy-ability-banner" hidden></div>
             </div>
 
             <button
@@ -514,34 +540,44 @@ export class CelestialUIController implements ICelestialUIController {
             </button>
           </div>
 
-          <!-- Center Unobstructed Arena Zone + Player Nameplate anchored bottom-right opposite Player Sprite -->
+          <!-- Center Unobstructed Arena + Player Crest Plate bottom-right opposite Player Sprite -->
           <div class="sl-battle-stage-gap">
-            <div class="sl-combatant-card sl-combatant-player sl-hud-plate" data-testid="battle-player-card">
-              <div class="sl-combatant-head">
-                <strong class="sl-combatant-name" data-testid="battle-player-name">Partner Lv.5</strong>
-                <div class="sl-combatant-badges" data-testid="battle-player-badges"></div>
-              </div>
-              <div class="sl-gauge-row">
-                <span class="sl-gauge-label">HP</span>
-                <div class="sl-bar-track"><div class="sl-bar-fill sl-bar-hp" data-testid="battle-player-hp-bar" style="--fill:1;"></div></div>
-                <span class="sl-gauge-val sl-num" data-testid="battle-player-hp-val">25/25</span>
-              </div>
-              <div class="sl-gauge-row">
-                <span class="sl-gauge-label">XP</span>
-                <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-xp" data-testid="battle-player-xp-bar" style="--fill:0;"></div></div>
-                <span class="sl-battle-buffs" data-testid="battle-player-buffs"></span>
+            <div class="sl-combatant-stack sl-combatant-stack-right">
+              <div class="sl-ability-banner" data-testid="battle-player-ability-banner" hidden></div>
+              <div class="sl-combatant-card sl-combatant-player sl-hud-plate" data-testid="battle-player-card">
+                <div class="sl-combatant-head">
+                  <strong class="sl-combatant-name" data-testid="battle-player-name">Partner Lv.5</strong>
+                  <div class="sl-combatant-badges" data-testid="battle-player-badges"></div>
+                </div>
+                <div class="sl-gauge-row">
+                  <span class="sl-gauge-label">HP</span>
+                  <div class="sl-bar-track">
+                    <div class="sl-bar-trail" data-testid="battle-player-hp-trail" style="--trail:1;"></div>
+                    <div class="sl-bar-fill sl-bar-hp" data-testid="battle-player-hp-bar" style="--fill:1;"></div>
+                  </div>
+                  <span class="sl-gauge-val sl-num" data-testid="battle-player-hp-val">25/25</span>
+                </div>
+                <div class="sl-gauge-row">
+                  <span class="sl-gauge-label">XP</span>
+                  <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-xp" data-testid="battle-player-xp-bar" style="--fill:0;"></div></div>
+                  <span class="sl-battle-buffs" data-testid="battle-player-buffs"></span>
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- Bottom Full-Width RPG Command Console -->
+          <!-- Bottom Full-Width HD-2D RPG Command Console -->
           <div class="sl-battle-console">
             <div class="sl-battle-result-banner sl-glass" data-testid="battle-result-banner" hidden></div>
             <div class="sl-battle-switch-drawer sl-glass" data-testid="battle-switch-drawer" hidden></div>
 
-            <div class="sl-battle-deck-shell sl-glass">
+            <div class="sl-battle-deck-shell sl-glass" data-testid="battle-deck-shell" data-busy="false">
               <div class="sl-battle-left-col">
-                <div class="sl-battle-message" data-testid="battle-status-message">Ready for battle!</div>
+                <div class="sl-battle-message-wrap">
+                  <span class="sl-battle-turn-badge" data-testid="battle-turn-badge" hidden>Your Turn</span>
+                  <div class="sl-battle-message" data-testid="battle-status-message">Ready for battle!</div>
+                  <span class="sl-rpg-caret" data-testid="battle-caret" aria-hidden="true">${rpgCaretSvg()}</span>
+                </div>
 
                 <div class="sl-battle-actions">
                   <button type="button" class="sl-btn sl-act-poke" data-testid="battle-ball-poke">
@@ -595,9 +631,9 @@ export class CelestialUIController implements ICelestialUIController {
           </div>
         </section>
 
-        <!-- 6. Unified 5-Tab Starlight Chronicle Drawer -->
+        <!-- 6. Unified 5-Tab Starlight Chronicle Journal Drawer -->
         <section class="sl-screen sl-modal-screen" data-screen="drawer" data-testid="collector-drawer" hidden>
-          <div class="sl-modal-panel sl-glass" role="dialog" aria-modal="true" aria-label="Starlight Collector Menu">
+          <div class="sl-modal-panel sl-glass sl-rpg-ornate" role="dialog" aria-modal="true" aria-label="Starlight Collector Menu">
             <header class="sl-drawer-header">
               <div class="sl-drawer-tabs" role="tablist" aria-label="Collector Tabs">
                 <button type="button" class="sl-btn sl-drawer-tab" role="tab" data-drawer-tab="pokedex" data-testid="drawer-tab-pokedex" aria-selected="true">
@@ -637,9 +673,9 @@ export class CelestialUIController implements ICelestialUIController {
           </div>
         </section>
 
-        <!-- 7. Settings & Parent Zone Modal -->
+        <!-- 7. Settings & Parent Zone Modal (Crafted RPG Segmented Controls) -->
         <section class="sl-screen sl-modal-screen" data-screen="settings" data-testid="settings-screen" hidden>
-          <div class="sl-modal-panel sl-glass sl-settings-modal" role="dialog" aria-modal="true" aria-label="Settings and Parent Zone">
+          <div class="sl-modal-panel sl-glass sl-rpg-ornate sl-settings-modal" role="dialog" aria-modal="true" aria-label="Settings and Parent Zone">
             <header class="sl-modal-header">
               <h2 class="sl-modal-title">
                 ${createIconSvg('icon-settings', 'sl-icon-md')}
@@ -653,10 +689,10 @@ export class CelestialUIController implements ICelestialUIController {
 
             <div class="sl-settings-body">
               <div class="sl-settings-grid">
-                <div class="sl-settings-row">
-                  <div class="sl-settings-label">
+                <div class="sl-setting-card">
+                  <div class="sl-setting-copy">
                     <strong>Switch Trainer Profile</strong>
-                    <span class="sl-settings-hint">Swap between Violet &amp; Ozias</span>
+                    <small>Swap between Violet &amp; Ozias</small>
                   </div>
                   <button type="button" class="sl-btn sl-btn-cyan" data-testid="setting-switch-trainer">
                     ${createIconSvg('icon-team', 'sl-icon-sm')}
@@ -664,10 +700,10 @@ export class CelestialUIController implements ICelestialUIController {
                   </button>
                 </div>
 
-                <div class="sl-settings-row">
-                  <div class="sl-settings-label">
+                <div class="sl-setting-card">
+                  <div class="sl-setting-copy">
                     <strong>Local Progress Save</strong>
-                    <span class="sl-settings-hint">Write save to browser storage</span>
+                    <small>Write save to browser storage</small>
                   </div>
                   <button type="button" class="sl-btn" data-testid="setting-save-now">
                     ${createIconSvg('icon-save', 'sl-icon-sm')}
@@ -675,10 +711,10 @@ export class CelestialUIController implements ICelestialUIController {
                   </button>
                 </div>
 
-                <div class="sl-settings-row">
-                  <div class="sl-settings-label">
+                <div class="sl-setting-card">
+                  <div class="sl-setting-copy">
                     <strong>Audio Synth</strong>
-                    <span class="sl-settings-hint">Retro chiptune BGM &amp; SFX</span>
+                    <small>Retro chiptune BGM &amp; SFX</small>
                   </div>
                   <button type="button" class="sl-btn" data-testid="setting-audio-mute" aria-pressed="false">
                     ${createIconSvg('icon-audio-on', 'sl-icon-sm')}
@@ -686,17 +722,17 @@ export class CelestialUIController implements ICelestialUIController {
                   </button>
                 </div>
 
-                <div class="sl-settings-row sl-settings-row-stack">
-                  <div class="sl-settings-label">
-                    <label for="sl-setting-volume">Master Volume (<span class="sl-num" data-testid="setting-volume-val">65%</span>)</label>
+                <div class="sl-setting-card sl-setting-card-stack">
+                  <div class="sl-setting-copy">
+                    <label for="sl-setting-volume"><strong>Master Volume (<span class="sl-num" data-testid="setting-volume-val">65%</span>)</strong></label>
                   </div>
                   <input id="sl-setting-volume" class="sl-range" type="range" min="0" max="100" value="65" data-testid="setting-volume" />
                 </div>
 
-                <div class="sl-settings-row">
-                  <div class="sl-settings-label">
+                <div class="sl-setting-card">
+                  <div class="sl-setting-copy">
                     <strong>CRT Scanlines</strong>
-                    <span class="sl-settings-hint">Subtle handheld phosphor lines</span>
+                    <small>Subtle handheld phosphor lines</small>
                   </div>
                   <button type="button" class="sl-btn" data-testid="setting-crt" aria-pressed="false">
                     ${createIconSvg('icon-crt', 'sl-icon-sm')}
@@ -704,10 +740,10 @@ export class CelestialUIController implements ICelestialUIController {
                   </button>
                 </div>
 
-                <div class="sl-settings-row">
-                  <div class="sl-settings-label">
+                <div class="sl-setting-card">
+                  <div class="sl-setting-copy">
                     <strong>Reduced Motion</strong>
-                    <span class="sl-settings-hint">Minimize camera shake &amp; tilt</span>
+                    <small>Minimize camera shake &amp; tilt</small>
                   </div>
                   <button type="button" class="sl-btn" data-testid="setting-reduced-motion" aria-pressed="false">
                     ${createIconSvg('icon-motion', 'sl-icon-sm')}
@@ -715,42 +751,48 @@ export class CelestialUIController implements ICelestialUIController {
                   </button>
                 </div>
 
-                <div class="sl-settings-row sl-settings-row-stack">
-                  <div class="sl-settings-label">
-                    <label for="sl-setting-pace">Battle Pace</label>
+                <div class="sl-setting-card sl-setting-card-stack">
+                  <div class="sl-setting-copy">
+                    <strong>Battle Pace</strong>
+                    <small>Turn narration &amp; animation cadence</small>
                   </div>
-                  <select id="sl-setting-pace" class="sl-select" data-testid="setting-battle-pace">
-                    <option value="cinema">Cinema (Dramatic)</option>
-                    <option value="classic">Classic</option>
-                    <option value="fast">Fast</option>
-                  </select>
+                  <div class="sl-seg-group" data-testid="setting-battle-pace" role="group" aria-label="Battle Pace">
+                    <button type="button" class="sl-seg-btn" data-pace-val="cinema" aria-pressed="false">Cinema</button>
+                    <button type="button" class="sl-seg-btn" data-pace-val="classic" aria-pressed="false">Classic</button>
+                    <button type="button" class="sl-seg-btn" data-pace-val="fast" aria-pressed="false">Fast</button>
+                  </div>
                 </div>
 
-                <div class="sl-settings-row sl-settings-row-stack">
-                  <div class="sl-settings-label">
-                    <label for="sl-setting-touch">Touch D-Pad</label>
+                <div class="sl-setting-card sl-setting-card-stack">
+                  <div class="sl-setting-copy">
+                    <strong>Touch D-Pad</strong>
+                    <small>On-screen movement pad visibility</small>
                   </div>
-                  <select id="sl-setting-touch" class="sl-select" data-testid="setting-touch-mode">
-                    <option value="auto">Auto</option>
-                    <option value="show">Always Show</option>
-                    <option value="hide">Hide</option>
-                  </select>
+                  <div class="sl-seg-group" data-testid="setting-touch-mode" role="group" aria-label="Touch D-Pad Mode">
+                    <button type="button" class="sl-seg-btn" data-touch-val="auto" aria-pressed="false">Auto</button>
+                    <button type="button" class="sl-seg-btn" data-touch-val="show" aria-pressed="false">Show</button>
+                    <button type="button" class="sl-seg-btn" data-touch-val="hide" aria-pressed="false">Hide</button>
+                  </div>
                 </div>
 
-                <div class="sl-settings-row sl-settings-row-stack" style="grid-column: 1 / -1;">
-                  <div class="sl-settings-label">
-                    <label for="sl-setting-renderer">Graphics Renderer</label>
+                <div class="sl-setting-card sl-setting-card-stack sl-setting-card-wide">
+                  <div class="sl-setting-copy">
+                    <label for="sl-setting-renderer"><strong>Graphics Renderer</strong></label>
+                    <small>Switch seamlessly between WebGL2 hardware and Canvas2D parity</small>
                   </div>
-                  <select id="sl-setting-renderer" class="sl-select" data-testid="setting-renderer">
-                    <option value="auto">Auto (WebGL2 + Canvas2D Parity)</option>
-                    <option value="webgl2">WebGL2 Hardware</option>
-                    <option value="canvas2d">Canvas2D Parity</option>
-                  </select>
+                  <div class="sl-select-wrap">
+                    <select id="sl-setting-renderer" class="sl-select" data-testid="setting-renderer">
+                      <option value="auto">Auto (WebGL2 + Canvas2D Parity)</option>
+                      <option value="webgl2">WebGL2 Hardware</option>
+                      <option value="canvas2d">Canvas2D Parity</option>
+                    </select>
+                    <span class="sl-select-caret" aria-hidden="true">${selectChevronSvg()}</span>
+                  </div>
                 </div>
               </div>
 
               <div class="sl-parent-zone" data-testid="parent-zone">
-                <h3 class="sl-style-group-title">${createIconSvg('icon-shield', 'sl-icon-sm')} Parent Zone (Hold 3 Seconds to Reset)</h3>
+                <h3 class="sl-section-title">${createIconSvg('icon-shield', 'sl-icon-sm')} Parent Zone (Hold 3 Seconds to Reset)</h3>
                 <p style="margin:0; font-size:12px; color:var(--sl-text-secondary);">
                   Press and hold a reset button for 3 full seconds to confirm. Releasing early cancels safely.
                 </p>
@@ -768,8 +810,8 @@ export class CelestialUIController implements ICelestialUIController {
                 </div>
               </div>
 
-              <div class="sl-settings-meta sl-num">
-                <span>Starlight Island v2</span>
+              <div class="sl-settings-footer-meta sl-num">
+                <span>Starlight Island HD-2D</span>
                 <span data-testid="engine-telemetry">Canvas2D • 60 FPS</span>
               </div>
             </div>
@@ -778,10 +820,10 @@ export class CelestialUIController implements ICelestialUIController {
 
         <!-- 8. Sky-Hop Arcade HUD -->
         <section class="sl-screen sl-skyhop-screen" data-screen="skyhop" data-testid="skyhop-screen" hidden>
-          <div class="sl-skyhop-surface" data-testid="skyhop-flight-surface" aria-label="Sky-Hop Flight Surface"></div>
-
-          <header class="sl-skyhop-topbar sl-hud-plate">
-            <div class="sl-skyhop-stats-row">
+          <div class="sl-skyhop-flight-surface" data-testid="skyhop-flight-surface" aria-label="Sky-Hop Flight Surface"></div>
+          <div class="sl-skyhop-hud-layer">
+            <header class="sl-skyhop-topbar sl-hud-plate">
+              <div class="sl-skyhop-stats">
               <div class="sl-skyhop-stat">
                 <span class="sl-skyhop-stat-label">Score</span>
                 <span class="sl-skyhop-stat-val sl-num" data-testid="skyhop-score">0</span>
@@ -843,6 +885,7 @@ export class CelestialUIController implements ICelestialUIController {
               </button>
             </div>
           </footer>
+          </div>
         </section>
 
         <!-- 9. Classic RPG Dialogue Overlay -->
@@ -899,6 +942,7 @@ export class CelestialUIController implements ICelestialUIController {
     this.oziasStatsEl = q('[data-testid="profile-ozias-stats"]');
 
     this.hudPortraitCanvas = q('[data-testid="hud-trainer-portrait"]');
+    this.hudLeadSpriteCanvas = q('[data-testid="hud-lead-sprite"]');
     this.hudTrainerNameEl = q('[data-testid="hud-trainer-name"]');
     this.hudTrainerLvEl = q('[data-testid="hud-trainer-level"]');
     this.hudBiomeNameEl = q('[data-testid="hud-biome-name"]');
@@ -915,17 +959,24 @@ export class CelestialUIController implements ICelestialUIController {
     this.enemyNameEl = q('[data-testid="battle-enemy-name"]');
     this.enemyBadgesEl = q('[data-testid="battle-enemy-badges"]');
     this.enemyHpBarEl = q('[data-testid="battle-enemy-hp-bar"]');
+    this.enemyHpTrailEl = q('[data-testid="battle-enemy-hp-trail"]');
     this.enemyHpValEl = q('[data-testid="battle-enemy-hp-val"]');
     this.enemyBuffsEl = q('[data-testid="battle-enemy-buffs"]');
     this.enemyRivalDotsEl = q('[data-testid="battle-rival-dots"]');
+    this.enemyAbilityBannerEl = q('[data-testid="battle-enemy-ability-banner"]');
 
     this.playerNameEl = q('[data-testid="battle-player-name"]');
     this.playerBadgesEl = q('[data-testid="battle-player-badges"]');
     this.playerHpBarEl = q('[data-testid="battle-player-hp-bar"]');
+    this.playerHpTrailEl = q('[data-testid="battle-player-hp-trail"]');
     this.playerHpValEl = q('[data-testid="battle-player-hp-val"]');
     this.playerXpBarEl = q('[data-testid="battle-player-xp-bar"]');
     this.playerBuffsEl = q('[data-testid="battle-player-buffs"]');
+    this.playerAbilityBannerEl = q('[data-testid="battle-player-ability-banner"]');
 
+    this.battleDeckShellEl = q('[data-testid="battle-deck-shell"]');
+    this.battleTurnBadgeEl = q('[data-testid="battle-turn-badge"]');
+    this.battleCaretEl = q('[data-testid="battle-caret"]');
     this.battleMsgEl = q('[data-testid="battle-status-message"]');
     this.moveButtons = [0, 1, 2, 3]
       .map((i) => q<HTMLButtonElement>(`[data-testid="battle-move-${i}"]`))
@@ -953,8 +1004,8 @@ export class CelestialUIController implements ICelestialUIController {
     this.setVolumeLabel = q('[data-testid="setting-volume-val"]');
     this.setMotionBtn = q('[data-testid="setting-reduced-motion"]');
     this.setCrtBtn = q('[data-testid="setting-crt"]');
-    this.setTouchSelect = q('[data-testid="setting-touch-mode"]');
-    this.setPaceSelect = q('[data-testid="setting-battle-pace"]');
+    this.setTouchGroupEl = q('[data-testid="setting-touch-mode"]');
+    this.setPaceGroupEl = q('[data-testid="setting-battle-pace"]');
     this.setTelemetryEl = q('[data-testid="engine-telemetry"]');
     this.parentTrainerProgressEl = q('[data-testid="parent-reset-trainer-fill"]');
     this.parentAllProgressEl = q('[data-testid="parent-reset-all-fill"]');
@@ -1152,15 +1203,15 @@ export class CelestialUIController implements ICelestialUIController {
       const cur = Boolean(this.lastSnapshot?.save.settings.crtMode);
       this.callbacks?.onUpdateSettings({ crtMode: !cur });
     });
-    this.setTouchSelect?.addEventListener('change', () => {
-      if (this.setTouchSelect) {
-        this.callbacks?.onUpdateSettings({ showTouchPad: this.setTouchSelect.value as TouchPadMode });
-      }
+    this.setTouchGroupEl?.addEventListener('click', (evt) => {
+      const btn = (evt.target as HTMLElement | null)?.closest('[data-touch-val]') as HTMLButtonElement | null;
+      const val = btn?.getAttribute('data-touch-val') as TouchPadMode | null;
+      if (val) this.callbacks?.onUpdateSettings({ showTouchPad: val });
     });
-    this.setPaceSelect?.addEventListener('change', () => {
-      if (this.setPaceSelect) {
-        this.callbacks?.onUpdateSettings({ battlePace: this.setPaceSelect.value as BattlePace });
-      }
+    this.setPaceGroupEl?.addEventListener('click', (evt) => {
+      const btn = (evt.target as HTMLElement | null)?.closest('[data-pace-val]') as HTMLButtonElement | null;
+      const val = btn?.getAttribute('data-pace-val') as BattlePace | null;
+      if (val) this.callbacks?.onUpdateSettings({ battlePace: val });
     });
     root.querySelector('[data-testid="setting-save-now"]')?.addEventListener('click', () => {
       this.callbacks?.onForceSave();
@@ -1373,10 +1424,10 @@ export class CelestialUIController implements ICelestialUIController {
       setHidden(this.skyhopScreen, screen !== 'skyhop');
     }
 
-    // Fixed-position Toast Banner (CLS === 0; suppresses stale transition toasts on battle/drawers/modals)
+    // Fixed-position Toast Banner (CLS === 0; suppresses stale transition toasts & hides while JRPG dialogue is open)
     const rawToast = snapshot.toastMessage ? sanitizeNoEmoji(snapshot.toastMessage) : '';
     const isStaleToast = rawToast !== '' && rawToast === this.suppressedTransitionToast;
-    const cleanToast = isStaleToast ? '' : rawToast;
+    const cleanToast = isStaleToast || Boolean(snapshot.dialogue) ? '' : rawToast;
     if (this.suppressedTransitionToast !== null && rawToast !== this.suppressedTransitionToast) {
       this.suppressedTransitionToast = null;
     }
@@ -1432,7 +1483,7 @@ export class CelestialUIController implements ICelestialUIController {
         getFrames: (id) => this.getCachedFrames?.(id, false, false) ?? null,
       });
     } else if (screen === 'overworld' || screen === 'briefing') {
-      this.syncOverworld(snapshot, profile, charSheet);
+      this.syncOverworld(snapshot, profile, charSheet, fallbackSheet, timeSec);
       if (screen === 'briefing') {
         const b = snapshot.briefing;
         const bFrames = b ? this.getCachedFrames?.(b.previewSpeciesId, false, false) ?? null : null;
@@ -1571,6 +1622,8 @@ export class CelestialUIController implements ICelestialUIController {
     snapshot: UIRenderSnapshot,
     profile: DojoProfileState,
     charSheet: HTMLImageElement | null,
+    fallbackSheet: HTMLImageElement | null,
+    timeSec: number,
   ): void {
     const ow = snapshot.overworld;
     const trainerName = getCleanTrainerName(profile, profile.trainerId);
@@ -1581,7 +1634,7 @@ export class CelestialUIController implements ICelestialUIController {
     this.setMemoText('hud-lv', this.hudTrainerLvEl, `Lv.${lv}`);
     this.setMemoText('hud-biome', this.hudBiomeNameEl, sanitizeNoEmoji(ow.currentBiomeName));
 
-    // Lead Partner + live HP bar on top-left RPG plate
+    // Lead Partner mini-sprite + live HP bar on top-left Adventurer Crest
     const lead = profile.team[0];
     if (lead) {
       const leadSp = getSpeciesEntry(lead.speciesId);
@@ -1594,7 +1647,24 @@ export class CelestialUIController implements ICelestialUIController {
         this.hudLeadHpBarEl.setAttribute('data-low', String(hpRatio <= 0.25));
         this.hudLeadHpBarEl.setAttribute('data-mid', String(hpRatio > 0.25 && hpRatio <= 0.52));
       }
+      if (this.hudLeadSpriteCanvas) {
+        setHidden(this.hudLeadSpriteCanvas, false);
+        const leadStamp = `${lead.speciesId}|${lead.isShiny}|${snapshot.spriteCacheVersion}|${Math.floor(timeSec * 6)}`;
+        if (this.memo.get('hud-lead-sprite') !== leadStamp) {
+          this.memo.set('hud-lead-sprite', leadStamp);
+          renderPokemonPreviewCanvas(
+            this.hudLeadSpriteCanvas,
+            lead.speciesId,
+            this.getCachedFrames?.(lead.speciesId, false, lead.isShiny) ?? null,
+            fallbackSheet,
+            this.manifest,
+            lead.isShiny,
+            timeSec,
+          );
+        }
+      }
     } else {
+      setHidden(this.hudLeadSpriteCanvas, true);
       this.setMemoText('hud-lead', this.hudLeadLabelEl, 'Visit Professor Willow');
       this.hudLeadHpBarEl?.style.setProperty('--fill', '1');
     }
@@ -1656,23 +1726,32 @@ export class CelestialUIController implements ICelestialUIController {
       );
     }
 
-    // Open-air Biome Transition Banner (opacity/transform only -> CLS === 0)
-    if (this.biomeBannerEl) {
-      const showBanner = ow.biomeBannerTimer > 0;
-      this.biomeBannerEl.classList.toggle('is-visible', showBanner);
-      if (showBanner) {
-        const vp = getBiomeVisualProfile(ow.currentBiomeId);
-        this.setMemoHtml(
-          'biome-banner',
-          this.biomeBannerEl,
-          `
-            ${createIconSvg(typeToIconId(vp.elementalType), 'sl-icon-md')}
-            <div>
-              <div class="sl-biome-name">${safeText(vp.displayName)}</div>
-              <div class="sl-biome-sub">${safeText(vp.subtitle)}</div>
-            </div>
-          `,
-        );
+    // Area Transition Scroll Banner: ONLY display when entering a DIFFERENT biome (never duplicates initial spawn!)
+    if (this.lastOverworldBiomeId === null) {
+      this.lastOverworldBiomeId = ow.currentBiomeId;
+      this.biomeBannerEl?.classList.remove('is-visible');
+    } else {
+      const changedBiome = this.lastOverworldBiomeId !== ow.currentBiomeId;
+      if (changedBiome) {
+        this.lastOverworldBiomeId = ow.currentBiomeId;
+      }
+      if (this.biomeBannerEl) {
+        const showBanner = ow.biomeBannerTimer > 0 && (changedBiome || this.biomeBannerEl.classList.contains('is-visible'));
+        this.biomeBannerEl.classList.toggle('is-visible', showBanner);
+        if (showBanner) {
+          const vp = getBiomeVisualProfile(ow.currentBiomeId);
+          this.setMemoHtml(
+            'biome-banner',
+            this.biomeBannerEl,
+            `
+              ${createIconSvg(typeToIconId(vp.elementalType), 'sl-icon-md')}
+              <div>
+                <div class="sl-biome-name">${safeText(vp.displayName)}</div>
+                <div class="sl-biome-sub">${safeText(vp.subtitle)}</div>
+              </div>
+            `,
+          );
+        }
       }
     }
 
@@ -1732,7 +1811,7 @@ export class CelestialUIController implements ICelestialUIController {
     const battle = snapshot.battle;
     const p = battle.player.mon;
     const e = battle.enemy.mon;
-    const commandReady = battle.phase === 'command';
+    const commandReady = !battle.inputLocked && battle.phase === 'command';
     const bag = snapshot.profile?.bag ?? {
       potions: 0,
       greatBalls: 0,
@@ -1743,7 +1822,15 @@ export class CelestialUIController implements ICelestialUIController {
     };
     const isEnemyCaught = Number(snapshot.profile?.pokedex?.caught?.[e.speciesId] ?? 0) > 0;
 
-    // Enemy Nameplate (Top-Left)
+    this.battleDeckShellEl?.setAttribute('data-busy', String(!commandReady));
+    if (this.battleTurnBadgeEl) {
+      const label = battle.activeActionLabel ? sanitizeNoEmoji(battle.activeActionLabel) : '';
+      setHidden(this.battleTurnBadgeEl, !label);
+      if (label) this.setMemoText('b-turn-badge', this.battleTurnBadgeEl, label);
+    }
+    setHidden(this.battleCaretEl, !commandReady);
+
+    // Enemy Crest Plate (Top-Left)
     this.setMemoText('b-e-name', this.enemyNameEl, `${sanitizeNoEmoji(e.displayName)} Lv.${e.level}`);
     const trait = getSanitizedTraitLabel(e.encounterTrait);
     const tierText =
@@ -1768,33 +1855,65 @@ export class CelestialUIController implements ICelestialUIController {
     `;
     this.setMemoHtml('b-e-badges', this.enemyBadgesEl, eBadgesHtml);
 
-    const eHpRatio = Math.max(0, Math.min(1, e.hp / Math.max(1, e.maxHp)));
+    const eMaxHp = Math.max(1, e.maxHp);
+    const eDisplayedHp = Number.isFinite(battle.enemy.displayedHp) ? battle.enemy.displayedHp : e.hp;
+    const eHpRatio = Math.max(0, Math.min(1, e.hp / eMaxHp));
+    const eTrailRatio = Math.max(eHpRatio, Math.min(1, eDisplayedHp / eMaxHp));
     if (this.enemyHpBarEl) {
       this.enemyHpBarEl.style.setProperty('--fill', String(eHpRatio));
       this.enemyHpBarEl.setAttribute('data-low', String(eHpRatio <= 0.25));
       this.enemyHpBarEl.setAttribute('data-mid', String(eHpRatio > 0.25 && eHpRatio <= 0.52));
     }
-    this.setMemoText('b-e-hp', this.enemyHpValEl, `${e.hp}/${e.maxHp}`);
+    this.enemyHpTrailEl?.style.setProperty('--trail', String(eTrailRatio));
+    this.setMemoText('b-e-hp', this.enemyHpValEl, `${Math.max(0, Math.round(eDisplayedHp))}/${e.maxHp}`);
 
     const eBuffHtml = `
       ${e.abilityName ? `<span class="sl-pill">${safeText(e.abilityName)}</span>` : ''}
       ${trait ? `<span class="sl-pill">${createIconSvg(trait.iconId, 'sl-icon-sm')} ${safeText(trait.label)}</span>` : ''}
-      ${e.shieldTurns > 0 ? `<span class="sl-pill sl-pill-cyan">${createIconSvg('icon-shield', 'sl-icon-sm')} ${e.shieldTurns}T</span>` : ''}
+      ${e.shieldTurns > 0 ? `<span class="sl-pill sl-pill-cyan">${createIconSvg('icon-shield', 'sl-icon-sm')} SHLD ${e.shieldTurns}T</span>` : ''}
       ${formatStages(e.battleStages)}
     `;
     this.setMemoHtml('b-e-buffs', this.enemyBuffsEl, eBuffHtml);
 
-    if (battle.isTrainerBattle && battle.rivalTotalMons > 1) {
+    // Rival Enemy Party Poké Ball Pips (powered by #36 enemyPartyPips!)
+    const pips = battle.enemyPartyPips;
+    if (Array.isArray(pips) && pips.length > 1) {
+      const dots = pips
+        .map((pip) => {
+          const title = `${sanitizeNoEmoji(pip.name)} Lv.${pip.level}${pip.fainted ? ' (Fainted)' : pip.active ? ' (Active)' : ''}`;
+          const style = pip.fainted
+            ? 'opacity:0.24; filter:grayscale(1);'
+            : pip.active
+              ? 'color:var(--sl-brass-bright); filter:drop-shadow(0 0 4px rgba(255,230,153,0.75));'
+              : 'opacity:0.9;';
+          return `<span style="${style}" title="${safeText(title)}" data-pip-fainted="${pip.fainted}" data-pip-active="${pip.active}">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
+        })
+        .join('');
+      this.setMemoHtml('b-e-dots', this.enemyRivalDotsEl, dots);
+    } else if (battle.isTrainerBattle && battle.rivalTotalMons > 1) {
       const dots = Array.from({ length: battle.rivalTotalMons }, (_, i) => {
         const alive = i < battle.rivalRemainingMons;
-        return `<span style="opacity:${alive ? 1 : 0.25};">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
+        return `<span style="opacity:${alive ? 1 : 0.24};">${createIconSvg('icon-pokeball', 'sl-icon-sm')}</span>`;
       }).join('');
       this.setMemoHtml('b-e-dots', this.enemyRivalDotsEl, dots);
     } else {
       this.setMemoHtml('b-e-dots', this.enemyRivalDotsEl, '');
     }
 
-    // Player Nameplate (Bottom-Right above console, clear of Player Sprite)
+    // Enemy Ability Activation Ribbon
+    const eAb = battle.enemy.abilityBanner;
+    if (eAb && this.enemyAbilityBannerEl) {
+      setHidden(this.enemyAbilityBannerEl, false);
+      this.setMemoHtml(
+        'b-e-ab-ban',
+        this.enemyAbilityBannerEl,
+        `${createIconSvg('icon-sparkle', 'sl-icon-sm')} <strong>${safeText(sanitizeNoEmoji(eAb.name))}</strong> <span style="color:var(--sl-text); font-weight:700;">${safeText(sanitizeNoEmoji(eAb.summary))}</span>`,
+      );
+    } else {
+      setHidden(this.enemyAbilityBannerEl, true);
+    }
+
+    // Player Crest Plate (Bottom-Right above console, clear of Player Sprite)
     this.setMemoText('b-p-name', this.playerNameEl, `${sanitizeNoEmoji(p.displayName)} Lv.${p.level}`);
     const pBadgesHtml = `
       <span class="sl-pill sl-type-pill" data-type="${p.type}">
@@ -1806,28 +1925,50 @@ export class CelestialUIController implements ICelestialUIController {
     `;
     this.setMemoHtml('b-p-badges', this.playerBadgesEl, pBadgesHtml);
 
-    const pHpRatio = Math.max(0, Math.min(1, p.hp / Math.max(1, p.maxHp)));
+    const pMaxHp = Math.max(1, p.maxHp);
+    const pDisplayedHp = Number.isFinite(battle.player.displayedHp) ? battle.player.displayedHp : p.hp;
+    const pHpRatio = Math.max(0, Math.min(1, p.hp / pMaxHp));
+    const pTrailRatio = Math.max(pHpRatio, Math.min(1, pDisplayedHp / pMaxHp));
     if (this.playerHpBarEl) {
       this.playerHpBarEl.style.setProperty('--fill', String(pHpRatio));
       this.playerHpBarEl.setAttribute('data-low', String(pHpRatio <= 0.25));
       this.playerHpBarEl.setAttribute('data-mid', String(pHpRatio > 0.25 && pHpRatio <= 0.52));
     }
-    this.setMemoText('b-p-hp', this.playerHpValEl, `${p.hp}/${p.maxHp}`);
+    this.playerHpTrailEl?.style.setProperty('--trail', String(pTrailRatio));
+    this.setMemoText('b-p-hp', this.playerHpValEl, `${Math.max(0, Math.round(pDisplayedHp))}/${p.maxHp}`);
 
-    const pXpRatio = Math.max(0, Math.min(1, p.xp / Math.max(1, p.xpToNext)));
+    const pXpRatio = Number.isFinite(battle.player.displayedXpRatio)
+      ? Math.max(0, Math.min(1, battle.player.displayedXpRatio))
+      : Math.max(0, Math.min(1, p.xp / Math.max(1, p.xpToNext)));
     this.playerXpBarEl?.style.setProperty('--fill', String(pXpRatio));
 
     const pBuffHtml = `
-      ${p.shieldTurns > 0 ? `<span class="sl-pill sl-pill-cyan">${createIconSvg('icon-shield', 'sl-icon-sm')} ${p.shieldTurns}T</span>` : ''}
+      ${p.shieldTurns > 0 ? `<span class="sl-pill sl-pill-cyan">${createIconSvg('icon-shield', 'sl-icon-sm')} SHLD ${p.shieldTurns}T</span>` : ''}
       ${formatStages(p.battleStages)}
     `;
     this.setMemoHtml('b-p-buffs', this.playerBuffsEl, pBuffHtml);
 
-    // Status message + recent log
-    const recent = battle.battleLog.slice(-2).map((l) => sanitizeNoEmoji(l)).join(' • ');
-    this.setMemoText('b-msg', this.battleMsgEl, recent || sanitizeNoEmoji(battle.statusMessage));
+    // Player Ability Activation Ribbon
+    const pAb = battle.player.abilityBanner;
+    if (pAb && this.playerAbilityBannerEl) {
+      setHidden(this.playerAbilityBannerEl, false);
+      this.setMemoHtml(
+        'b-p-ab-ban',
+        this.playerAbilityBannerEl,
+        `${createIconSvg('icon-sparkle', 'sl-icon-sm')} <strong>${safeText(sanitizeNoEmoji(pAb.name))}</strong> <span style="color:var(--sl-text); font-weight:700;">${safeText(sanitizeNoEmoji(pAb.summary))}</span>`,
+      );
+    } else {
+      setHidden(this.playerAbilityBannerEl, true);
+    }
 
-    // 2x2 Elemental Tactical Move Cards (with Effectiveness Hint, Category Tag, PP Pips & Struggle guard)
+    // Crisp Single-Beat RPG Narration (COMBAT-12: matches v1 say() without truncating beats!)
+    const beatMsg =
+      sanitizeNoEmoji(battle.statusMessage) ||
+      sanitizeNoEmoji(battle.battleLog[battle.battleLog.length - 1] ?? '') ||
+      'Choose your next move!';
+    this.setMemoText('b-msg', this.battleMsgEl, beatMsg);
+
+    // 2x2 Vibrant Jewel Elemental Move Tiles (with Effectiveness Callout, Category Tag, PP Pips & Struggle guard)
     const allOutOfPp = p.moves.length > 0 && p.moves.every((m) => m.currentPp <= 0);
     this.moveButtons.forEach((btn, idx) => {
       if (allOutOfPp && idx === 0) {
@@ -1846,7 +1987,7 @@ export class CelestialUIController implements ICelestialUIController {
               <span class="sl-eff-tag sl-eff-resist">RECOIL</span>
             </div>
             <div class="sl-move-meta sl-num">
-              <span><span class="sl-move-cat-tag">PHY</span>PWR 50</span>
+              <span><span class="sl-move-cat-tag">PHY</span>PWR 35</span>
               <span class="sl-move-pp-wrap">Last Resort</span>
             </div>
           `,
@@ -2080,7 +2221,13 @@ export class CelestialUIController implements ICelestialUIController {
         reducedMotion,
         true,
         timeSec,
-        { manifest: this.manifest, fallbacksSheet: fallbackSheet, frames },
+        {
+          manifest: this.manifest,
+          fallbacksSheet: fallbackSheet,
+          frames,
+          spriteCacheVersion: snapshot.spriteCacheVersion,
+          getFrames: (id) => this.getCachedFrames?.(id, false, false) ?? null,
+        },
       );
     } else if (activeTab === 'team') {
       this.teamBoxView.sync(profile, true, timeSec, {
@@ -2142,12 +2289,16 @@ export class CelestialUIController implements ICelestialUIController {
     );
     this.setCrtBtn?.setAttribute('aria-pressed', String(crtActive));
 
-    if (this.setTouchSelect && this.root?.ownerDocument?.activeElement !== this.setTouchSelect) {
-      this.setTouchSelect.value = s.showTouchPad;
-    }
-    if (this.setPaceSelect && this.root?.ownerDocument?.activeElement !== this.setPaceSelect) {
-      this.setPaceSelect.value = s.battlePace;
-    }
+    this.setTouchGroupEl?.querySelectorAll('[data-touch-val]').forEach((el) => {
+      const on = el.getAttribute('data-touch-val') === s.showTouchPad;
+      el.classList.toggle('is-active', on);
+      el.setAttribute('aria-pressed', String(on));
+    });
+    this.setPaceGroupEl?.querySelectorAll('[data-pace-val]').forEach((el) => {
+      const on = el.getAttribute('data-pace-val') === s.battlePace;
+      el.classList.toggle('is-active', on);
+      el.setAttribute('aria-pressed', String(on));
+    });
 
     const backendLabel = snapshot.capabilities.kind === 'webgl2' ? 'WebGL2' : 'Canvas2D';
     this.setMemoText(
@@ -2303,24 +2454,25 @@ export class CelestialUIController implements ICelestialUIController {
       this.memo.set('dlg', key);
       this.dialogueOverlay.innerHTML = `
         <div class="sl-dialogue-box sl-glass" role="dialog" aria-modal="true" aria-label="${safeText(dlg.speaker)}">
-          <canvas class="sl-portrait-canvas" width="76" height="76" data-testid="dialogue-portrait-canvas" aria-hidden="true"></canvas>
+          <div class="sl-dialogue-nameplate">
+            <strong class="sl-dialogue-speaker">${safeText(dlg.speaker)}</strong>
+            ${dlg.title ? `<span class="sl-pill sl-pill-cyan" style="min-height:20px; padding:1px 7px; font-size:10.5px;">${safeText(dlg.title)}</span>` : ''}
+          </div>
+          <canvas class="sl-portrait-canvas" width="78" height="78" data-testid="dialogue-portrait-canvas" aria-hidden="true"></canvas>
           <div class="sl-dialogue-content">
-            <div class="sl-dialogue-head">
-              <strong class="sl-dialogue-speaker">${safeText(dlg.speaker)}</strong>
-              ${dlg.title ? `<span class="sl-pill sl-pill-cyan">${safeText(dlg.title)}</span>` : ''}
-            </div>
             <p class="sl-dialogue-line">${safeText(line)}</p>
             ${rewardHtml ? `<div class="sl-dialogue-rewards">${rewardHtml}</div>` : ''}
             <div class="sl-dialogue-actions">
               ${
                 !isLast
-                  ? `<button type="button" class="sl-btn sl-btn-primary" data-dialogue-action="advance" data-testid="dialogue-next">Next</button>`
+                  ? `<button type="button" class="sl-btn sl-btn-primary" data-dialogue-action="advance" data-testid="dialogue-next"><span>Next</span><span class="sl-rpg-caret" aria-hidden="true">${rpgCaretSvg()}</span></button>`
                   : dlg.actionLabel && dlg.onConfirmAction
                     ? `<button type="button" class="sl-btn sl-btn-primary" data-dialogue-action="confirm" data-testid="dialogue-confirm">${safeText(dlg.actionLabel)}</button>`
                     : ''
               }
               <button type="button" class="sl-btn" data-dialogue-action="dismiss" data-testid="dialogue-close">
-                ${isLast ? 'Done' : 'Close'}
+                <span>${isLast ? 'Done' : 'Close'}</span>
+                ${isLast ? `<span class="sl-rpg-caret" aria-hidden="true">${rpgCaretSvg()}</span>` : ''}
               </button>
             </div>
           </div>

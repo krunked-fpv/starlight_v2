@@ -292,7 +292,20 @@ test.describe('Red-Team: GitHub Pages Subpath (/starlight_v2/), Offline PWA & An
     await page.getByTestId('battle-offline-rig').click();
     await expect(page.getByTestId('battle-offline-rig')).toHaveAttribute('aria-pressed', 'true');
     await page.getByTestId('battle-move-0').click();
-    await page.waitForTimeout(180);
+    await page.waitForFunction(
+      () => {
+        const ph = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
+        return (
+          ph === 'command' ||
+          ph === 'forced-switch' ||
+          ph === 'evolving' ||
+          ph === 'victory' ||
+          ph === 'defeat'
+        );
+      },
+      undefined,
+      { timeout: 15_000 },
+    );
     await assertCanvasNonBlank(page, '#starlight-canvas');
 
     const bPhase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);

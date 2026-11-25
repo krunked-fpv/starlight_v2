@@ -51,6 +51,8 @@ export interface PokedexAssets {
   manifest: AtlasManifest | null;
   fallbacksSheet: CanvasImageSource | null;
   frames: DecodedSpriteFrames | null;
+  spriteCacheVersion?: number;
+  getFrames?: (speciesId: number) => DecodedSpriteFrames | null;
 }
 
 export function filterAndPaginatePokedex(opts: PokedexQueryOptions): PokedexPageResult {
@@ -191,6 +193,7 @@ type OwnershipMode = 'all' | 'caught' | 'missing';
 
 export class PokedexView {
   private callbacks: UIBridgeCallbacks | null = null;
+  private rootEl: HTMLElement | null = null;
 
   private searchQuery = '';
   private typeFilter: ElementalType | 'all' = 'all';
@@ -198,6 +201,7 @@ export class PokedexView {
   private genFilter: number | 'all' = 'all';
   private biomeFilter: BiomeId | 'all' = 'all';
   private ownershipMode: OwnershipMode = 'all';
+  private advancedOpen = false;
   private currentPage = 1;
   private readonly pageSize = 24;
 
@@ -207,13 +211,12 @@ export class PokedexView {
   private lastSelectedId = 25;
   private currentProfile: DojoProfileState | null = null;
   private currentWaveform: CryWaveformSnapshot | null = null;
+  private lastAssets: PokedexAssets | undefined;
 
   private searchInput: HTMLInputElement | null = null;
-  private typeSelect: HTMLSelectElement | null = null;
-  private abilitySelect: HTMLSelectElement | null = null;
-  private genSelect: HTMLSelectElement | null = null;
-  private biomeSelect: HTMLSelectElement | null = null;
   private caughtToggleBtn: HTMLButtonElement | null = null;
+  private filtersToggleBtn: HTMLButtonElement | null = null;
+  private advancedTrayEl: HTMLElement | null = null;
   private countBadgeEl: HTMLElement | null = null;
   private listEl: HTMLElement | null = null;
   private pageInfoEl: HTMLElement | null = null;
@@ -238,25 +241,47 @@ export class PokedexView {
 
   private lastListKey = '';
   private lastDetailKey = '';
+  private lastTilePaintStamp = '';
 
   mount(container: HTMLElement, callbacks: UIBridgeCallbacks): void {
     this.callbacks = callbacks;
+    this.rootEl = container;
     this.statRows = [];
     this.lastListKey = '';
     this.lastDetailKey = '';
+    this.lastTilePaintStamp = '';
 
-    const biomeOptionsHtml = BIOME_IDS.map((bId) => {
-      const bp = getBiomeVisualProfile(bId);
-      return `<option value="${bId}">${safeText(bp.displayName)}</option>`;
-    }).join('');
+    const typeChipsHtml = [
+      `<button type="button" class="sl-dex-filter-chip is-active" data-dex-type="all" aria-pressed="true">All Types</button>`,
+      ...ELEMENTAL_TYPES.map(
+        (t) => `
+          <button type="button" class="sl-dex-filter-chip" data-dex-type="${t}" aria-pressed="false">
+            ${createIconSvg(typeToIconId(t), 'sl-icon-sm')}
+            <span>${capitalize(t)}</span>
+          </button>
+        `,
+      ),
+    ].join('');
 
-    const genOptionsHtml = Array.from({ length: 9 }, (_, i) => i + 1)
-      .map((g) => `<option value="${g}">Gen ${g}</option>`)
-      .join('');
+    const genChipsHtml = [
+      `<button type="button" class="sl-dex-filter-chip is-active" data-dex-gen="all" aria-pressed="true">All Gens</button>`,
+      ...Array.from({ length: 9 }, (_, i) => i + 1).map(
+        (g) => `<button type="button" class="sl-dex-filter-chip" data-dex-gen="${g}" aria-pressed="false">Gen ${g}</button>`,
+      ),
+    ].join('');
 
-    const typeOptionsHtml = ELEMENTAL_TYPES.map(
-      (t) => `<option value="${t}">${capitalize(t)}</option>`,
-    ).join('');
+    const biomeChipsHtml = [
+      `<button type="button" class="sl-dex-filter-chip is-active" data-dex-biome="all" aria-pressed="true">All Biomes</button>`,
+      ...BIOME_IDS.map((bId) => {
+        const bp = getBiomeVisualProfile(bId);
+        return `
+          <button type="button" class="sl-dex-filter-chip" data-dex-biome="${bId}" aria-pressed="false">
+            ${createIconSvg(typeToIconId(bp.elementalType), 'sl-icon-sm')}
+            <span>${safeText(bp.displayName)}</span>
+          </button>
+        `;
+      }),
+    ].join('');
 
     const abilityEntries = new Map<string, string>();
     for (const sp of getAllSpecies()) {
@@ -265,10 +290,15 @@ export class PokedexView {
         if (ab) abilityEntries.set(sp.ability, ab.name);
       }
     }
-    const abilityOptionsHtml = Array.from(abilityEntries.entries())
-      .sort((a, b) => a[1].localeCompare(b[1]))
-      .map(([id, name]) => `<option value="${safeText(id)}">${safeText(name)}</option>`)
-      .join('');
+    const abilityChipsHtml = [
+      `<button type="button" class="sl-dex-filter-chip is-active" data-dex-ability="all" aria-pressed="true">All Abilities</button>`,
+      ...Array.from(abilityEntries.entries())
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .map(
+          ([id, name]) =>
+            `<button type="button" class="sl-dex-filter-chip" data-dex-ability="${safeText(id)}" aria-pressed="false">${safeText(name)}</button>`,
+        ),
+    ].join('');
 
     container.innerHTML = `
       <div class="sl-pokedex-body">
@@ -285,25 +315,31 @@ export class PokedexView {
               ${createIconSvg('icon-starball', 'sl-icon-sm')}
               <span>All 1,025</span>
             </button>
+            <button type="button" class="sl-btn" data-testid="pokedex-filters-toggle" aria-expanded="false">
+              ${createIconSvg('icon-compass', 'sl-icon-sm')}
+              <span>Filters</span>
+            </button>
           </div>
 
-          <div class="sl-dex-subfilters">
-            <select class="sl-select" data-testid="pokedex-type-filter" aria-label="Filter by Elemental Type">
-              <option value="all">All 18 Types</option>
-              ${typeOptionsHtml}
-            </select>
-            <select class="sl-select" data-testid="pokedex-ability-filter" aria-label="Filter by Ability">
-              <option value="all">All Abilities</option>
-              ${abilityOptionsHtml}
-            </select>
-            <select class="sl-select" data-testid="pokedex-gen-filter" aria-label="Filter by Generation">
-              <option value="all">All Gens (1-9)</option>
-              ${genOptionsHtml}
-            </select>
-            <select class="sl-select" data-testid="pokedex-biome-filter" aria-label="Filter by Biome">
-              <option value="all">All 18 Biomes</option>
-              ${biomeOptionsHtml}
-            </select>
+          <!-- Tactile Elemental Type Filter Ribbon (Zero raw <select> boxes!) -->
+          <div class="sl-dex-type-ribbon" role="group" aria-label="Filter by Elemental Type">
+            ${typeChipsHtml}
+          </div>
+
+          <!-- Collapsible RPG Filter Tray (Generations, Biomes & Abilities) -->
+          <div class="sl-dex-advanced-tray" data-testid="pokedex-advanced-tray" hidden>
+            <div class="sl-dex-tray-group">
+              <div class="sl-dex-tray-label">Generation</div>
+              <div class="sl-dex-chip-wrap">${genChipsHtml}</div>
+            </div>
+            <div class="sl-dex-tray-group">
+              <div class="sl-dex-tray-label">Island Biome Habitat</div>
+              <div class="sl-dex-chip-wrap">${biomeChipsHtml}</div>
+            </div>
+            <div class="sl-dex-tray-group">
+              <div class="sl-dex-tray-label">Signature Ability</div>
+              <div class="sl-dex-chip-wrap">${abilityChipsHtml}</div>
+            </div>
           </div>
 
           <div class="sl-dex-summary-bar sl-num">
@@ -311,7 +347,8 @@ export class PokedexView {
             <span data-testid="pokedex-page-info">Page 1 / 1</span>
           </div>
 
-          <div class="sl-dex-list" data-testid="pokedex-list" role="listbox" aria-label="Species Catalog"></div>
+          <!-- Visual Collectible Pokédex Sprite Card Grid -->
+          <div class="sl-dex-grid" data-testid="pokedex-list" role="listbox" aria-label="Species Catalog"></div>
 
           <div class="sl-dex-pagination">
             <button type="button" class="sl-btn" data-testid="pokedex-prev-page">Prev Page</button>
@@ -320,40 +357,48 @@ export class PokedexView {
         </div>
 
         <div class="sl-dex-detail">
-          <div class="sl-holo-card" data-holo-card="true" data-testid="pokedex-holo-card" data-type="electric" data-star-rank="0" data-max-bond="false">
+          <div
+            class="sl-holo-card"
+            data-testid="pokedex-holo-card"
+            data-type="electric"
+            data-star-rank="0"
+            data-max-bond="false"
+          >
             <div class="sl-holo-foil" aria-hidden="true"></div>
             <div class="sl-holo-glare" aria-hidden="true"></div>
 
             <div class="sl-holo-header">
-              <div style="display:flex; align-items:center; gap:8px; min-width:0;">
+              <div style="display:flex; align-items:center; gap:8px;">
                 <span class="sl-pill sl-pill-gold sl-num" data-testid="pokedex-card-number">#0025</span>
-                <strong class="sl-profile-name" data-testid="pokedex-card-name">Pikachu</strong>
+                <strong style="font-family:var(--sl-font-display); font-size:21px; color:var(--sl-brass-bright); text-shadow:0 2px 0 #060813;" data-testid="pokedex-card-name">Pikachu</strong>
               </div>
-              <div class="sl-combatant-badges" data-testid="pokedex-card-types"></div>
+              <div data-testid="pokedex-card-types" style="display:flex; gap:6px;"></div>
             </div>
 
             <div class="sl-holo-portrait-wrap">
-              <canvas class="sl-holo-portrait" width="160" height="146" data-testid="pokedex-portrait-canvas" aria-label="Species Pixel Portrait"></canvas>
-              <div class="sl-stat-list">
-                ${(
-                  [
-                    ['HP', 'sl-bar-stat-hp'],
-                    ['ATK', 'sl-bar-stat-atk'],
-                    ['DEF', 'sl-bar-stat-def'],
-                    ['SPD', 'sl-bar-stat-spd'],
-                  ] as const
-                )
-                  .map(
-                    ([label, barCls], idx) => `
-                  <div class="sl-stat-row">
-                    <span style="color:var(--sl-text-dim);">${label}</span>
-                    <div class="sl-bar-track"><div class="sl-bar-fill ${barCls}" data-stat-bar="${idx}" style="--fill: 0.5;"></div></div>
-                    <span class="sl-num" data-stat-val="${idx}">0</span>
-                  </div>
-                `,
-                  )
-                  .join('')}
-                <div class="sl-stat-total-row sl-num">
+              <canvas class="sl-holo-portrait" width="144" height="136" data-testid="pokedex-portrait-canvas" aria-label="Selected Pokémon Sprite"></canvas>
+              <div class="sl-stat-list sl-num">
+                <div class="sl-stat-row">
+                  <span>HP</span>
+                  <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-stat-hp" data-stat-bar="hp" style="--fill:0.5;"></div></div>
+                  <span data-stat-val="hp">0</span>
+                </div>
+                <div class="sl-stat-row">
+                  <span>ATK</span>
+                  <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-stat-atk" data-stat-bar="atk" style="--fill:0.5;"></div></div>
+                  <span data-stat-val="atk">0</span>
+                </div>
+                <div class="sl-stat-row">
+                  <span>DEF</span>
+                  <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-stat-def" data-stat-bar="def" style="--fill:0.5;"></div></div>
+                  <span data-stat-val="def">0</span>
+                </div>
+                <div class="sl-stat-row">
+                  <span>SPD</span>
+                  <div class="sl-bar-track sl-bar-track-sm"><div class="sl-bar-fill sl-bar-stat-spd" data-stat-bar="spd" style="--fill:0.5;"></div></div>
+                  <span data-stat-val="spd">0</span>
+                </div>
+                <div class="sl-stat-total-row">
                   <span>BASE POWER</span>
                   <span data-testid="pokedex-card-bst">0</span>
                 </div>
@@ -361,21 +406,21 @@ export class PokedexView {
             </div>
 
             <div class="sl-dex-meta-pills">
-              <span class="sl-pill" data-testid="pokedex-card-status">Catalog</span>
-              <span class="sl-pill" data-testid="pokedex-card-habitat">Gen 1 • Whispering Forest</span>
-              <span class="sl-pill sl-pill-cyan" data-testid="pokedex-card-ability">Ability: Static</span>
+              <span class="sl-pill sl-pill-emerald" data-testid="pokedex-card-status">Wild Catalog</span>
+              <span class="sl-pill" data-testid="pokedex-card-habitat">Gen 1</span>
+              <span class="sl-pill sl-pill-cyan" data-testid="pokedex-card-ability">Ability</span>
             </div>
 
-            <div class="sl-dex-evo-chain" data-testid="pokedex-moves-strip"></div>
+            <div class="sl-dex-meta-pills" data-testid="pokedex-card-moves"></div>
 
-            <div class="sl-dex-evo-chain" data-testid="pokedex-evo-chain"></div>
+            <div class="sl-dex-evo-chain" data-testid="pokedex-card-evo"></div>
 
             <div class="sl-dex-lore-box">
               <p class="sl-dex-lore" data-testid="pokedex-card-lore"></p>
             </div>
 
             <div class="sl-cry-row">
-              <canvas class="sl-cry-canvas" width="240" height="44" data-testid="pokedex-cry-canvas" aria-label="Live Cry Waveform"></canvas>
+              <canvas class="sl-cry-canvas" width="240" height="44" data-testid="pokedex-cry-canvas" aria-label="Pokémon Cry Waveform"></canvas>
               <button type="button" class="sl-btn sl-btn-cyan" data-testid="pokedex-play-cry">
                 ${createIconSvg('icon-audio-on', 'sl-icon-sm')}
                 <span>Play Cry</span>
@@ -387,11 +432,9 @@ export class PokedexView {
     `;
 
     this.searchInput = container.querySelector('[data-testid="pokedex-search"]');
-    this.typeSelect = container.querySelector('[data-testid="pokedex-type-filter"]');
-    this.abilitySelect = container.querySelector('[data-testid="pokedex-ability-filter"]');
-    this.genSelect = container.querySelector('[data-testid="pokedex-gen-filter"]');
-    this.biomeSelect = container.querySelector('[data-testid="pokedex-biome-filter"]');
     this.caughtToggleBtn = container.querySelector('[data-testid="pokedex-caught-toggle"]');
+    this.filtersToggleBtn = container.querySelector('[data-testid="pokedex-filters-toggle"]');
+    this.advancedTrayEl = container.querySelector('[data-testid="pokedex-advanced-tray"]');
     this.countBadgeEl = container.querySelector('[data-testid="pokedex-counts"]');
     this.listEl = container.querySelector('[data-testid="pokedex-list"]');
     this.pageInfoEl = container.querySelector('[data-testid="pokedex-page-info"]');
@@ -406,16 +449,16 @@ export class PokedexView {
     this.cryCanvas = container.querySelector('[data-testid="pokedex-cry-canvas"]');
     this.playCryBtn = container.querySelector('[data-testid="pokedex-play-cry"]');
     this.cardAbilityEl = container.querySelector('[data-testid="pokedex-card-ability"]');
-    this.cardMovesEl = container.querySelector('[data-testid="pokedex-moves-strip"]');
-    this.cardEvoEl = container.querySelector('[data-testid="pokedex-evo-chain"]');
+    this.cardMovesEl = container.querySelector('[data-testid="pokedex-card-moves"]');
+    this.cardEvoEl = container.querySelector('[data-testid="pokedex-card-evo"]');
     this.cardLoreEl = container.querySelector('[data-testid="pokedex-card-lore"]');
     this.cardHabitatEl = container.querySelector('[data-testid="pokedex-card-habitat"]');
     this.cardStatusEl = container.querySelector('[data-testid="pokedex-card-status"]');
     this.cardBstEl = container.querySelector('[data-testid="pokedex-card-bst"]');
 
-    for (let i = 0; i < 4; i++) {
-      const bar = container.querySelector(`[data-stat-bar="${i}"]`) as HTMLElement | null;
-      const val = container.querySelector(`[data-stat-val="${i}"]`) as HTMLElement | null;
+    for (const key of ['hp', 'atk', 'def', 'spd']) {
+      const bar = container.querySelector(`[data-stat-bar="${key}"]`) as HTMLElement | null;
+      const val = container.querySelector(`[data-stat-val="${key}"]`) as HTMLElement | null;
       if (bar && val) this.statRows.push({ bar, val });
     }
 
@@ -424,49 +467,71 @@ export class PokedexView {
       this.currentPage = 1;
       this.lastListKey = '';
       this.refreshListOnly();
-    });
-
-    this.typeSelect?.addEventListener('change', () => {
-      const val = this.typeSelect?.value ?? 'all';
-      this.typeFilter = val === 'all' ? 'all' : (val as ElementalType);
-      this.currentPage = 1;
-      this.lastListKey = '';
-      this.refreshListOnly();
-    });
-
-    this.abilitySelect?.addEventListener('change', () => {
-      this.abilityFilter = this.abilitySelect?.value ?? 'all';
-      this.currentPage = 1;
-      this.lastListKey = '';
-      this.refreshListOnly();
-    });
-
-    this.genSelect?.addEventListener('change', () => {
-      const val = this.genSelect?.value ?? 'all';
-      this.genFilter = val === 'all' ? 'all' : Number(val);
-      this.currentPage = 1;
-      this.lastListKey = '';
-      this.refreshListOnly();
-    });
-
-    this.biomeSelect?.addEventListener('change', () => {
-      const val = this.biomeSelect?.value ?? 'all';
-      this.biomeFilter = val === 'all' ? 'all' : (val as BiomeId);
-      this.currentPage = 1;
-      this.lastListKey = '';
-      this.refreshListOnly();
+      this.paintVisibleTileSprites(0);
     });
 
     this.caughtToggleBtn?.addEventListener('click', () => {
       this.ownershipMode =
-        this.ownershipMode === 'all'
-          ? 'caught'
-          : this.ownershipMode === 'caught'
-            ? 'missing'
-            : 'all';
+        this.ownershipMode === 'all' ? 'caught' : this.ownershipMode === 'caught' ? 'missing' : 'all';
       this.currentPage = 1;
       this.lastListKey = '';
       this.refreshListOnly();
+      this.paintVisibleTileSprites(0);
+    });
+
+    this.filtersToggleBtn?.addEventListener('click', () => {
+      this.advancedOpen = !this.advancedOpen;
+      if (this.advancedTrayEl) this.advancedTrayEl.hidden = !this.advancedOpen;
+      this.filtersToggleBtn?.setAttribute('aria-expanded', String(this.advancedOpen));
+      this.filtersToggleBtn?.classList.toggle('is-active', this.advancedOpen || this.countActiveSubfilters() > 0);
+    });
+
+    container.addEventListener('click', (evt) => {
+      const target = evt.target as HTMLElement | null;
+
+      const typeBtn = target?.closest('[data-dex-type]') as HTMLButtonElement | null;
+      if (typeBtn) {
+        this.typeFilter = (typeBtn.getAttribute('data-dex-type') as ElementalType | 'all') || 'all';
+        this.currentPage = 1;
+        this.lastListKey = '';
+        this.syncFilterChipStates();
+        this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
+        return;
+      }
+
+      const genBtn = target?.closest('[data-dex-gen]') as HTMLButtonElement | null;
+      if (genBtn) {
+        const raw = genBtn.getAttribute('data-dex-gen') ?? 'all';
+        this.genFilter = raw === 'all' ? 'all' : Number(raw);
+        this.currentPage = 1;
+        this.lastListKey = '';
+        this.syncFilterChipStates();
+        this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
+        return;
+      }
+
+      const biomeBtn = target?.closest('[data-dex-biome]') as HTMLButtonElement | null;
+      if (biomeBtn) {
+        this.biomeFilter = (biomeBtn.getAttribute('data-dex-biome') as BiomeId | 'all') || 'all';
+        this.currentPage = 1;
+        this.lastListKey = '';
+        this.syncFilterChipStates();
+        this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
+        return;
+      }
+
+      const abBtn = target?.closest('[data-dex-ability]') as HTMLButtonElement | null;
+      if (abBtn) {
+        this.abilityFilter = abBtn.getAttribute('data-dex-ability') || 'all';
+        this.currentPage = 1;
+        this.lastListKey = '';
+        this.syncFilterChipStates();
+        this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
+      }
     });
 
     this.prevPageBtn?.addEventListener('click', () => {
@@ -474,6 +539,7 @@ export class PokedexView {
         this.currentPage -= 1;
         this.lastListKey = '';
         this.refreshListOnly();
+        this.paintVisibleTileSprites(0);
       }
     });
 
@@ -481,54 +547,92 @@ export class PokedexView {
       this.currentPage += 1;
       this.lastListKey = '';
       this.refreshListOnly();
+      this.paintVisibleTileSprites(0);
     });
 
-    const selectSpeciesById = (id: number) => {
-      if (!Number.isInteger(id) || id < 1 || id > TOTAL_SPECIES_COUNT) return;
-      this.lastSelectedId = id;
-      this.callbacks?.onSelectPokedexSpecies(id);
-      this.refreshDetailOnly();
-      this.lastListKey = '';
-      this.refreshListOnly();
-    };
-
     this.listEl?.addEventListener('click', (evt) => {
-      const target = (evt.target as HTMLElement | null)?.closest('[data-species-id]') as HTMLElement | null;
-      if (!target) return;
-      selectSpeciesById(Number(target.getAttribute('data-species-id')));
+      const btn = (evt.target as HTMLElement | null)?.closest('[data-species-id]') as HTMLButtonElement | null;
+      if (!btn) return;
+      const id = Number(btn.getAttribute('data-species-id'));
+      if (Number.isInteger(id) && id >= 1) {
+        this.callbacks?.onSelectPokedexSpecies(id);
+      }
     });
 
     this.cardEvoEl?.addEventListener('click', (evt) => {
-      const target = (evt.target as HTMLElement | null)?.closest('[data-evo-species-id]') as HTMLElement | null;
-      if (!target) return;
-      selectSpeciesById(Number(target.getAttribute('data-evo-species-id')));
+      const btn = (evt.target as HTMLElement | null)?.closest('[data-evo-species-id]') as HTMLButtonElement | null;
+      if (!btn) return;
+      const id = Number(btn.getAttribute('data-evo-species-id'));
+      if (Number.isInteger(id) && id >= 1) {
+        this.callbacks?.onSelectPokedexSpecies(id);
+      }
     });
 
     this.playCryBtn?.addEventListener('click', () => {
       this.callbacks?.onPlaySpeciesCry(this.lastSelectedId);
     });
 
-    this.holoCardEl?.addEventListener('pointermove', (evt) => {
-      if (!this.holoCardEl) return;
-      const rect = this.holoCardEl.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const nx = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
-      const ny = ((evt.clientY - rect.top) / rect.height) * 2 - 1;
-      this.pointerTiltX = Math.max(-1, Math.min(1, nx));
-      this.pointerTiltY = Math.max(-1, Math.min(1, ny));
-      this.updateHoloCssVars();
+    if (this.holoCardEl) {
+      this.holoCardEl.addEventListener('pointermove', (evt) => {
+        if (!this.holoCardEl) return;
+        const rect = this.holoCardEl.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const nx = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
+        const ny = ((evt.clientY - rect.top) / rect.height) * 2 - 1;
+        this.pointerTiltX = Math.max(-1, Math.min(1, nx));
+        this.pointerTiltY = Math.max(-1, Math.min(1, ny));
+        this.updateHoloCssVars();
+      });
+      this.holoCardEl.addEventListener('pointerleave', () => {
+        this.pointerTiltX = 0;
+        this.pointerTiltY = 0;
+        this.updateHoloCssVars();
+      });
+    }
+  }
+
+  private countActiveSubfilters(): number {
+    let n = 0;
+    if (this.genFilter !== 'all') n += 1;
+    if (this.biomeFilter !== 'all') n += 1;
+    if (this.abilityFilter !== 'all') n += 1;
+    return n;
+  }
+
+  private syncFilterChipStates(): void {
+    if (!this.rootEl) return;
+    this.rootEl.querySelectorAll('[data-dex-type]').forEach((el) => {
+      const on = el.getAttribute('data-dex-type') === this.typeFilter;
+      el.classList.toggle('is-active', on);
+      el.setAttribute('aria-pressed', String(on));
+    });
+    this.rootEl.querySelectorAll('[data-dex-gen]').forEach((el) => {
+      const on = el.getAttribute('data-dex-gen') === String(this.genFilter);
+      el.classList.toggle('is-active', on);
+      el.setAttribute('aria-pressed', String(on));
+    });
+    this.rootEl.querySelectorAll('[data-dex-biome]').forEach((el) => {
+      const on = el.getAttribute('data-dex-biome') === this.biomeFilter;
+      el.classList.toggle('is-active', on);
+      el.setAttribute('aria-pressed', String(on));
+    });
+    this.rootEl.querySelectorAll('[data-dex-ability]').forEach((el) => {
+      const on = el.getAttribute('data-dex-ability') === this.abilityFilter;
+      el.classList.toggle('is-active', on);
+      el.setAttribute('aria-pressed', String(on));
     });
 
-    this.holoCardEl?.addEventListener('pointerleave', () => {
-      this.pointerTiltX = 0;
-      this.pointerTiltY = 0;
-      this.updateHoloCssVars();
-    });
+    const subCount = this.countActiveSubfilters();
+    if (this.filtersToggleBtn) {
+      this.filtersToggleBtn.classList.toggle('is-active', this.advancedOpen || subCount > 0);
+      const span = this.filtersToggleBtn.querySelector('span');
+      if (span) span.textContent = subCount > 0 ? `Filters (${subCount})` : 'Filters';
+    }
   }
 
   sync(
     profile: DojoProfileState,
-    selectedId: number,
+    selectedSpeciesId: number,
     cryWaveform: CryWaveformSnapshot,
     reducedMotion: boolean,
     active: boolean,
@@ -536,34 +640,49 @@ export class PokedexView {
     assets?: PokedexAssets,
   ): void {
     this.currentProfile = profile;
-    this.lastSelectedId = Math.max(1, Math.min(TOTAL_SPECIES_COUNT, Math.floor(selectedId || 25)));
+    this.lastSelectedId = Math.max(1, Math.min(TOTAL_SPECIES_COUNT, Math.round(selectedSpeciesId || 1)));
     this.currentWaveform = cryWaveform;
     this.reducedMotion = reducedMotion;
-
+    this.lastAssets = assets;
     if (!active) return;
 
     this.refreshListOnly();
     this.refreshDetailOnly();
     this.renderCanvases(timeSec, assets);
+
+    const tileStamp = `${this.lastListKey}|${assets?.spriteCacheVersion ?? 0}|${Math.floor(timeSec * 6)}`;
+    if (tileStamp !== this.lastTilePaintStamp) {
+      this.lastTilePaintStamp = tileStamp;
+      this.paintVisibleTileSprites(timeSec);
+    }
   }
 
   private getOwnedSummary(speciesId: number): {
     caught: boolean;
     seen: boolean;
+    caughtCount: number;
     starRank: number;
     bond: number;
     shiny: boolean;
-    caughtCount: number;
   } {
-    const profile = this.currentProfile;
-    const caughtCount = Number(profile?.pokedex?.caught?.[speciesId] ?? 0);
+    const p = this.currentProfile;
+    if (!p) {
+      return { caught: false, seen: false, caughtCount: 0, starRank: 0, bond: 0, shiny: false };
+    }
+    const caughtCount = Number(p.pokedex.caught[speciesId] ?? 0);
     const caught = caughtCount > 0;
-    const seen = caught || Boolean(profile?.pokedex?.seen?.includes(speciesId));
-    const owned = [...(profile?.team ?? []), ...(profile?.box ?? [])].filter((m) => m.speciesId === speciesId);
-    const bestStar = owned.reduce((acc, m) => Math.max(acc, m.upgradeTier ?? 0), 0);
-    const bestBond = owned.reduce((acc, m) => Math.max(acc, m.bond ?? 0), 0);
-    const anyShiny = owned.some((m) => m.isShiny);
-    return { caught, seen, starRank: bestStar, bond: bestBond, shiny: anyShiny, caughtCount };
+    const seen = caught || p.pokedex.seen.includes(speciesId);
+    let starRank = 0;
+    let bond = 0;
+    let shiny = false;
+    for (const m of [...p.team, ...p.box]) {
+      if (m.speciesId === speciesId) {
+        starRank = Math.max(starRank, m.upgradeTier ?? 0);
+        bond = Math.max(bond, m.bond ?? 0);
+        if (m.isShiny) shiny = true;
+      }
+    }
+    return { caught, seen, caughtCount, starRank, bond, shiny };
   }
 
   private refreshListOnly(): void {
@@ -591,7 +710,6 @@ export class PokedexView {
       this.biomeFilter,
       this.ownershipMode,
       result.page,
-      result.totalPages,
       result.totalMatches,
       result.caughtCount,
       result.seenCount,
@@ -600,6 +718,7 @@ export class PokedexView {
 
     if (memo === this.lastListKey) return;
     this.lastListKey = memo;
+    this.lastTilePaintStamp = '';
 
     if (this.countBadgeEl) {
       this.countBadgeEl.textContent = `${result.caughtCount} Caught • ${result.seenCount} Seen / ${TOTAL_SPECIES_COUNT}`;
@@ -626,7 +745,7 @@ export class PokedexView {
     if (this.nextPageBtn) this.nextPageBtn.disabled = result.page >= result.totalPages;
 
     if (result.items.length === 0) {
-      this.listEl.innerHTML = `<div class="sl-empty-state">No matching species in 1,025 catalog.</div>`;
+      this.listEl.innerHTML = `<div class="sl-empty-state" style="grid-column:1 / -1;">No matching species in 1,025 catalog.</div>`;
       return;
     }
 
@@ -638,17 +757,20 @@ export class PokedexView {
         const caught = Number(caughtMap[sp.id] ?? 0) > 0;
         const seen = caught || seenSet.has(sp.id);
         const selected = sp.id === this.lastSelectedId;
-        const rowLabel = seen ? sp.name : '???';
-        const habitatHint = !seen ? getBiomeVisualProfile(sp.biome).displayName : '';
+        const biomeName = getBiomeVisualProfile(sp.biome).displayName;
         const statusIcon = caught
           ? createIconSvg('icon-starball', 'sl-icon-sm')
           : seen
             ? createIconSvg('icon-pokeball', 'sl-icon-sm')
             : '';
+        const visualSlot = seen
+          ? `<canvas class="sl-dex-tile-canvas" width="54" height="50" data-tile-species="${sp.id}" aria-hidden="true"></canvas>`
+          : `<div class="sl-dex-tile-mystery" aria-hidden="true">?</div>`;
+
         return `
           <button
             type="button"
-            class="sl-dex-row ${selected ? 'is-selected' : ''}"
+            class="sl-dex-tile ${selected ? 'is-selected' : ''}"
             data-species-id="${sp.id}"
             data-caught="${caught}"
             data-seen="${seen}"
@@ -656,18 +778,38 @@ export class PokedexView {
             role="option"
             aria-selected="${selected}"
           >
-            <span class="sl-dex-row-left">
-              <span class="sl-dex-row-num sl-num">${formatDexNum(sp.id)}</span>
-              <span class="sl-dex-row-name">${safeText(rowLabel)}</span>
-            </span>
-            <span class="sl-dex-row-right">
-              ${habitatHint ? `<span class="sl-pill" style="font-size:10px; padding:1px 6px; min-height:20px; color:var(--sl-text-dim);">${safeText(habitatHint)}</span>` : createIconSvg(typeToIconId(sp.type), 'sl-icon-sm')}
-              ${statusIcon}
-            </span>
+            <div class="sl-dex-tile-top sl-num">
+              <span>${formatDexNum(sp.id)}</span>
+              <span>${statusIcon}</span>
+            </div>
+            ${visualSlot}
+            <div class="sl-dex-tile-name">${safeText(seen ? sp.name : '???')}</div>
+            <div class="sl-dex-tile-sub">${safeText(seen ? capitalize(sp.type) : biomeName)}</div>
           </button>
         `;
       })
       .join('');
+  }
+
+  private paintVisibleTileSprites(timeSec: number): void {
+    if (!this.listEl) return;
+    const assets = this.lastAssets;
+    this.listEl.querySelectorAll('canvas[data-tile-species]').forEach((node) => {
+      const canvas = node as HTMLCanvasElement;
+      const id = Number(canvas.getAttribute('data-tile-species'));
+      if (!Number.isInteger(id) || id < 1) return;
+      const frames = assets?.getFrames?.(id) ?? (id === this.lastSelectedId ? assets?.frames ?? null : null);
+      renderPokemonPreviewCanvas(
+        canvas,
+        id,
+        frames,
+        assets?.fallbacksSheet ?? null,
+        assets?.manifest ?? null,
+        false,
+        timeSec,
+        false,
+      );
+    });
   }
 
   private refreshDetailOnly(): void {
@@ -842,89 +984,57 @@ export class PokedexView {
       } catch {
         ctx = null;
       }
-      if (ctx) {
-        const w = this.cryCanvas.width || 240;
-        const h = this.cryCanvas.height || 44;
-        const midY = h * 0.5;
-        const pal = TYPE_PALETTES[sp.type];
-        const samples = this.currentWaveform.samples;
+      if (!ctx) return;
+      const w = this.cryCanvas.width || 240;
+      const h = this.cryCanvas.height || 44;
+      const pal = TYPE_PALETTES[sp.type] ?? TYPE_PALETTES.electric;
 
-        ctx.clearRect(0, 0, w, h);
-        const bgGrad = ctx.createLinearGradient(0, 0, 0, h);
-        bgGrad.addColorStop(0, '#070c24');
-        bgGrad.addColorStop(0.5, '#0e1942');
-        bgGrad.addColorStop(1, '#060a1e');
-        ctx.fillStyle = bgGrad;
-        ctx.fillRect(0, 0, w, h);
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#060a1e';
+      ctx.fillRect(0, 0, w, h);
 
-        ctx.strokeStyle = 'rgba(124, 232, 255, 0.14)';
-        ctx.lineWidth = 1;
-        for (let gx = 24; gx < w; gx += 24) {
-          ctx.beginPath();
-          ctx.moveTo(gx, 0);
-          ctx.lineTo(gx, h);
-          ctx.stroke();
+      ctx.strokeStyle = 'rgba(235, 183, 77, 0.22)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, h / 2);
+      ctx.lineTo(w, h / 2);
+      ctx.stroke();
+
+      const samples = this.currentWaveform.samples;
+      const activePlay = this.currentWaveform.playing && this.currentWaveform.speciesId === sp.id;
+      ctx.strokeStyle = activePlay ? '#ffeaad' : pal.primary;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+
+      if (samples && samples.length > 1) {
+        const count = samples.length;
+        for (let i = 0; i < count; i++) {
+          const x = (i / (count - 1)) * w;
+          const amp = Math.max(-1, Math.min(1, samples[i]));
+          const y = h / 2 - amp * (h * 0.42);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
         }
-        ctx.strokeStyle = 'rgba(124, 232, 255, 0.28)';
-        ctx.beginPath();
-        ctx.moveTo(0, midY);
-        ctx.lineTo(w, midY);
-        ctx.stroke();
-
-        if (samples && samples.length > 1) {
-          ctx.save();
-          ctx.fillStyle = `${pal.primary}33`;
-          ctx.beginPath();
-          ctx.moveTo(0, midY);
-          for (let i = 0; i < samples.length; i++) {
-            const x = (i / (samples.length - 1)) * w;
-            const y = midY - samples[i] * (h * 0.42);
-            ctx.lineTo(x, y);
-          }
-          ctx.lineTo(w, midY);
-          ctx.closePath();
-          ctx.fill();
-
-          ctx.strokeStyle = pal.primary;
-          ctx.lineWidth = this.currentWaveform.playing ? 4 : 3;
-          ctx.globalAlpha = 0.45;
-          ctx.beginPath();
-          for (let i = 0; i < samples.length; i++) {
-            const x = (i / (samples.length - 1)) * w;
-            const y = midY - samples[i] * (h * 0.42);
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-          }
-          ctx.stroke();
-
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = this.currentWaveform.playing ? pal.glow : pal.secondary;
-          ctx.lineWidth = this.currentWaveform.playing ? 2.2 : 1.6;
-          ctx.stroke();
-          ctx.restore();
+      } else {
+        const freq = 0.05 + (sp.id % 11) * 0.008;
+        const phase = activePlay ? timeSec * 12 : 0;
+        for (let x = 0; x <= w; x += 4) {
+          const env = Math.sin((x / w) * Math.PI);
+          const y = h / 2 + Math.sin(x * freq + phase) * env * (h * 0.26);
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
         }
       }
+      ctx.stroke();
     }
   }
 
   dispose(): void {
     this.statRows = [];
-    this.searchInput = null;
-    this.typeSelect = null;
-    this.abilitySelect = null;
-    this.genSelect = null;
-    this.biomeSelect = null;
-    this.caughtToggleBtn = null;
-    this.countBadgeEl = null;
-    this.listEl = null;
-    this.pageInfoEl = null;
-    this.prevPageBtn = null;
-    this.nextPageBtn = null;
-    this.holoCardEl = null;
-    this.portraitCanvas = null;
-    this.cryCanvas = null;
-    this.cardMovesEl = null;
-    this.cardBstEl = null;
+    this.rootEl = null;
     this.callbacks = null;
+    this.currentProfile = null;
+    this.currentWaveform = null;
+    this.lastAssets = undefined;
   }
 }

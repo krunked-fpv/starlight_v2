@@ -1114,6 +1114,97 @@ describe('WebGL2Backend', () => {
 
     backend.dispose();
   });
+
+  it('insets packed atlas sub-rect UVs in WebGL2Backend to prevent 1px neighbor-tile bleed seams while keeping full-sheet UVs [0,1]', async () => {
+    const { initialCanvas, doc } = createMockCanvasHarness({ webgl2Available: true });
+    vi.stubGlobal('document', doc);
+
+    const backend = new WebGL2Backend();
+    await backend.init(initialCanvas as unknown as HTMLCanvasElement, {
+      dprCap: 2,
+      reducedMotion: false,
+      crtMode: false,
+    });
+    const gl = initialCanvas.lastWebGL2Context!;
+
+    const terrainAtlas = { width: 256, height: 256 } as unknown as HTMLCanvasElement;
+    const standaloneSprite = { width: 48, height: 48 } as unknown as HTMLCanvasElement;
+    backend.registerAtlas('terrain', terrainAtlas);
+    backend.setAtlasRegions('terrain', {
+      tile_0: { id: 'tile_0', x: 0, y: 0, w: 32, h: 32 },
+      tile_8: { id: 'tile_8', x: 0, y: 32, w: 32, h: 32 },
+    });
+
+    const bufferUploads: Float32Array[] = [];
+    (gl.bufferData as ReturnType<typeof vi.fn>).mockImplementation((_target: number, data: unknown) => {
+      if (data instanceof Float32Array && data.length >= 20) {
+        bufferUploads.push(new Float32Array(data));
+      }
+    });
+
+    backend.beginFrame(1.0, 0.016);
+    // Crisp packed sub-rect (tile_0 directly above tile_8 in 256x256 terrain atlas)
+    backend.drawSprite({
+      sheetId: 'terrain',
+      regionId: 'tile_0',
+      dx: 0,
+      dy: 0,
+      dw: 32,
+      dh: 32,
+      pixelCrisp: true,
+      depth: 0,
+    });
+    // Smooth packed sub-rect
+    backend.drawSprite({
+      sheetId: 'terrain',
+      regionId: 'tile_8',
+      dx: 32,
+      dy: 0,
+      dw: 32,
+      dh: 32,
+      pixelCrisp: false,
+      depth: 1,
+    });
+    // Full standalone dynamic texture (not a sub-rect)
+    backend.drawSprite({
+      source: standaloneSprite,
+      dx: 64,
+      dy: 0,
+      dw: 48,
+      dh: 48,
+      pixelCrisp: true,
+      depth: 2,
+    });
+    backend.endFrame();
+
+    expect(bufferUploads.length).toBeGreaterThanOrEqual(3);
+
+    // Upload 0: crisp tile_0 (0..32 in 256x256) -> inset by 0.125 texel on all 4 edges
+    const crispTile = bufferUploads[0];
+    const [cu0, cv0, cuSpan, cvSpan] = [crispTile[4], crispTile[5], crispTile[6], crispTile[7]];
+    expect(cu0).toBeCloseTo(0.125 / 256, 6);
+    expect(cv0).toBeCloseTo(0.125 / 256, 6);
+    expect(cu0 + cuSpan).toBeCloseTo(31.875 / 256, 6);
+    expect(cv0 + cvSpan).toBeCloseTo(31.875 / 256, 6);
+    expect(cv0 + cvSpan).toBeLessThan(32 / 256);
+
+    // Upload 1: smooth tile_8 (0..32, 32..64 in 256x256) -> inset by 0.5 texel
+    const smoothTile = bufferUploads[1];
+    const [su0, sv0, suSpan, svSpan] = [smoothTile[4], smoothTile[5], smoothTile[6], smoothTile[7]];
+    expect(su0).toBeCloseTo(0.5 / 256, 6);
+    expect(sv0).toBeCloseTo(32.5 / 256, 6);
+    expect(su0 + suSpan).toBeCloseTo(31.5 / 256, 6);
+    expect(sv0 + svSpan).toBeCloseTo(63.5 / 256, 6);
+
+    // Upload 2: standalone full-texture dynamic sprite -> exact [0, 1] UVs
+    const fullSprite = bufferUploads[2];
+    expect(fullSprite[4]).toBe(0);
+    expect(fullSprite[5]).toBe(0);
+    expect(fullSprite[6]).toBe(1);
+    expect(fullSprite[7]).toBe(1);
+
+    backend.dispose();
+  });
 });
 
 describe('RenderEngine backend negotiation, canvas swap & context-loss recovery', () => {

@@ -66,6 +66,29 @@ function attachCollectors(page: Page) {
   return { consoleErrors, pageErrors, failedLocalResponses };
 }
 
+async function waitForBattleSettled(page: Page, timeout = 15_000): Promise<string> {
+  await page.waitForFunction(
+    () => {
+      const ph = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
+      return (
+        ph === 'command' ||
+        ph === 'forced-switch' ||
+        ph === 'evolving' ||
+        ph === 'victory' ||
+        ph === 'defeat'
+      );
+    },
+    undefined,
+    { timeout },
+  );
+  return page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+}
+
+function parsePpFromMoveText(text: string | null): number {
+  const m = (text ?? '').match(/(\d+)\s*\/\s*(\d+)/);
+  return m ? Number(m[1]) : -1;
+}
+
 async function bootV2ToOverworld(page: Page, renderer: 'webgl2' | 'canvas2d' = 'webgl2', starterId = 1): Promise<void> {
   await stubExternalSpriteCdns(page);
   await page.goto(`./?renderer=${renderer}`);
@@ -390,29 +413,30 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     await expect(page.getByTestId('battle-ball-star')).toBeDisabled();
 
     // Fight until Lv.5 squad faints against high-level Crater Shrine Guardian (handling forced-switch if 2+ team)
-    for (let turn = 0; turn < 16; turn += 1) {
-      const ph = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+    for (let turn = 0; turn < 12; turn += 1) {
+      const ph = await waitForBattleSettled(page);
       if (ph === 'defeat' || ph === 'victory') break;
       if (ph === 'forced-switch') {
         const healthySwitch = page.locator('[data-testid^="battle-switch-slot-"]:not([disabled])').first();
         if (await healthySwitch.isVisible().catch(() => false)) {
           await healthySwitch.click();
+          await waitForBattleSettled(page);
         }
-        await page.waitForTimeout(180);
       } else if (ph === 'command') {
         await page.getByTestId('battle-move-1').click();
-        await page.waitForTimeout(220);
-      } else {
-        await page.waitForTimeout(160);
+        await waitForBattleSettled(page);
       }
     }
 
-    const endPhase = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().battlePhase);
+    const endPhase = await waitForBattleSettled(page);
     expect(['defeat', 'victory', 'command']).toContain(endPhase);
     if (endPhase === 'defeat' || endPhase === 'victory') {
       await page.getByTestId('battle-close-result').click();
     } else {
       await page.getByTestId('battle-flee').click();
+    }
+    if (await page.getByTestId('dialogue-overlay').isVisible().catch(() => false)) {
+      await page.keyboard.press('Escape');
     }
 
     await expect(page.getByTestId('overworld-screen')).toBeVisible();
@@ -583,5 +607,209 @@ test.describe('Starlight v1 vs v2 Gameplay, Camera & UX Parity Playtest', () => 
     } finally {
       await v1Srv.close();
     }
+  });
+
+  test('Round 2 Combat Integrity: Anti-Spam Hard Lock, Poké Ball Capture Animation & Switch Hotkey Guard', async ({
+    page,
+  }) => {
+    const telemetry = attachCollectors(page);
+    await bootV2ToOverworld(page, 'canvas2d', 1);
+
+    // 5A. Shutter & Intro Input Lock (COMBAT-01): spam during shutter/intro must NOT consume PP or abort intro
+    await page.evaluate(() =>
+      window.__STARLIGHT_DEBUG__!.triggerEncounter('wild', { biomeId: 'forest', forceSpeciesId: 25 }),
+    );
+    await expect(page.getByTestId('battle-screen')).toBeVisible();
+    for (let i = 0; i < 6; i += 1) {
+      await page.keyboard.press('Digit1');
+    }
+    await page.waitForFunction(
+      () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
+      undefined,
+      { timeout: 12_000 },
+    );
+    const move0TextBefore = await page.getByTestId('battle-move-0').textContent();
+    const ppBefore = parsePpFromMoveText(move0TextBefore);
+    expect(ppBefore, `Expected full PP on battle-move-0 after shutter spam, got "${move0TextBefore}"`).toBeGreaterThanOrEqual(20);
+    // Check max PP equals current PP (0 PP consumed during shutter/intro!)
+    const maxPpMatch = (move0TextBefore ?? '').match(/(\d+)\s*\/\s*(\d+)/);
+    expect(maxPpMatch).not.toBeNull();
+    if (maxPpMatch) {
+      expect(Number(maxPpMatch[1])).toBe(Number(maxPpMatch[2]));
+    }
+
+    // 5B. 25x Rapid-Click + Digit1 Anti-Spam Hard Lock & Turn Pacing (COMBAT-01, COMBAT-02, COMBAT-12)
+    const tStart = Date.now();
+    await page.getByTestId('battle-move-0').click();
+
+    // Immediately transitions out of command into an acting/animating phase and locks controls
+    await page.waitForFunction(
+      () => {
+        const ph = window.__STARLIGHT_DEBUG__?.getState().battlePhase;
+        return ph === 'player-acting' || ph === 'enemy-acting' || ph === 'animating';
+      },
+      undefined,
+      { timeout: 2_500 },
+    );
+    await expect(page.getByTestId('battle-move-0')).toBeDisabled();
+    await expect(page.getByTestId('battle-flee')).toBeDisabled();
+
+    // Fire 15 synthetic DOM clicks + 10 Digit1 presses while turn is locked!
+    await page.evaluate(() => {
+      const btn = document.querySelector('[data-testid="battle-move-0"]') as HTMLButtonElement | null;
+      for (let i = 0; i < 15; i += 1) {
+        btn?.click();
+      }
+    });
+    for (let i = 0; i < 10; i += 1) {
+      await page.keyboard.press('Digit1');
+    }
+
+    const phaseAfterSpam = await waitForBattleSettled(page);
+    const turnElapsedMs = Date.now() - tStart;
+    expect(
+      turnElapsedMs,
+      `Expected paced sequential turn (>= 450ms), NOT 0ms synchronous instant resolution (got ${turnElapsedMs}ms)`,
+    ).toBeGreaterThanOrEqual(450);
+
+    const statusAfterSpam = (await page.getByTestId('battle-status-message').textContent()) ?? '';
+    expect(
+      statusAfterSpam,
+      'COMBAT-12: Single-beat statusMessage must not concatenate history with " • " bullets',
+    ).not.toContain(' • ');
+
+    if (phaseAfterSpam === 'command') {
+      const move0TextAfter = await page.getByTestId('battle-move-0').textContent();
+      const ppAfter = parsePpFromMoveText(move0TextAfter);
+      expect(
+        ppAfter,
+        `Anti-spam lock failed: 25 spam inputs consumed ${ppBefore - ppAfter} PP instead of exactly 1 PP`,
+      ).toBe(ppBefore - 1);
+
+      // 5C. Poké Ball Capture Animation Sequence (COMBAT-03): must enter 'capturing' phase with locked controls
+      await page.getByTestId('battle-ball-poke').click();
+      await page.waitForFunction(
+        () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'capturing',
+        undefined,
+        { timeout: 2_500 },
+      );
+      await expect(page.getByTestId('battle-move-0')).toBeDisabled();
+      await expect(page.getByTestId('battle-flee')).toBeDisabled();
+      await waitForBattleSettled(page, 18_000);
+    }
+
+    // Exit wild battle cleanly
+    const wildEndPh = await waitForBattleSettled(page);
+    if (wildEndPh === 'evolving') {
+      await page.getByTestId('battle-confirm-evolution').click();
+      await page.getByTestId('battle-close-result').click();
+    } else if (wildEndPh === 'victory' || wildEndPh === 'defeat') {
+      await page.getByTestId('battle-close-result').click();
+    } else {
+      await page.getByTestId('battle-flee').click();
+    }
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+
+    // Ensure Violet has at least 2 team members so Switch Drawer can open in Rival battle
+    const teamLen = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState().save.profiles.violet.team.length);
+    if (teamLen < 2) {
+      await page.evaluate(() =>
+        window.__STARLIGHT_DEBUG__!.triggerEncounter('wild', { biomeId: 'forest', forceSpeciesId: 10 }),
+      );
+      await page.waitForFunction(
+        () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
+        undefined,
+        { timeout: 12_000 },
+      );
+      await page.getByTestId('battle-ball-star').click();
+      const catchPh = await waitForBattleSettled(page, 18_000);
+      if (catchPh === 'victory' || catchPh === 'defeat') {
+        await page.getByTestId('battle-close-result').click();
+      } else {
+        await page.getByTestId('battle-flee').click();
+      }
+      await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    }
+
+    // 5D. Switch Drawer Hotkey Guard (COMBAT-06) in Forest Rival Battle
+    await page.evaluate(() => window.__STARLIGHT_DEBUG__!.triggerEncounter('rival', { biomeId: 'forest' }));
+    await expect(page.getByTestId('battle-screen')).toBeVisible();
+    await page.waitForFunction(
+      () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
+      undefined,
+      { timeout: 12_000 },
+    );
+    const switchBtn = page.getByTestId('battle-switch-btn');
+    if (await switchBtn.isEnabled()) {
+      const ppBeforeDrawer = parsePpFromMoveText(await page.getByTestId('battle-move-0').textContent());
+      await switchBtn.click();
+      await expect(page.getByTestId('battle-switch-drawer')).toBeVisible();
+      await page.keyboard.press('Digit1');
+      await page.keyboard.press('Digit1');
+      await page.keyboard.press('KeyR');
+      await page.waitForTimeout(220);
+      // Must still be in battle, command phase, switch drawer open, zero PP spent!
+      await expect(page.getByTestId('battle-screen')).toBeVisible();
+      await expect(page.getByTestId('battle-switch-drawer')).toBeVisible();
+      const ppAfterDrawer = parsePpFromMoveText(await page.getByTestId('battle-move-0').textContent());
+      expect(ppAfterDrawer, 'COMBAT-06: Hotkeys must NOT fire behind open Switch Drawer').toBe(ppBeforeDrawer);
+      // Escape closes Switch Drawer without fleeing!
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('battle-switch-drawer')).toBeHidden();
+      await expect(page.getByTestId('battle-screen')).toBeVisible();
+    }
+    await page.getByTestId('battle-flee').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+
+    expect(telemetry.consoleErrors).toEqual([]);
+    expect(telemetry.pageErrors).toEqual([]);
+    expect(telemetry.failedLocalResponses).toEqual([]);
+  });
+
+  test('Round 2 Boss Difficulty Parity: Lv.5 Bulbasaur spamming resisted attack vs Lv.12 Volcano Moltres Shrine MUST lose & rescue-reset', async ({
+    page,
+  }) => {
+    const bossTel = attachCollectors(page);
+    await bootV2ToOverworld(page, 'canvas2d', 1);
+
+    await page.evaluate(() => window.__STARLIGHT_DEBUG__!.warpBiome('volcano'));
+    await page.evaluate(() => window.__STARLIGHT_DEBUG__!.triggerEncounter('shrine', { biomeId: 'volcano' }));
+    await expect(page.getByTestId('battle-screen')).toBeVisible();
+    await page.waitForFunction(
+      () => window.__STARLIGHT_DEBUG__?.getState().battlePhase === 'command',
+      undefined,
+      { timeout: 12_000 },
+    );
+
+    // Capture strictly disabled on Shrine Guardian
+    await expect(page.getByTestId('battle-ball-poke')).toBeDisabled();
+    await expect(page.getByTestId('battle-ball-great')).toBeDisabled();
+    await expect(page.getByTestId('battle-ball-star')).toBeDisabled();
+
+    let bossEndPhase = 'command';
+    for (let turn = 0; turn < 10; turn += 1) {
+      bossEndPhase = await waitForBattleSettled(page, 18_000);
+      if (bossEndPhase === 'defeat' || bossEndPhase === 'victory') break;
+      if (bossEndPhase === 'command') {
+        // Spam resisted Grass move (Vine Whip) blindly against Lv.12 Fire/Flying Moltres
+        await page.getByTestId('battle-move-1').click();
+      }
+    }
+
+    expect(
+      bossEndPhase,
+      'COMBAT-04 Difficulty Parity: Lv.5 Bulbasaur spamming resisted Vine Whip vs Lv.12 Moltres Shrine MUST lose (defeat), NEVER win!',
+    ).toBe('defeat');
+
+    await page.getByTestId('battle-close-result').click();
+    await expect(page.getByTestId('overworld-screen')).toBeVisible();
+    const afterBossReset = await page.evaluate(() => window.__STARLIGHT_DEBUG__!.getState());
+    expect(afterBossReset.biomeId).toBe('village');
+    expect(afterBossReset.playerPos).toEqual({ x: 8, y: 15 });
+    expect(afterBossReset.save.profiles.violet.team[0].hp).toBeGreaterThan(0);
+
+    expect(bossTel.consoleErrors).toEqual([]);
+    expect(bossTel.pageErrors).toEqual([]);
+    expect(bossTel.failedLocalResponses).toEqual([]);
   });
 });
