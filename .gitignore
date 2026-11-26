@@ -35,3 +35,4 @@ desktop.ini
 *.md
 !README.md
 dna/
+export-dna.ts
