@@ -89,7 +89,7 @@ const SPRITE_FLOATS_PER_INSTANCE = 20;
 const WATER_FLOATS_PER_INSTANCE = 6;
 const PARTICLE_FLOATS_PER_INSTANCE = 11;
 const MAX_SOFTWARE_SPRITE_LIGHTS = 6;
-const MAX_SOFTWARE_DEFERRED_LIGHTS = 8;
+const MAX_SOFTWARE_DEFERRED_LIGHTS = 5;
 const MAX_WEBGL_PIXEL_AREA = 2_100_000; // ~1920x1080 cap on Retina/4K displays for crisp 60fps+
 
 function clamp(v: number, min: number, max: number): number {
@@ -444,7 +444,7 @@ export class WebGL2Backend implements IRenderBackend {
     const rawDpr =
       dpr ?? (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1);
     let effectiveDpr = this._capabilities.isSoftwareRasterizer
-      ? (safeW <= 1440 ? 0.52 : 0.48)
+      ? 0.48
       : clamp(rawDpr, 1, this.dprCap);
 
     // Cap total WebGL backing area to ~1080p on high-DPR monitors so 32x32 pixel art never saturates fillrate
@@ -487,7 +487,13 @@ export class WebGL2Backend implements IRenderBackend {
     }
 
     try {
-      this.sceneTarget = this.ensureRenderTarget(gl, this.sceneTarget, pixelW, pixelH, true);
+      this.sceneTarget = this.ensureRenderTarget(
+        gl,
+        this.sceneTarget,
+        pixelW,
+        pixelH,
+        !this._capabilities.isSoftwareRasterizer,
+      );
       this.litTarget = this.ensureRenderTarget(gl, this.litTarget, pixelW, pixelH, false);
     } catch {
       // Safe degradation if resize fails during context loss
@@ -779,6 +785,9 @@ export class WebGL2Backend implements IRenderBackend {
           gl.clear(gl.COLOR_BUFFER_BIT);
           gl.drawBuffers(this.drawBuf01);
         } else {
+          if (typeof gl.drawBuffers === 'function' && this.drawBuf0.length > 0) {
+            gl.drawBuffers(this.drawBuf0);
+          }
           gl.clearColor(
             this.clearColor[0],
             this.clearColor[1],
@@ -1601,7 +1610,10 @@ export class WebGL2Backend implements IRenderBackend {
         if (atlas) {
           atlasRef = atlas;
           tex = atlas.albedoTex;
-          normTex = cmd.useNormalMap !== false ? atlas.normalTex : null;
+          normTex =
+            !this._capabilities.isSoftwareRasterizer && cmd.useNormalMap !== false
+              ? atlas.normalTex
+              : null;
           emTex = atlas.emissiveTex;
           texW = atlas.width;
           texH = atlas.height;

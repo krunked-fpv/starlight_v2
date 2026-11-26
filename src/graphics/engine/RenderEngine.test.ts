@@ -1205,6 +1205,76 @@ describe('WebGL2Backend', () => {
 
     backend.dispose();
   });
+
+  it('applies SwiftShader software-rasterizer fast path (0.48 DPR, no MRT emissive FBO, no sprite normal loop, 5-light cap)', async () => {
+    const { initialCanvas, doc } = createMockCanvasHarness({
+      webgl2Available: true,
+      webgl2Options: {
+        rendererString: 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)))',
+      },
+    });
+    vi.stubGlobal('document', doc);
+
+    const backend = new WebGL2Backend();
+    await backend.init(initialCanvas as unknown as HTMLCanvasElement, {
+      dprCap: 2,
+      reducedMotion: false,
+      crtMode: false,
+    });
+    const gl = initialCanvas.lastWebGL2Context!;
+
+    expect(backend.capabilities.isSoftwareRasterizer).toBe(true);
+    expect(backend.capabilities.dpr).toBe(0.48);
+
+    const fboTextures = [...gl._textures.values()].filter((t) => t.isFboAttachment);
+    expect(fboTextures).toHaveLength(2);
+
+    const albedo = { width: 256, height: 256 } as unknown as HTMLCanvasElement;
+    const normal = { width: 256, height: 256 } as unknown as HTMLCanvasElement;
+    const emissive = { width: 256, height: 256 } as unknown as HTMLCanvasElement;
+    backend.registerAtlas('props', albedo, normal, emissive);
+    backend.setAtlasRegions('props', {
+      lantern: { id: 'lantern', x: 0, y: 0, w: 32, h: 32 },
+    });
+
+    backend.beginFrame(1.0, 0.016);
+    for (let i = 0; i < 10; i++) {
+      backend.addPointLight({
+        id: `sw-pt-${i}`,
+        x: 60 + i * 40,
+        y: 80,
+        radius: 160,
+        color: [1.0, 0.85, 0.5],
+        intensity: 1.1,
+      });
+    }
+    backend.drawSprite({
+      sheetId: 'props',
+      regionId: 'lantern',
+      dx: 120,
+      dy: 120,
+      dw: 32,
+      dh: 32,
+      depth: 1,
+    });
+
+    const stats = backend.endFrame();
+    expect(stats.activeLights).toBe(5);
+    expect(gl._calls.drawBuffers).not.toHaveBeenCalledWith([
+      gl.COLOR_ATTACHMENT0,
+      gl.COLOR_ATTACHMENT1,
+    ]);
+
+    const uniform1iCalls = gl._calls.uniform1i.mock.calls.map(([loc, val]) => [
+      (loc as { name: string } | null)?.name,
+      val,
+    ]);
+    expect(uniform1iCalls).toContainEqual(['uHasNormal', 0]);
+    expect(uniform1iCalls).not.toContainEqual(['uHasNormal', 1]);
+    expect(uniform1iCalls).toContainEqual(['uHasEmissive', 1]);
+
+    backend.dispose();
+  });
 });
 
 describe('RenderEngine backend negotiation, canvas swap & context-loss recovery', () => {
