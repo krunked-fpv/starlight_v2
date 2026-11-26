@@ -34,3 +34,4 @@ desktop.ini
 *.key
 *.md
 !README.md
+dna/
