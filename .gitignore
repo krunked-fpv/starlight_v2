@@ -32,3 +32,5 @@ desktop.ini
 !.env.example
 *.pem
 *.key
+*.md
+!README.md
