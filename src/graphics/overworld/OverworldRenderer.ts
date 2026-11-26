@@ -647,14 +647,18 @@ export class OverworldRenderer implements IOverworldRenderer {
     this.characters.emitCharacterParticles(backend, state);
     this.landmarks.emitNodeParticles(backend, state, bounds);
 
-    // Pass 6: Screen-space V1-parity biome aurora ribbons & wayfinding compass chevron
+    // Pass 6: Screen-space V1-parity biome aurora ribbons & off-screen compass chevron
+    // (skip the screen hybrid layer completely when neither is visible to save a full-screen WebGL2 upload!)
     const auroraBands = AURORA_BIOME_BANDS[currentBiomeId];
-    if (auroraBands || state.compassTarget) {
+    const showCompass =
+      Boolean(state.compassTarget) &&
+      this.landmarks.isCompassOffscreen(state, camX, camY, zoom, vw, vh);
+    if (auroraBands || showCompass) {
       backend.drawCustom2D((ctx, viewW, viewH) => {
         if (auroraBands) {
           this.renderBiomeAuroraBands(ctx, auroraBands, viewW, state.elapsedSeconds, state.reducedMotion);
         }
-        if (state.compassTarget) {
+        if (showCompass) {
           this.landmarks.renderCompassOverlay(ctx, state, camX, camY, zoom, viewW, viewH);
         }
       }, 'screen');

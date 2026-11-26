@@ -590,6 +590,28 @@ export class LandmarkRenderer {
   }
 
   /**
+   * Returns true only when compassTarget actually projects outside the safe viewport margin
+   * so OverworldRenderer can skip the screen-space custom2D hybrid layer when on-screen!
+   */
+  isCompassOffscreen(
+    state: OverworldSceneState,
+    camX: number,
+    camY: number,
+    camZoom: number,
+    viewW: number,
+    viewH: number,
+  ): boolean {
+    const target = state.compassTarget;
+    if (!target) return false;
+    const { tileSize } = state;
+    const wx = (target.x + 0.5) * tileSize;
+    const wy = (target.y + 0.5) * tileSize;
+    const sx = viewW * 0.5 + (wx - camX - viewW * 0.5) * camZoom;
+    const sy = viewH * 0.5 + (wy - camY - viewH * 0.5) * camZoom;
+    return sx < 46 || sx > viewW - 46 || sy < 74 || sy > viewH - 64;
+  }
+
+  /**
    * Renders a crisp vector screen-edge compass arrow when compassTarget lies outside viewport.
    */
   renderCompassOverlay(
